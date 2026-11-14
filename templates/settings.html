@@ -1,12 +1,38 @@
 <!DOCTYPE html>
 <html lang="de" class="dark">
-<head><meta charset="UTF-8"><script src="https://cdn.tailwindcss.com"></script></head>
+<head><meta charset="UTF-8"><script src="https://cdn.tailwindcss@4.0.0/dist/tailwind.min.js"></script></head>
 <body class="bg-gray-950 text-gray-100 p-6">
-    <div class="max-w-xl mx-auto bg-gray-900 p-8 rounded-xl border border-gray-800">
-        <h1 class="text-xl font-bold mb-4">⚙️ Einstellungen</h1>
-        <form action="/settings/save" method="POST" class="space-y-4">
-            <div><label class="text-sm text-gray-400">OmniRoute URL</label><input type="text" name="omniroute_url" value="{{ settings.get('omniroute_url', '') }}" class="w-full bg-gray-950 border border-gray-800 rounded p-2 mt-1"></div>
-            <div><label class="text-sm text-gray-400">Shopware API</label><input type="text" name="shopware_api_url" value="{{ settings.get('shopware_api_url', '') }}" class="w-full bg-gray-950 border border-gray-800 rounded p-2 mt-1"></div>
+    <div class="max-w-2xl mx-auto bg-gray-900 p-8 rounded-xl border border-gray-800">
+        <h1 class="text-xl font-bold mb-6">⚙️ Konfiguration</h1>
+        <form action="/settings/save" method="POST" class="space-y-6">
+            <div>
+                <label class="text-sm text-gray-400">OmniRoute URL</label>
+                <input type="text" name="omniroute_url" value="{{ settings.get('omniroute_url', 'http://localhost:4000/v1') }}" class="w-full bg-gray-950 border border-gray-800 rounded p-2 mt-1" maxlength="255">
+            </div>
+            <div>
+                <label class="text-sm text-gray-400">OmniRoute Modell</label>
+                <input type="text" name="omniroute_model" value="{{ settings.get('omniroute_model', 'gemini-2.5-flash') }}" class="w-full bg-gray-950 border border-gray-800 rounded p-2 mt-1" maxlength="100">
+            </div>
+            <div>
+                <label class="text-sm text-gray-400">Shopware API URL</label>
+                <input type="text" name="shopware_api_url" value="{{ settings.get('shopware_api_url', '') }}" class="w-full bg-gray-950 border border-gray-800 rounded p-2 mt-1" maxlength="255">
+            </div>
+            <div>
+                <label class="text-sm text-gray-400">eBay Token</label>
+                <input type="text" name="ebay_token" value="{{ settings.get('ebay_token', '') }}" class="w-full bg-gray-950 border border-gray-800 rounded p-2 mt-1" maxlength="255">
+            </div>
+            <div>
+                <label class="text-sm text-gray-400">Amazon Token</label>
+                <input type="text" name="amazon_token" value="{{ settings.get('amazon_token', '') }}" class="w-full bg-gray-950 border border-gray-800 rounded p-2 mt-1" maxlength="255">
+            </div>
+            <div>
+                <label class="text-sm text-gray-400">Kaufland Token</label>
+                <input type="text" name="kaufland_token" value="{{ settings.get('kaufland_token', '') }}" class="w-full bg-gray-950 border border-gray-800 rounded p-2 mt-1" maxlength="255">
+            </div>
+            <div>
+                <label class="text-sm text-gray-400">Etsy Token</label>
+                <input type="text" name="etsy_token" value="{{ settings.get('etsy_token', '') }}" class="w-full bg-gray-950 border border-gray-800 rounded p-2 mt-1" maxlength="255">
+            </div>
             <button type="submit" class="w-full bg-blue-600 p-2 rounded font-medium">Speichern</button>
         </form>
     </div>

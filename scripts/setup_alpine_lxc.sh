@@ -7,7 +7,7 @@
 # service for automatic startup of the Omni-Core Middleware.
 
 # --- Configuration Variables ---
-APP_DIR="/opt/omni-core-middleware"
+APP_DIR="/opt/omni-middleware"
 PYTHON_VERSION="3.11"
 VENV_DIR=".venv"
 USER="omniuser"
@@ -48,17 +48,13 @@ apk add --no-cache \
     python${PYTHON_VERSION} \
     python${PYTHON_VERSION}-dev \
     py${PYTHON_VERSION}-pip \
+    py${PYTHON_VERSION}-virtualenv \
     git \
     sqlite \
+    curl \
     build-base \
     libffi-dev \
-    openssl-dev \
-    libxml2-dev \
-    libxslt-dev \
-    gcc \
-    musl-dev \
-    linux-headers \
-    uvloop || log_error "Failed to install required packages."
+    || log_error "Failed to install required packages."
 
 # Ensure python and pip point to the desired version
 ln -sf /usr/bin/python${PYTHON_VERSION} /usr/local/bin/python
@@ -86,7 +82,7 @@ fi
 
 # 4. Set up Python virtual environment and install dependencies
 log_info "Setting up Python virtual environment and installing dependencies..."
-su -l "${USER}" -c "cd ${APP_DIR}/omni_core && python -m venv ${VENV_DIR} && source ${VENV_DIR}/bin/activate && pip install --upgrade pip && pip install -r requirements.txt" || log_error "Failed to set up virtual environment or install dependencies."
+su -l "${USER}" -c "cd ${APP_DIR} && python -m venv ${VENV_DIR} && source ${VENV_DIR}/bin/activate && pip install --upgrade pip && pip install -r ${APP_DIR}/requirements.txt" || log_error "Failed to set up virtual environment or install dependencies."
 
 # 5. Configure systemd service for auto-start
 log_info "Configuring systemd service '${SERVICE_NAME}.service'..."
@@ -100,8 +96,8 @@ After=network.target
 [Service]
 User=${USER}
 Group=${GROUP}
-WorkingDirectory=${APP_DIR}/omni_core
-ExecStart=${APP_DIR}/omni_core/${VENV_DIR}/bin/uvicorn main:app --host 0.0.0.0 --port 8000 --workers 1 --loop uvloop --interface auto
+WorkingDirectory=${APP_DIR}
+ExecStart=${APP_DIR}/bin/uvicorn main:app --host 0.0.0.0 --port 8000 --workers 1 --loop uvloop --interface auto
 Restart=always
 RestartSec=5
 
