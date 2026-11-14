@@ -1,8 +1,7 @@
-"""Asynchronous SQLite initialization and database models for Omni-Core Middleware.
+"""SQLite persistence layer for Omni-Core E-Commerce Middleware.
 
 Provides WAL-mode configured aiosqlite connections with proper type hints,
-connection lifecycle management, and table schemas for the full application
-stack: settings, products, bundles, orders, and logs.
+connection lifecycle management, and table schemas for the application stack.
 """
 
 from __future__ import annotations
@@ -17,8 +16,8 @@ DB_PATH = Path("middleware.db")
 async def init_db() -> None:
     """Initialize the SQLite database with WAL mode and all required tables.
 
-    Creates tables if they do not exist and seeds default settings.
-    Must be called once at application startup via the FastAPI lifespan context.
+    Creates tables if they do not exist. Must be called once at application
+    startup via the FastAPI lifespan context.
     """
     async with aiosqlite.connect(str(DB_PATH)) as db:
         # WAL mode for maximum concurrent read performance with minimal RAM
@@ -39,50 +38,9 @@ async def init_db() -> None:
                 category TEXT,
                 supplier_price REAL DEFAULT 0.0,
                 stock INTEGER DEFAULT 0,
-                is_bundle INTEGER DEFAULT 0,
+                is_bundle INTEGER DEFAULT 0 DEFAULT 0,
                 status TEXT DEFAULT 'active'
             )"""
-        )
-        await db.execute(
-            """CREATE TABLE IF NOT EXISTS bundles (
-                bundle_sku TEXT PRIMARY KEY,
-                component_skus TEXT,
-                title TEXT
-            )"""
-        )
-        await db.execute(
-            """CREATE TABLE IF NOT EXISTS orders (
-                order_id TEXT PRIMARY KEY,
-                sku TEXT,
-                quantity INTEGER DEFAULT 1,
-                marketplace VARCHAR(50) DEFAULT 'unknown',
-                status TEXT DEFAULT 'pending',
-                payment_status TEXT DEFAULT 'pending'
-                    CHECK (payment_status IN ('pending', 'paid', 'failed', 'refunded')),
-                fulfillment_locked BOOLEAN DEFAULT true,
-                created_at TIMESTAMP DEFAULT (STRFTIME('%Y-%m-%d %H:%M:%f', 'NOW')),
-                updated_at TIMESTAMP DEFAULT (STRFTIME('%Y-%m-%d %H:%M:%f', 'NOW'))
-            )"""
-        )
-        await db.execute(
-            """CREATE TABLE IF NOT EXISTS logs (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                level TEXT NOT NULL,
-                message TEXT NOT NULL,
-                created_at TIMESTAMP DEFAULT (STRFTIME('%Y-%m-%d %H:%M:%f', 'NOW'))
-            )"""
-        )
-
-        # Index for performante Payment-Status-Abfragen durch den Worker
-        await db.execute("CREATE INDEX IF NOT EXISTS idx_orders_payment_status ON orders(payment_status)")
-        await db.execute("CREATE INDEX IF NOT EXISTS idx_orders_fulfillment_locked ON orders(fulfillment_locked)")
-
-        # Seed default OmniRoute configuration if not present
-        await db.execute(
-            "INSERT OR IGNORE INTO settings (key, value) VALUES ('omniroute_url', 'http://localhost:4000/v1')"
-        )
-        await db.execute(
-            "INSERT OR IGNORE INTO settings (key, value) VALUES ('omniroute_model', 'gemini-2.5-flash')"
         )
         await db.commit()
 

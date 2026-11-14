@@ -1,0 +1,15 @@
+services:
+  omni-core-middleware:
+    build: .
+    container_name: omni-core-middleware
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      - sqlite_data:/app/data
+    environment:
+      - DATABASE_PATH=/app/data/middleware.db
+
+volumes:
+  sqlite_data:
+    driver: local
