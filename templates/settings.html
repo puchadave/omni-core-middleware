@@ -1,40 +1,108 @@
 <!DOCTYPE html>
-<html lang="de" class="dark">
-<head><meta charset="UTF-8"><script src="https://cdn.tailwindcss@4.0.0/dist/tailwind.min.js"></script></head>
-<body class="bg-gray-950 text-gray-100 p-6">
-    <div class="max-w-2xl mx-auto bg-gray-900 p-8 rounded-xl border border-gray-800">
-        <h1 class="text-xl font-bold mb-6">⚙️ Konfiguration</h1>
-        <form action="/settings/save" method="POST" class="space-y-6">
-            <div>
-                <label class="text-sm text-gray-400">OmniRoute URL</label>
-                <input type="text" name="omniroute_url" value="{{ settings.get('omniroute_url', 'http://localhost:4000/v1') }}" class="w-full bg-gray-950 border border-gray-800 rounded p-2 mt-1" maxlength="255">
+<html lang="en" data-theme="navbar" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Omni-Core Einstellungen</title>
+
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js" defer></script>
+
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <title>Omni-Core Einstellungen</title>
+</head>
+<body class="bg-gray-900 text-gray-900 font-inter">
+
+    <!-- Navbar -->
+    <nav class="navbar navbar-expand-md navbar-dark bg-gray-900 sticky top-0">
+        <div class="navbar-brand">
+            <a href="#" class="text-xl font-bold text-indigo-600">Omni-Core</a>
+        </div>
+        <button class="navbar-toggler" type="button" data-toggle="collapse" data-target="#navbarNav">
+            <span class="navbar-toggler-icon"></span>
+        </button>
+        <div class="collapse navbar-collapse" id="navbarNav">
+            <ul class="navbar-nav ml-auto">
+                <li class="nav-item">
+                    <a class="nav-link text-white" href="/">Dashboard</a>
+                </li>
+                <li class="nav-item">
+                    <a class="nav-link text-white" href="/admin/products">Produkte</a>
+                </li>
+                <li class="nav-item">
+                    <a class="nav-link text-white" href="/admin/settings" x-show="!settingsPageActive" @click="settingsPageActive = true">Einstellungen</a>
+                </li>
+            </ul>
+        </div>
+    </nav>
+
+    <!-- Settings Modal -->
+    <div class="fixed inset-0 bg-gray-900 bg-opacity-50 backdrop-blur-sm z-50 hidden" x-show="settingsPageActive" x-transition>
+        <div class="relative top-20 w-3/4 mx-auto bg-white rounded-xl p-8 shadow-2xl">
+            <h2 class="text-2xl font-bold text-gray-900 mb-6">Omni-Core Einstellungen</h2>
+            
+            <!-- API Token Form -->
+            <div class="mb-6">
+                <h3 class="font-medium text-gray-700 mb-3">Matterhorn API Token</h3>
+                <p class="text-sm text-gray-500 mb-2">Fügen Sie Ihren Matterhorn API ein Token ein, um die Integration zu aktivieren.</p>
+                <div class="relative">
+                    <input 
+                        type="password" 
+                        id="apiToken"
+                        name="matterhorn_api_token"
+                        value="x-token-12345" 
+                        class="w-full px-4 py-3 rounded-lg border border-gray-600 focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-colors"
+                        x-model="apiToken"
+                    >
+                    <button type="button" 
+                            class="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500"
+                            @click="apiToken = ''"
+                        >
+                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-1.687-1.688a2 2 0 011.977-2.877l2.183 2.183a2 2 0 012.877 0l-2.182 2.183zM7.629 17.7l-1.687-1.688a2 2 0 011.977-2.877l2.183 2.183a2 2 0 012.877 0l-2.183 2.183zM12 7a4 4 0 00-4 4v12a4 4 0 004 4h4a4 4 0 004-4v-12a4 4 0 00-4-4H12z"/>
+                            </svg>
+                        </button>
+                    </input>
+                </div>
+                <p class="text-xs text-gray-500 mt-2">Beispiel: x-token-12345</p>
             </div>
-            <div>
-                <label class="text-sm text-gray-400">OmniRoute Modell</label>
-                <input type="text" name="omniroute_model" value="{{ settings.get('omniroute_model', 'gemini-2.5-flash') }}" class="w-full bg-gray-950 border border-gray-800 rounded p-2 mt-1" maxlength="100">
+
+            <!-- Shop Configuration -->
+            <div class="mb-6">
+                <h3 class="font-medium text-gray-700 mb-3">Shop-Konfiguration</h3>
+                <div class="grid gap-4">
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Shop-Name</label>
+                        <input type="text" 
+                               class="w-full px-4 py-3 rounded-lg border border-gray-600 focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-colors"
+                               x-model="shopName"
+                               value="Mein Shop">
+                        <p class="text-xs text-gray-500">Anzeigename für Ihren Shop</p>
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Standard-Währung</label>
+                        <select x-model="currency" class="w-full px-4 py-3 rounded-lg border border-gray-600 focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-colors">
+                            <option value="EUR" selected>EUR (Euro)</option>
+                            <option value="USD">USD (US-Dollar)</option>
+                            <option value="GBP">GBP (Britisches Pfund)</option>
+                        </select>
+                    </div>
+                </div>
             </div>
-            <div>
-                <label class="text-sm text-gray-400">Shopware API URL</label>
-                <input type="text" name="shopware_api_url" value="{{ settings.get('shopware_api_url', '') }}" class="w-full bg-gray-950 border border-gray-800 rounded p-2 mt-1" maxlength="255">
+
+            <!-- Buttons -->
+            <div class="flex gap-3">
+                <button type="button" 
+                        class="btn btn-secondary w-1/2"
+                        @click="settingsPageActive = false"
+                        >Abbrechen</button>
+                <button type="button" 
+                        class="btn btn-primary w-1/2"
+                        @click="saveSettings"
+                        >Einstellungen speichern</button>
             </div>
-            <div>
-                <label class="text-sm text-gray-400">eBay Token</label>
-                <input type="text" name="ebay_token" value="{{ settings.get('ebay_token', '') }}" class="w-full bg-gray-950 border border-gray-800 rounded p-2 mt-1" maxlength="255">
-            </div>
-            <div>
-                <label class="text-sm text-gray-400">Amazon Token</label>
-                <input type="text" name="amazon_token" value="{{ settings.get('amazon_token', '') }}" class="w-full bg-gray-950 border border-gray-800 rounded p-2 mt-1" maxlength="255">
-            </div>
-            <div>
-                <label class="text-sm text-gray-400">Kaufland Token</label>
-                <input type="text" name="kaufland_token" value="{{ settings.get('kaufland_token', '') }}" class="w-full bg-gray-950 border border-gray-800 rounded p-2 mt-1" maxlength="255">
-            </div>
-            <div>
-                <label class="text-sm text-gray-400">Etsy Token</label>
-                <input type="text" name="etsy_token" value="{{ settings.get('etsy_token', '') }}" class="w-full bg-gray-950 border border-gray-800 rounded p-2 mt-1" maxlength="255">
-            </div>
-            <button type="submit" class="w-full bg-blue-600 p-2 rounded font-medium">Speichern</button>
-        </form>
+        </div>
     </div>
 </body>
 </html>
