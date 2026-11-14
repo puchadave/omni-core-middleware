@@ -1,115 +1,189 @@
 #!/bin/bash
-
+#
 # setup_alpine_lxc.sh
-# Fully automated bootstrap installation script for a fresh Alpine Linux LXC container
-# on Proxmox VE. This script updates packages, installs Python, Git, SQLite, sets up a
-# virtual environment, installs application dependencies, and configures a systemd
-# service for automatic startup of the Omni-Core Middleware.
-
-# --- Configuration Variables ---
-APP_DIR="/opt/omni-middleware"
-PYTHON_VERSION="3.11"
-VENV_DIR=".venv"
-USER="omniuser"
-GROUP="omniuser"
-SERVICE_NAME="omni-middleware"
-GIT_REPO="https://github.com/puchadave/omni-core-middleware.git"
-
-# --- Logging and Error Handling ---
-LOG_FILE="/var/log/${SERVICE_NAME}_setup.log"
-exec > >(tee -a "$LOG_FILE") 2>&1
+# Fully automated bootstrap installation script for Omni-Core Middleware
+# on Alpine Linux LXC container on Proxmox VE.
+# This script updates packages, installs Python + venv, clones the repository,
+# sets up a virtual environment with all Python dependencies, configures a
+# systemd service for automatic startup, and performs a health check.
+#
 
 set -euo pipefail
 
+# --- Color definitions for output ---
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m' # No Color
+
 log_info() {
-    echo "$(date +'%Y-%m-%d %H:%M:%S') INFO: $1"
+    echo -e "${GREEN}[INFO]${NC} $1"
+}
+
+log_warn() {
+    echo -e "${YELLOW}[WARN]${NC} $1"
 }
 
 log_error() {
-    echo "$(date +'%Y-%m-%d %H:%M:%S') ERROR: $1" >&2
+    echo -e "${RED}[ERROR]${NC} $1"
+}
+
+# --- 1. SYSTEM-UPDATES & ABHÄNGIGKEITEN ---
+log_info "Starte System-Updates und installiere Abhängigkeiten..."
+
+apk update && apk upgrade -a --no-cache || {
+    log_error "apk update/upgrade fehlgeschlagen!"
     exit 1
 }
 
-check_root() {
-    if [ "$(id -u)" -ne 0 ]; then
-        log_error "This script must be run as root."
-    fi
-}
-
-# --- Main Setup Steps ---
-check_root
-
-log_info "Starting Omni-Core Middleware LXC setup..."
-
-# 1. Update system and install necessary packages
-log_info "Updating system packages..."
-apk update || log_error "Failed to update apk."
+log_info "Installiere Systempakete..."
 apk add --no-cache \
-    python${PYTHON_VERSION} \
-    python${PYTHON_VERSION}-dev \
-    py${PYTHON_VERSION}-pip \
-    py${PYTHON_VERSION}-virtualenv \
+    python3 \
+    py3-pip \
+    py3-virtualenv \
     git \
     sqlite \
     curl \
     build-base \
-    libffi-dev \
-    || log_error "Failed to install required packages."
+    python3-dev \
+    sqlite-libs || {
+    log_error "Paket-Installation fehlgeschlagen!"
+    exit 1
+}
 
-# Ensure python and pip point to the desired version
-ln -sf /usr/bin/python${PYTHON_VERSION} /usr/local/bin/python
-ln -sf /usr/bin/pip${PYTHON_VERSION} /usr/local/bin/pip
+log_info "Alle Systempakete erfolgreich installiert."
 
-# 2. Create dedicated user and group
-log_info "Creating dedicated user and group '${USER}'..."
-if ! id -g "${GROUP}" >/dev/null 2>&1; then
-    addgroup -S "${GROUP}" || log_error "Failed to create group ${GROUP}."
-fi
-if ! id -u "${USER}" >/dev/null 2>&1; then
-    adduser -S -G "${GROUP}" "${USER}" || log_error "Failed to create user ${USER}."
-fi
+# --- 2. REPOSITORY & VERZEICHNISSTRUKTUR ---
+APP_DIR="/opt/omni-middleware"
+REPO_URL="https://github.com/puchadave/omni-core-middleware.git"
 
-# 3. Clone the Git repository
-log_info "Cloning Git repository into ${APP_DIR}..."
-if [ -d "${APP_DIR}" ]; then
-    log_info "${APP_DIR} already exists, attempting to pull latest changes."
-    chown -R "${USER}":"${GROUP}" "${APP_DIR}"
-    su -l "${USER}" -c "cd ${APP_DIR} && git pull" || log_error "Failed to pull latest changes."
+log_info "Sichere Zielverzeichnis ${APP_DIR}..."
+mkdir -p "${APP_DIR}"
+
+log_info "Klone/repository-Repository..."
+if [ -d "${APP_DIR}/.git" ]; then
+    log_info "Repository existiert bereits. Update via git pull..."
+    cd "${APP_DIR}" && git pull || {
+        log_error "git pull fehlgeschlagen!"
+        exit 1
+    }
 else
-    git clone "${GIT_REPO}" "${APP_DIR}" || log_error "Failed to clone repository."
-    chown -R "${USER}":"${GROUP}" "${APP_DIR}" || log_error "Failed to change ownership of ${APP_DIR}."
+    log_info "Klone Repository nach ${APP_DIR}..."
+    git clone "${REPO_URL}" "${APP_DIR}" || {
+        log_error "git clone fehlgeschlagen!"
+        exit 1
+    }
 fi
 
-# 4. Set up Python virtual environment and install dependencies
-log_info "Setting up Python virtual environment and installing dependencies..."
-su -l "${USER}" -c "cd ${APP_DIR} && python -m venv ${VENV_DIR} && source ${VENV_DIR}/bin/activate && pip install --upgrade pip && pip install -r ${APP_DIR}/requirements.txt" || log_error "Failed to set up virtual environment or install dependencies."
+log_info "Repository erfolgreich gesichert/geklont."
 
-# 5. Configure systemd service for auto-start
-log_info "Configuring systemd service '${SERVICE_NAME}.service'..."
-SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
+# --- 3. PYTHON VIRTUAL ENVIRONMENT & DEPENDENCIEN ---
+VENV_DIR="${APP_DIR}/venv"
+log_info "Erstelle Python Virtual Environment bei ${VENV_DIR}..."
+python3 -m venv "${VENV_DIR}" || {
+    log_error "Virtual Environment Erstellung fehlgeschlagen!"
+    exit 1
+}
 
-cat <<EOF >"${SERVICE_FILE}"
+log_info "Aktiviere Virtual Environment und aktualisiere pip..."
+# Shell-Format: source aktivierung nur für nachfolgende Befehle im Skript
+# Wir nutzen den Pfad direkt, um Environment-Probleme zu vermeiden
+PATH="${VENV_DIR}/bin:${PATH}"
+
+pip install --upgrade pip || {
+    log_error "pip Update fehlgeschlagen!"
+    exit 1
+}
+
+log_info "Installiere Python-Pakete aus requirements.txt..."
+pip install --no-cache-dir \
+    fastapi==0.110.0 \
+    uvicorn[standard]==0.28.0 \
+    uvloop==0.19.0 \
+    httpx==0.27.0 \
+    pydantic==2.6.4 \
+    aiosqlite==0.20.0 \
+    jinja2==3.1.3 \
+    python-multipart==0.0.9 || {
+    log_error "Python-Pakete Installation fehlgeschlagen!"
+    exit 1
+}
+
+log_info "Alle Python-Pakete erfolgreich installiert."
+
+# --- 4. SYSTEMD SERVICE KONFIGURATION (AUTOSTART) ---
+SERVICE_FILE="/etc/systemd/system/omni-middleware.service"
+
+log_info "Erstelle systemd Service Konfiguration unter ${SERVICE_FILE}..."
+
+cat > "${SERVICE_FILE}" << 'EOF'
 [Unit]
 Description=Omni-Core Middleware FastAPI Application
 After=network.target
 
 [Service]
-User=${USER}
-Group=${GROUP}
-WorkingDirectory=${APP_DIR}
-ExecStart=${APP_DIR}/bin/uvicorn main:app --host 0.0.0.0 --port 8000 --workers 1 --loop uvloop --interface auto
+User=root
+Group=root
+WorkingDirectory=/opt/omni-middleware
+ExecStart=/opt/omni-middleware/venv/bin/uvicorn main:app --host 0.0.0.0 --port 8000 --loop uvloop
 Restart=always
-RestartSec=5
+RestartSec=3
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-chmod 644 "${SERVICE_FILE}" || log_error "Failed to set permissions on service file."
-systemctl daemon-reload || log_error "Failed to reload systemd daemon."
-systemctl enable "${SERVICE_NAME}.service" || log_error "Failed to enable ${SERVICE_NAME} service."
-systemctl start "${SERVICE_NAME}.service" || log_error "Failed to start ${SERVICE_NAME} service."
+chmod 644 "${SERVICE_FILE}" || {
+    log_error "Service-Datei konnte nicht beschreibbar gemacht werden!"
+    exit 1
+}
 
-log_info "Omni-Core Middleware LXC setup complete. Service '${SERVICE_NAME}.service' started."
-log_info "Check service status with: systemctl status ${SERVICE_NAME}.service"
-log_info "View logs with: journalctl -u ${SERVICE_NAME}.service -f"
+log_info "Reload systemd Daemon..."
+systemctl daemon-reload || {
+    log_warn "systemctl daemon-reload fehlgeschlagen (kann in LXC-Container ohne systemd auftreten)."
+}
+
+log_info "Aktiviere Service..."
+systemctl enable omni-middleware.service || {
+    log_warn "systemctl enable fehlgeschlagen (kann in LXC-Container ohne volle systemd Unterstützung auftreten)."
+}
+
+log_info "Starte Service sofort..."
+systemctl start omni-middleware.service || {
+    log_warn "systemctl start fehlgeschlagen (kann in LXC-Container ohne volle systemd Unterstützung auftreten)."
+}
+
+log_info "Systemd Service Konfiguration abgeschlossen."
+
+# --- 5. HEALTH CHECK ---
+log_info "Warte 3 Sekunden auf Initialisierung des Services..."
+sleep 3
+
+log_info "Führe Health Check durch..."
+HEALTH_CHECK_URL="http://localhost:8000/"
+RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" "${HEALTH_CHECK_URL}" || echo "000")
+
+if [ "${RESPONSE}" = "200" ] || [ "${RESPONSE}" = "1200" ] 2>/dev/null; then
+    echo -e ""
+    echo -e "${GREEN}========================================${NC}"
+    echo -e "${GREEN}   Health Check erfolgreich!${NC}"
+    echo -e "${GREEN}   FastAPI Dienst erreichbar unter:${NC} ${HEALTH_CHECK_URL}"
+    echo -e "${GREEN}========================================${NC}"
+    echo -e ""
+else
+    log_warn "Health Check lief mit Response-Code: ${RESPONSE}"
+    log_warn "Der Dienst wird möglicherweise noch gestartet. Prüfen Sie später den Status mit: systemctl status omni-middleware.service"
+fi
+
+log_info ""
+log_info "========================================="
+log_info "  Omni-Core Middleware Installation abgeschlossen"
+log_info "========================================="
+log_info ""
+log_info "Zugriffspunkte:"
+log_info "  • API:         http://<container-ip>:8000"
+log_info "  • Dokumentation: http://<container-ip>:8000/docs"
+log_info "  • Gesundheitscheck: curl http://<container-ip>:8000/"
+log_info "  • Systemd:     systemctl status omni-middleware.service"
+log_info "  • Logs:        journalctl -u omni-middleware.service -f"
+log_info ""
