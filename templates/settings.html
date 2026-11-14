@@ -1,0 +1,14 @@
+<!DOCTYPE html>
+<html lang="de" class="dark">
+<head><meta charset="UTF-8"><script src="https://cdn.tailwindcss.com"></script></head>
+<body class="bg-gray-950 text-gray-100 p-6">
+    <div class="max-w-xl mx-auto bg-gray-900 p-8 rounded-xl border border-gray-800">
+        <h1 class="text-xl font-bold mb-4">⚙️ Einstellungen</h1>
+        <form action="/settings/save" method="POST" class="space-y-4">
+            <div><label class="text-sm text-gray-400">OmniRoute URL</label><input type="text" name="omniroute_url" value="{{ settings.get('omniroute_url', '') }}" class="w-full bg-gray-950 border border-gray-800 rounded p-2 mt-1"></div>
+            <div><label class="text-sm text-gray-400">Shopware API</label><input type="text" name="shopware_api_url" value="{{ settings.get('shopware_api_url', '') }}" class="w-full bg-gray-950 border border-gray-800 rounded p-2 mt-1"></div>
+            <button type="submit" class="w-full bg-blue-600 p-2 rounded font-medium">Speichern</button>
+        </form>
+    </div>
+</body>
+</html>

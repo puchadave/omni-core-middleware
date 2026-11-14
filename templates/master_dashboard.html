@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="de" class="dark">
+<head>
+    <meta charset="UTF-8"><title>Omni-Core Master Control</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js" defer></script>
+</head>
+<body class="bg-gray-950 text-gray-100 font-sans antialiased min-h-screen p-6">
+    <header class="border-b border-gray-800 bg-gray-900 px-6 py-4 flex justify-between items-center rounded-xl mb-6">
+        <h1 class="text-xl font-bold">OMNI-CORE <span class="text-blue-500">MASTER COMMAND</span></h1>
+        <a href="/settings" class="bg-gray-800 px-4 py-2 rounded text-sm">⚙️ Einstellungen</a>
+    </header>
+    <main class="space-y-6" x-data="systemMonitor()">
+        <div class="grid grid-cols-4 gap-6">
+            <div class="bg-gray-900 border border-gray-800 p-5 rounded-xl">
+                <h3 class="text-gray-400 text-sm">KI-Gateway</h3>
+                <div class="text-2xl font-bold text-green-400" x-text="health.omniroute.status">...</div>
+            </div>
+            <div class="bg-gray-900 border border-gray-800 p-5 rounded-xl">
+                <h3 class="text-gray-400 text-sm">Produkte</h3>
+                <div class="text-2xl font-bold text-blue-400">{{ total_products }}</div>
+            </div>
+            <div class="bg-gray-900 border border-gray-800 p-5 rounded-xl">
+                <h3 class="text-gray-400 text-sm">Fehler</h3>
+                <div class="text-2xl font-bold text-red-400">{{ error_count }}</div>
+            </div>
+            <div class="bg-gray-900 border border-gray-800 p-5 rounded-xl">
+                <h3 class="text-gray-400 text-sm">Queue</h3>
+                <div class="text-2xl font-bold text-yellow-400" x-text="health.queue_size">0</div>
+            </div>
+        </div>
+    </main>
+    <script>
+        function systemMonitor() {
+            return {
+                health: { omniroute: { status: 'loading' }, queue_size: 0 },
+                async init() {
+                    let res = await fetch('/api/system-health');
+                    this.health = await res.json();
+                }
+            }
+        }
+    </script>
+</body>
+</html>
