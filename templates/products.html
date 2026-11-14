@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="navbar" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Omni-Core Produkt-Katalog</title>
+
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js" defer></script>
+
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <title>Omni-Core Produkt-Katalog</title>
+</head>
+<body class="bg-gray-900 text-gray-900 font-inter">
+
+    <!-- Navbar -->
+    <nav class="navbar navbar-expand-md navbar-dark bg-gray-900 sticky top-0">
+        <div class="navbar-brand">
+            <a href="#" class="text-xl font-bold text-indigo-600">Omni-Core</a>
+        </div>
+        <button class="navbar-toggler" type="button" data-toggle="collapse" data-target="#navbarNav">
+            <span class="navbar-toggler-icon"></span>
+        </button>
+        <div class="collapse navbar-collapse" id="navbarNav">
+            <ul class="navbar-nav ml-auto">
+                <li class="nav-item">
+                    <a class="nav-link text-white" href="/">Dashboard</a>
+                </li>
+                <li class="nav-item">
+                    <a class="nav-link text-white active" href="/admin/products">Produkte</a>
+                </li>
+                <li class="nav-item">
+                    <a class="nav-link text-white" href="/admin/settings">Einstellungen</a>
+                </li>
+            </ul>
+        </div>
+    </nav>
+
+    <main class="p-6 pb-24">
+
+        <!-- Header -->
+        <div class="mb-6">
+            <h1 class="text-2xl font-bold text-white">Produkt-Katalog</h1>
+            <p class="text-gray-500">Übersicht aller importierten Produkte mit Bestandsstand</p>
+        </div>
+
+        <!-- Products Table -->
+        <div class="bg-gray-800 rounded-xl p-6 border border-gray-700">
+            <div class="overflow-x-auto">
+                <table class="min-w-full">
+                    <thead class="bg-gray-700 text-xs text-gray-400 uppercase">
+                        <tr>
+                            <th class="p-3">SKU</th>
+                            <th class="p-3">Titel</th>
+                            <th class="p-3">Einkaufspreis</th>
+                            <th class="p-3">Verkaufspreis</th>
+                            <th class="p-3">Gepufferter Bestand</th>
+                            <th class="p-3">Status</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr class="bg-gray-800">
+                            <td class="p-3" colspan="6">Keine Produkte vorhanden</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Import Section -->
+        <div class="mt-6 bg-gray-800 rounded-xl p-6 border border-gray-700">
+            <h4 class="font-semibold text-white mb-3">Sofort-Import</h4>
+            <p class="text-sm text-gray-400 mb-4">Klicken Sie zum Importieren von Produkten aus dem Matterhorn-Katalog.</p>
+            
+            <button id="quickImportBtn"
+                    class="btn btn-primary w-full"
+                    x-on:click="triggerQuickImport">
+                <span x-show="!importing">Katalog importieren</span>
+                <span x-show="importing">Import läuft...</span>
+            </button>
+        </div>
+
+    </main>
+
+    <script>
+        // Product table Alpine.js init
+        // The table will be populated via AJAX from the backend
+        
+        // Quick import trigger
+        function triggerQuickImport() {
+            fetch('/api/import/matterhorn', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                }
+            })
+            .then(response => response.json())
+            .then(data => {
+                // Show feedback
+                const statusDiv = document.createElement('div');
+                statusDiv.className = 'mt-4 p-4 rounded-lg';
+                if (data.status === 'started') {
+                    statusDiv.className += ' bg-green-100 text-green-800';
+                    statusDiv.innerHTML = '<strong>Import gestartet!</strong> Überwache den Importfortschritt im Dashboard.';
+                } else {
+                    statusDiv.className += ' bg-red-100 text-red-800';
+                    statusDiv.innerHTML = '<strong>Fehler:</strong> ' + (data.message || 'Unbekannter Fehler');
+                }
+                document.querySelector('.mb-8').parentNode.insertBefore(statusDiv, document.querySelector('.mt-4'));
+            })
+            .catch(error => {
+                console.error('Import error:', error);
+                const statusDiv = document.createElement('div');
+                statusDiv.className = 'mt-4 p-4 rounded-lg bg-red-100 text-red-800';
+                statusDiv.innerHTML = '<strong>Fehler:</strong> Verbindungsfehler zum Server';
+                document.querySelector('.mb-8').parentNode.insertBefore(statusDiv, document.querySelector('.mb-8'));
+        </script>
+</body>
+</html>

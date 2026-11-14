@@ -1,7 +1,8 @@
 """SQLite persistence layer for Omni-Core E-Commerce Middleware.
 
 Provides WAL-mode configured aiosqlite connections with proper type hints,
-connection lifecycle management, and table schemas for the application stack.
+connection lifecycle management, and table schemas for the application
+stack: products and settings.
 """
 
 from __future__ import annotations
@@ -26,20 +27,19 @@ async def init_db() -> None:
         await db.execute("PRAGMA busy_timeout=5000;")
 
         await db.execute(
-            """CREATE TABLE IF NOT EXISTS settings (
-                key TEXT PRIMARY KEY,
-                value TEXT
-            )"""
-        )
-        await db.execute(
             """CREATE TABLE IF NOT EXISTS products (
                 sku TEXT PRIMARY KEY,
                 title TEXT NOT NULL,
                 category TEXT,
                 supplier_price REAL DEFAULT 0.0,
                 stock INTEGER DEFAULT 0,
-                is_bundle INTEGER DEFAULT 0 DEFAULT 0,
                 status TEXT DEFAULT 'active'
+            )"""
+        )
+        await db.execute(
+            """CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT
             )"""
         )
         await db.commit()

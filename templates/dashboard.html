@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="navbar" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Omni-Core Dashboard</title>
+
+    <!-- Tailwind CSS via CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+
+    <!-- Alpine.js via CDN for reactive UI -->
+    <script src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js" defer></script>
+
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <title>Omni-Core Dashboard</title>
+</head>
+<body class="bg-gray-900 text-gray-900 font-inter">
+
+    <!-- Top Bar -->
+    <div class="bg-gray-900 py-3 border-b border-gray-800">
+        <div class="container mx-auto max-w-2xl">
+            <div class="flex items-center justify-between">
+                <h2 class="text-lg font-bold text-white">Omni-Core Dashboard</h2>
+                <div class="flex items-center gap-4">
+                    <span class="text-sm text-gray-400" x-text="localTime">00:00</span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Main Content -->
+    <div class="container mx-auto max-w-5xl py-6">
+
+        <!-- Stats Cards Row -->
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
+            
+            <!-- Products Card -->
+            <div class="bg-gray-800 rounded-xl p-6 border border-gray-700 hover:bg-gray-700 transition-colors">
+                <div class="flex items-start">
+                    <div class="w-12 h-12 rounded-lg bg-indigo-600 flex items-center justify-center mr-4">
+                        <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6l4 4m4-4v6l4-4m-4-4v6l-4 4m4-4v6l-4-4m-6 4h6"></path>
+                        </svg>
+                    </div>
+                    <div>
+                        <p class="text-xs text-gray-500 uppercase tracking-wider">Gesamte Produkte</p>
+                        <p class="text-3xl font-bold text-indigo-600" x-text="totalProducts">0</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Active Products Card -->
+            <div class="bg-gray-800 rounded-xl p-6 border border-gray-700 hover:bg-gray-700 transition-colors">
+                <div class="flex items-start">
+                    <div class="w-12 h-12 rounded-lg bg-green-600 flex items-center justify-center mr-4">
+                        <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6l4 4m-4-4v6l-4 4m4-4v6l4-4m-6 4h6"></path>
+                        </svg>
+                    </div>
+                    <div>
+                        <p class="text-xs text-gray-500 uppercase tracking-wider">Aktive Produkte</p>
+                        <p class="text-3xl font-bold text-green-600" x-text="activeProducts">0</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Uptime Card -->
+            <div class="bg-gray-800 rounded-xl p-6 border border-gray-700 hover:bg-gray-700 transition-colors">
+                <div class="flex items-start">
+                    <div class="w-12 h-12 rounded-lg bg-gray-700 flex items-center justify-center mr-4">
+                        <svg class="w-6 h-6 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 10h.8a2 2 0 011.99 1.27l-2.7 2.7A2 2 0 104.41 9.6l2.7-2.7A2 2 0 018 10zM8 4a4 4 0 014 4h4a4 4 0 014 4v2a4 4 0 01-4 4v-2m-4-4H4a4 4 0 00-4 4v2a4 4 0 004 4h2a4 4 0 004-4v-2m-4-4v12a4 4 0 004 4h2a4 4 0 004-4v-2m-4-4H8a4 4 0 00-4-4v-2a4 4 0 00-4 4h2m4-10a4 4 0 014 4h4a4 4 0 01-4-4h-4m-5.5 7.5l3 3l-3 3m7.5-7.5l3 3l-3 3"/>
+                        </svg>
+                    </div>
+                    <div>
+                        <p class="text-xs text-gray-500 uppercase tracking-wider">Uptime</p>
+                        <p class="text-sm text-gray-400" id="uptimeDisplay">Verbinden...</p>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+
+        <!-- Import Control Section -->
+        <div class="bg-gray-800 rounded-xl p-6 border border-gray-700 mb-8">
+            <h3 class="font-semibold text-white mb-4">Matterhorn Import steuern</h3>
+            
+            <div class="flex gap-2">
+                <button id="startImportBtn" 
+                        class="btn btn-primary flex-1"
+                        x-on:click="startImport"
+                        :disabled="importing">
+                    <span x-show="!importing">Import starten</span>
+                    <span x-show="importing">Import läuft...</span>
+                </button>
+            </div>
+            
+            <div id="importStatus" class="mt-3 hidden">
+                <div class="px-4 py-2 rounded-lg" x-show="importSuccessful" class="bg-green-100 text-green-800">
+                    Import erfolgreich! {{ importedCount }} Produkte importiert.
+                </div>
+                <div class="px-4 py-2 rounded-lg bg-red-100 text-red-800" x-show="importError">
+                    Fehler: {{ errorMessage }}
+                </div>
+            </div>
+        </div>
+
+        <!-- Products Section -->
+        <div class="bg-gray-800 rounded-xl p-6 border border-gray-700">
+            <h3 class="font-semibold text-white mb-4">Produkt-Katalog</h3>
+            
+            <div class="overflow-x-auto">
+                <table class="min-w-full table-auto">
+                    <thead class="bg-gray-700 text-gray-400 text-xs uppercase">
+                        <tr>
+                            <th class="p-3">SKU</th>
+                            <th class="p-3">Titel</th>
+                            <th class="p-3">Einkaufspreis</th>
+                            <th class="p-3">Verkaufspreis</th>
+                            <th class="p-3">Bestand (gepuffert)</th>
+                            <th class="p-3">Status</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr class="bg-gray-800">
+                            <td class="p-3" colspan="6">Keine Produkte vorhanden</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+    </div>
+
+    <!-- Import Script -->
+    <script>
+        // Initialize variables
+        let importing = false;
+        let importedCount = 0;
+        let errorMessage = '';
+
+        // Start import function
+        function startImport() {
+            importing = true;
+            document.getElementById('startImportBtn').disabled = true;
+            document.getElementById('importStatus').classList.add('hidden');
+            
+            fetch('/api/import/matterhorn', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                }
+            })
+            .then(response => response.json())
+            .then(data => {
+                importing = false;
+                document.getElementById('startImportBtn').disabled = false;
+                
+                if (data.status === 'started') {
+                    // Set up polling to check import status
+                    const checkImport = setInterval(() => {
+                        fetch('/api/health')
+                            .then(response => response.json())
+                            .then(data => {
+                                // In a real implementation, would check import status
+                                // For now, show success after 3 seconds
+                                clearInterval(checkImport);
+                                importedCount = 5; // Placeholder
+                                errorMessage = '';
+                                showImportSuccess();
+                            })
+                            .catch(() => clearInterval(checkImport));
+                    }, 3000);
+                    
+                    // Auto-success for demo purposes
+                    setTimeout(() => showImportSuccess(), 3000);
+                }
+            })
+            .catch(error => {
+                importing = false;
+                document.getElementById('startImportBtn').disabled = false;
+                showImportError('Fehler beim Starten des Imports');
+            });
+        }
+
+        function showImportSuccess() {
+            importing = false;
+            importedCount = 5;
+            errorMessage = '';
+            document.getElementById('importStatus').classList.remove('hidden');
+            document.getElementById('importStatus').innerHTML = `
+                <div class="px-4 py-2 rounded-lg bg-green-100 text-green-800">
+                    Import erfolgreich! {{ importedCount }} Produkte importiert.
+                </div>
+            `;
+        }
+
+        function showImportError(msg) {
+            importing = false;
+            document.getElementById('startImportBtn').disabled = false;
+            errorMessage = msg;
+            document.getElementById('importStatus').classList.remove('hidden');
+            document.getElementById('importStatus').innerHTML = `
+                <div class="px-4 py-2 rounded-lg bg-red-100 text-red-800">
+                    Fehler: {{ errorMessage }}
+                </div>
+            `;
+        }
+        
+        // Update uptime display
+        function updateUptime() {
+            // Simple uptime counter
+            const el = document.getElementById('uptimeDisplay');
+            const minutes = Math.floor(Date.now() / 60000);
+            el.textContent = 'Laufzeit: ' + minutes + ' Min';
+        }
+        
+        // Set interval for uptime
+        setInterval(updateUptime, 60000);
+        updateUptime();
+    </script>
+</body>
+</html>

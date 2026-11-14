@@ -1,5 +1,7 @@
+version: '3.8'
+
 services:
-  omni-core-middleware:
+  web:
     build: .
     container_name: omni-core-middleware
     restart: unless-stopped
