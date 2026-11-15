@@ -10,6 +10,12 @@
         .live-dot { animation: pulse 2s infinite; }
         @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
     </style>
+
+    <style>
+        #ai-agent-drawer { box-shadow: -20px 0 60px rgba(0,0,0,.45); }
+        .ai-agent-scroll::-webkit-scrollbar { width: 8px; }
+        .ai-agent-scroll::-webkit-scrollbar-thumb { background: #374151; border-radius: 999px; }
+    </style>
 </head>
 <body class="bg-gray-900 text-gray-100 min-h-screen">
     <nav class="bg-gray-800 border-b border-gray-700 sticky top-0 z-40">
@@ -29,5 +35,113 @@
     <main class="container mx-auto px-4 py-6">
         {% block content %}{% endblock %}
     </main>
+
+    <button id="ai-agent-launcher" type="button" onclick="toggleAIAgent()"
+        class="fixed bottom-5 right-5 z-50 rounded-full bg-indigo-600 hover:bg-indigo-500 text-white px-5 py-3 font-semibold shadow-xl">
+        AI Copilot
+    </button>
+
+    <aside id="ai-agent-drawer" class="fixed top-0 right-0 z-50 h-full w-full max-w-xl bg-gray-950 border-l border-gray-800 text-gray-100 hidden">
+        <div class="h-full flex flex-col">
+            <div class="p-4 border-b border-gray-800 flex items-center justify-between">
+                <div>
+                    <div class="font-semibold">Omni-Core AI Copilot</div>
+                    <div class="text-xs text-gray-400">Admin & Business Control · OmniRoute</div>
+                </div>
+                <button type="button" onclick="toggleAIAgent()" class="text-gray-400 hover:text-white text-xl">×</button>
+            </div>
+            <div id="ai-agent-messages" class="ai-agent-scroll flex-1 overflow-y-auto p-4 space-y-3">
+                <div class="bg-gray-900 border border-gray-800 rounded-lg p-3 text-sm">
+                    Ich kann Systemdiagnosen lesen und Konfigurations-, Business- und CRM-Aktionen vorbereiten.
+                    Schreibende Änderungen werden <strong>niemals direkt</strong> ausgeführt.
+                </div>
+            </div>
+            <div id="ai-agent-pending" class="hidden p-3 border-t border-amber-900 bg-amber-950/30"></div>
+            <form id="ai-agent-form" class="p-4 border-t border-gray-800">
+                <div class="flex gap-2">
+                    <textarea id="ai-agent-input" rows="2" maxlength="12000"
+                        placeholder="z. B. „Prüfe die letzten unbezahlten Bestellungen“"
+                        class="flex-1 rounded-lg bg-gray-900 border border-gray-700 px-3 py-2 text-sm focus:outline-none focus:border-indigo-500"></textarea>
+                    <button type="submit" class="self-end bg-indigo-600 hover:bg-indigo-500 rounded-lg px-4 py-2 font-semibold">Senden</button>
+                </div>
+            </form>
+        </div>
+    </aside>
+
+    <script>
+    let aiAgentConversationId = null;
+    function toggleAIAgent() {
+        document.getElementById('ai-agent-drawer').classList.toggle('hidden');
+        if (!document.getElementById('ai-agent-drawer').classList.contains('hidden')) {
+            document.getElementById('ai-agent-input').focus();
+        }
+    }
+    function aiAgentAdd(role, text) {
+        const box = document.getElementById('ai-agent-messages');
+        const el = document.createElement('div');
+        el.className = role === 'user'
+            ? 'ml-8 bg-indigo-950 border border-indigo-800 rounded-lg p-3 text-sm'
+            : 'mr-8 bg-gray-900 border border-gray-800 rounded-lg p-3 text-sm';
+        el.textContent = text || '';
+        box.appendChild(el);
+        box.scrollTop = box.scrollHeight;
+    }
+    function aiAgentEsc(value) {
+        return String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]));
+    }
+    function renderAIPending(actions) {
+        const box = document.getElementById('ai-agent-pending');
+        if (!actions || !actions.length) { box.classList.add('hidden'); box.innerHTML=''; return; }
+        box.classList.remove('hidden');
+        box.innerHTML = '<div class="font-semibold text-amber-300 mb-2">Bestätigung erforderlich</div>' +
+            actions.map(a => '<div class="border border-amber-800 rounded-lg p-3 mb-2 text-sm">' +
+                '<div class="font-medium">' + aiAgentEsc(a.summary) + '</div>' +
+                '<pre class="mt-2 text-xs text-gray-300 whitespace-pre-wrap">' + aiAgentEsc(JSON.stringify(a.diff, null, 2)) + '</pre>' +
+                '<div class="mt-3 flex gap-2">' +
+                '<button onclick="confirmAIAction(\'' + aiAgentEsc(a.action_id) + '\')" class="bg-emerald-600 hover:bg-emerald-500 rounded px-3 py-1.5">Übernehmen</button>' +
+                '<button onclick="cancelAIAction(\'' + aiAgentEsc(a.action_id) + '\')" class="bg-gray-700 hover:bg-gray-600 rounded px-3 py-1.5">Abbrechen</button>' +
+                '</div></div>').join('');
+    }
+    async function aiAgentPost(url, body) {
+        const response = await fetch(url, {
+            method: 'POST',
+            headers: {'Content-Type':'application/json','X-Actor':'admin'},
+            body: JSON.stringify(body)
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.detail || 'Request failed');
+        return data;
+    }
+    document.getElementById('ai-agent-form').addEventListener('submit', async function(e) {
+        e.preventDefault();
+        const input = document.getElementById('ai-agent-input');
+        const message = input.value.trim();
+        if (!message) return;
+        input.value = '';
+        aiAgentAdd('user', message);
+        try {
+            const data = await aiAgentPost('/api/ai-agent/chat', {message, conversation_id: aiAgentConversationId});
+            aiAgentConversationId = data.conversation_id;
+            aiAgentAdd('assistant', data.message || 'Aktion vorbereitet.');
+            renderAIPending(data.pending_actions || []);
+        } catch (err) {
+            aiAgentAdd('assistant', 'Fehler: ' + err.message);
+        }
+    });
+    async function confirmAIAction(actionId) {
+        try {
+            const data = await aiAgentPost('/api/ai-agent/actions/' + encodeURIComponent(actionId) + '/confirm', {});
+            aiAgentAdd('assistant', 'Änderung übernommen: ' + JSON.stringify(data.result));
+            renderAIPending([]);
+        } catch (err) { aiAgentAdd('assistant', 'Bestätigung fehlgeschlagen: ' + err.message); }
+    }
+    async function cancelAIAction(actionId) {
+        try {
+            await aiAgentPost('/api/ai-agent/actions/' + encodeURIComponent(actionId) + '/cancel', {});
+            aiAgentAdd('assistant', 'Aktion abgebrochen.');
+            renderAIPending([]);
+        } catch (err) { aiAgentAdd('assistant', 'Abbruch fehlgeschlagen: ' + err.message); }
+    }
+    </script>
 </body>
 </html>
