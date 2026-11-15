@@ -279,23 +279,41 @@ main() {
 
     # Repository klonen/aktualisieren
     local git_branch="${GIT_BRANCH:-main}"
+    sync_repo() {
+        if [ -d "$install_dir/.git" ]; then
+            log_info "Existierendes Repository gefunden, aktualisiere (Branch: $git_branch)..."
+            git -C "$install_dir" remote set-url origin "$git_url" >/dev/null 2>&1 || true
+            git -C "$install_dir" fetch --depth 1 origin "$git_branch" >/dev/null 2>&1 || git -C "$install_dir" fetch origin "$git_branch" >/dev/null 2>&1 || return 1
+            git -C "$install_dir" checkout -B "$git_branch" FETCH_HEAD >/dev/null 2>&1 || git -C "$install_dir" checkout "$git_branch" >/dev/null 2>&1 || return 1
+            git -C "$install_dir" reset --hard FETCH_HEAD >/dev/null 2>&1 || git -C "$install_dir" reset --hard "origin/$git_branch" >/dev/null 2>&1 || true
+            return 0
+        fi
+        return 1
+    }
+    fresh_clone() {
+        rm -rf "$install_dir"
+        mkdir -p "$(dirname "$install_dir")"
+        log_info "Klone Repository (Branch: $git_branch)..."
+        git clone --depth 1 --branch "$git_branch" "$git_url" "$install_dir"
+    }
+
     if [ -d "$install_dir/.git" ]; then
-        log_info "Existierendes Repository gefunden, aktualisiere (Branch: $git_branch)..."
-        git -C "$install_dir" remote set-url origin "$git_url" >/dev/null 2>&1 || true
-        git -C "$install_dir" fetch origin "$git_branch" >/dev/null 2>&1 || git -C "$install_dir" fetch origin >/dev/null 2>&1 || log_warn "git fetch fehlgeschlagen, verwende lokalen Stand"
-        git -C "$install_dir" checkout "$git_branch" >/dev/null 2>&1 || true
-        git -C "$install_dir" reset --hard "origin/$git_branch" >/dev/null 2>&1 || git -C "$install_dir" pull --ff-only >/dev/null 2>&1 || log_warn "Repository konnte nicht vollständig aktualisiert werden (lokaler Stand wird verwendet)"
+        if ! sync_repo; then
+            log_warn "Repository-Update fehlgeschlagen, führe frischen Klon durch..."
+            local backup_dir="${install_dir}.bak.$(date +%s)"
+            mv "$install_dir" "$backup_dir" || { log_err "Kann $install_dir nicht sichern"; exit 1; }
+            fresh_clone || { log_err "Git Klon fehlgeschlagen ($git_url, Branch: $git_branch)"; exit 1; }
+        fi
     elif [ -d "$install_dir" ] && [ "$(ls -A "$install_dir" 2>/dev/null)" ]; then
         log_warn "Verzeichnis $install_dir ist kein Git-Repository. Sichere und klone neu..."
         mv "$install_dir" "${install_dir}.bak.$(date +%s)" || { log_err "Kann $install_dir nicht sichern"; exit 1; }
-        git clone --depth 1 --branch "$git_branch" "$git_url" "$install_dir" || { log_err "Git Klon fehlgeschlagen"; exit 1; }
+        fresh_clone || { log_err "Git Klon fehlgeschlagen ($git_url, Branch: $git_branch)"; exit 1; }
     else
-        log_info "Klone Repository (Branch: $git_branch)..."
-        mkdir -p "$(dirname "$install_dir")"
-        git clone --depth 1 --branch "$git_branch" "$git_url" "$install_dir" || { log_err "Git Klon fehlgeschlagen"; exit 1; }
+        fresh_clone || { log_err "Git Klon fehlgeschlagen ($git_url, Branch: $git_branch)"; exit 1; }
     fi
 
     cd "$install_dir"
+    log_info "Repository bereit: $(git rev-parse --short HEAD 2>/dev/null || echo 'unbekannt') auf Branch $git_branch"
 
     # .env Datei sicherstellen
     if [ ! -f .env ]; then
@@ -328,36 +346,58 @@ EOF
 
     # Projektdateien in den Container übertragen
     log_info "Übertrage Projektdateien in den Container (/wawi)..."
-    if ! pct exec "$ct_id" -- mkdir -p /wawi >/dev/null 2>&1; then
-        log_warn "Konnte /wawi im Container nicht erstellen"
-    fi
+    pct exec "$ct_id" -- mkdir -p /wawi >/dev/null 2>&1 || true
+    local transfer_ok="0"
     local tmp_tar
     tmp_tar=$(mktemp /tmp/wawi-src.XXXXXX.tar)
     if tar -C "$install_dir" --exclude='.git' -cf "$tmp_tar" .; then
-        if ! pct push "$ct_id" "$tmp_tar" /tmp/wawi-src.tar >/dev/null 2>&1 || ! pct exec "$ct_id" -- bash -lc "mkdir -p /wawi && tar -xf /tmp/wawi-src.tar -C /wawi && rm -f /tmp/wawi-src.tar" >/dev/null 2>&1; then
+        if pct push "$ct_id" "$tmp_tar" /tmp/wawi-src.tar >/dev/null 2>&1 && pct exec "$ct_id" -- bash -lc "mkdir -p /wawi && tar -xf /tmp/wawi-src.tar -C /wawi && rm -f /tmp/wawi-src.tar" >/dev/null 2>&1; then
+            transfer_ok="1"
+        else
             log_warn "pct push/tar-Transfer fehlgeschlagen, versuche direkten Stream..."
-            tar -C "$install_dir" --exclude='.git' -cf - . | pct exec "$ct_id" -- tar -C /wawi -xf - >/dev/null 2>&1 || log_warn "Projekttransfer in Container fehlgeschlagen"
+            if tar -C "$install_dir" --exclude='.git' -cf - . | pct exec "$ct_id" -- tar -C /wawi -xf - >/dev/null 2>&1; then
+                transfer_ok="1"
+            fi
         fi
     else
         log_warn "Archiv-Erstellung fehlgeschlagen"
     fi
     rm -f "$tmp_tar"
+    if [ "$transfer_ok" != "1" ] || ! pct exec "$ct_id" -- test -f /wawi/scripts/wawi-bootstrap.sh >/dev/null 2>&1; then
+        log_err "Projekttransfer in Container fehlgeschlagen oder Bootstrap-Script fehlt in /wawi."
+        exit 1
+    fi
+    # .env auch im Container bereitstellen, falls vorhanden
+    if [ -f "$install_dir/.env" ]; then
+        pct push "$ct_id" "$install_dir/.env" /wawi/.env >/dev/null 2>&1 || true
+    fi
 
     # --- Bootstrap ausführen ---
     log_info "------------------------------------------"
     log_info "[12/15] Führe Bootstrap innerhalb des Containers aus..."
 
     # Bootstrap innerhalb des Containers ausführen
+    local bootstrap_ok="0"
     if pct exec "$ct_id" -- test -f /wawi/scripts/wawi-bootstrap.sh >/dev/null 2>&1; then
         log_info "Starte optimiertes Bootstrap im Container..."
-        pct exec "$ct_id" -- bash -lc "cd /wawi && INTERACTIVE=false ADMIN_EMAIL=admin@omni-core.local ADMIN_PASSWORD=SecurePass123! bash scripts/wawi-bootstrap.sh install" || {
-            log_warn "Bootstrap im Container fehlgeschlagen (Details oben/prüfen)."
-        }
+        if pct exec "$ct_id" -- bash -lc "cd /wawi && INTERACTIVE=false ADMIN_EMAIL=${ADMIN_EMAIL:-admin@omni-core.local} ADMIN_PASSWORD=${ADMIN_PASSWORD:-SecurePass123!} bash scripts/wawi-bootstrap.sh install"; then
+            bootstrap_ok="1"
+        else
+            log_err "Bootstrap im Container fehlgeschlagen."
+        fi
     elif [ -f "$install_dir/scripts/wawi-bootstrap.sh" ]; then
         log_warn "Bootstrap-Script im Container nicht gefunden, versuche lokalen Fallback..."
-        (cd "$install_dir" && INTERACTIVE=false ADMIN_EMAIL=admin@omni-core.local ADMIN_PASSWORD=SecurePass123! bash scripts/wawi-bootstrap.sh install) || log_warn "Lokales Bootstrap fehlgeschlagen"
+        if (cd "$install_dir" && INTERACTIVE=false ADMIN_EMAIL=${ADMIN_EMAIL:-admin@omni-core.local} ADMIN_PASSWORD=${ADMIN_PASSWORD:-SecurePass123!} bash scripts/wawi-bootstrap.sh install); then
+            bootstrap_ok="1"
+        else
+            log_err "Lokales Bootstrap fehlgeschlagen."
+        fi
     else
-        log_warn "Bootstrap Script nicht im Repository gefunden."
+        log_err "Bootstrap Script nicht im Repository gefunden."
+    fi
+    if [ "$bootstrap_ok" != "1" ]; then
+        log_err "Installation unvollständig: Bootstrap konnte nicht erfolgreich ausgeführt werden."
+        exit 1
     fi
 
     # --- Healthchecks ---
@@ -374,7 +414,7 @@ EOF
     fi
 
     # Prüfe Netzwerk
-    if pct exec "$ct_id" -- ping -c 1 8.8.8.g 2>/dev/null; then
+    if pct exec "$ct_id" -- ping -c 1 -W 2 8.8.8.8 >/dev/null 2>&1 || pct exec "$ct_id" -- ping -c 1 -W 2 1.1.1.1 >/dev/null 2>&1; then
         log_success "Netzwerk ist erreichbar"
     else
         log_warn "Netzwerk nicht vollständig erreichbar"
@@ -399,7 +439,10 @@ EOF
     log_info ""
     log_info "LXC:"
     log_info "  Hostname: $hostname"
-    log_info "  IP-Adresse: $(pct exec "$ct_id" -- ip addr show 2>/dev/null | grep 'inet ' | head -1 | awk '{print $2}' || echo "zu prüfen")"
+    local ct_ip
+    ct_ip=$(pct exec "$ct_id" -- hostname -I 2>/dev/null | awk '{print $1}' || true)
+    ct_ip=${ct_ip:-$(pct exec "$ct_id" -- ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -1 || echo "zu prüfen")}
+    log_info "  IP-Adresse: ${ct_ip}"
     log_info "  CPU: $cores Kerne"
     log_info "  RAM: ${memory} MB"
     log_info "  Disk: ${disk} GB"
@@ -417,12 +460,16 @@ EOF
     log_info "  Shopware: KONFIGURIERT"
     log_info ""
     log_info "WebIF:"
-    log_info "  http://$(pct exec "$ct_id" -- ip addr show 2>/dev/null | grep 'inet ' | head -1 | awk '{print $2}' || echo "CONTAINER-IP"):8000"
+    log_info "  http://${ct_ip:-CONTAINER-IP}:8000"
     log_info ""
     log_info "API:"
     log_info "  http://$(pct exec "$ct_id" -- ip addr show 2>/dev/null | grep 'inet ' | head -1 | awk '{print $2}' || echo "CONTAINER-IP"):8000/docs"
     log_info ""
-    log_info "Systemstatus: PRODUCTION READY (teilweise - konfigurieren Sie fehlende Integrationen per WebIF)"
+    if [ "$all_ok" = "1" ]; then
+        log_success "Systemstatus: PRODUCTION READY (Bootstrap erfolgreich; Integrationen ggf. im WebIF konfigurieren)"
+    else
+        log_warn "Systemstatus: TEILWEISE - Bootstrap abgeschlossen, aber Healthchecks meldeten Warnungen"
+    fi
     log_info ""
     log_info "=========================================="
 }
