@@ -50,6 +50,7 @@ from database import (
 )
 from services.asset_manager import create_asset_from_upload, get_asset, list_assets, update_asset, create_asset_version_from_upload, list_asset_versions
 from services.creative_studio import create_project, list_projects, get_project, update_project, create_job, list_jobs, get_job, update_job, generate_image_for_job, list_outputs, create_video_project, list_video_projects, create_video_scene, list_video_scenes, create_campaign, list_campaigns as list_creative_campaigns, get_campaign, update_campaign
+from services.product_fidelity import evaluate_output_fidelity
 from services.agent_manager import (
     create_agent_profile, list_agent_profiles, get_agent_profile, update_agent_profile,
     create_conversation, list_conversations, get_conversation,
@@ -259,6 +260,15 @@ class CreativeImageGeneration(BaseModel):
     product_reference: str | None = None
     width: int = Field(default=1024, ge=64, le=4096)
     height: int = Field(default=1024, ge=64, le=4096)
+
+
+class ProductFidelityCheck(BaseModel):
+    """Validated product fidelity check input."""
+
+    original_image_url: str = Field(min_length=1, max_length=2048)
+    generated_image_url: str = Field(min_length=1, max_length=2048)
+    model_id: str | None = None
+    product_context: dict[str, Any] = Field(default_factory=dict)
 
 
 class VideoProjectCreate(BaseModel):
@@ -681,6 +691,12 @@ async def agent_manager_page(request: Request) -> HTMLResponse:
 async def creative_studio_page(request: Request) -> HTMLResponse:
     """Render the AI Creative Studio."""
     return templates.TemplateResponse("creative_studio.html", {"request": request, "projects": await list_projects(limit=100), "jobs": await list_jobs(limit=100), "outputs": await list_outputs(limit=100), "campaigns": await list_creative_campaigns(limit=100)})
+
+
+@app.get("/admin/photo-studio", response_class=HTMLResponse)
+async def photo_studio_page(request: Request) -> HTMLResponse:
+    """Render product fidelity checks."""
+    return templates.TemplateResponse("photo_studio.html", {"request": request, "outputs": await list_outputs(limit=100)})
 
 
 @app.get("/api/health")
@@ -1383,6 +1399,27 @@ async def update_creative_campaign_record(campaign_id: str, payload: CampaignUpd
     if updated is None:
         raise HTTPException(status_code=404, detail="Campaign not found")
     return updated
+
+
+@app.post("/api/creative/outputs/{output_id}/fidelity-check")
+async def check_creative_output_fidelity(output_id: str, payload: ProductFidelityCheck, request: Request) -> dict[str, Any]:
+    """Evaluate a generated output against its original product image."""
+    from database import creative_output_get
+
+    existing = await creative_output_get(output_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="Creative output not found")
+    try:
+        return await evaluate_output_fidelity(
+            output_id,
+            original_image_url=payload.original_image_url,
+            generated_image_url=payload.generated_image_url,
+            runtime=runtime,
+            model_id=payload.model_id,
+            product_context=payload.product_context,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.get("/api/stats")

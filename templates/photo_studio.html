@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="de">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Omni-Core Photo Studio</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="min-h-screen bg-slate-950 text-slate-100">
+    <header class="border-b border-slate-800 bg-slate-900">
+        <div class="mx-auto max-w-7xl px-4 py-4 flex items-center justify-between">
+            <div>
+                <h1 class="text-2xl font-bold">Photo Studio</h1>
+                <p class="text-sm text-slate-400">Produktgenauigkeit und Bildqualität prüfen</p>
+            </div>
+            <a class="text-indigo-400 hover:text-indigo-300" href="/admin/creative">Zurück zum Creative Studio</a>
+        </div>
+    </header>
+    <main class="mx-auto max-w-7xl px-4 py-8 space-y-8">
+        <section class="rounded-xl border border-slate-800 bg-slate-900 p-6">
+            <h2 class="text-lg font-semibold">Fidelity-Prüfung</h2>
+            <form id="fidelity-form" class="mt-4 grid gap-4 md:grid-cols-2">
+                <label class="block">
+                    <span class="text-sm text-slate-300">Output-ID</span>
+                    <input class="mt-1 block w-full rounded border border-slate-700 bg-slate-950 p-2" type="text" name="output_id" required>
+                </label>
+                <label class="block">
+                    <span class="text-sm text-slate-300">Originalbild-URL</span>
+                    <input class="mt-1 block w-full rounded border border-slate-700 bg-slate-950 p-2" type="url" name="original_image_url" required>
+                </label>
+                <label class="block md:col-span-2">
+                    <span class="text-sm text-slate-300">Generiertes Bild-URL</span>
+                    <input class="mt-1 block w-full rounded border border-slate-700 bg-slate-950 p-2" type="url" name="generated_image_url" required>
+                </label>
+                <div class="md:col-span-2">
+                    <button class="rounded bg-indigo-600 px-4 py-2 font-semibold hover:bg-indigo-500" type="submit">Prüfen</button>
+                </div>
+            </form>
+            <pre id="fidelity-result" class="mt-4 overflow-x-auto rounded-lg bg-slate-950 p-4 text-sm text-slate-300"></pre>
+        </section>
+
+        <section class="rounded-xl border border-slate-800 bg-slate-900 p-6">
+            <h2 class="text-lg font-semibold">Outputs</h2>
+            <div class="mt-4 overflow-x-auto">
+                <table class="min-w-full text-sm">
+                    <thead class="text-slate-400">
+                        <tr>
+                            <th class="px-3 py-2 text-left">ID</th>
+                            <th class="px-3 py-2 text-left">Job</th>
+                            <th class="px-3 py-2 text-left">Asset</th>
+                            <th class="px-3 py-2 text-left">Freigabe</th>
+                            <th class="px-3 py-2 text-left">Fidelity</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for output in outputs %}
+                        <tr class="border-t border-slate-800">
+                            <td class="px-3 py-2 font-mono text-xs">{{ output.id }}</td>
+                            <td class="px-3 py-2 font-mono text-xs">{{ output.job_id }}</td>
+                            <td class="px-3 py-2 font-mono text-xs">{{ output.asset_id }}</td>
+                            <td class="px-3 py-2">{{ output.approval_status }}</td>
+                            <td class="px-3 py-2">{{ output.fidelity_score if output.fidelity_score is not none else '-' }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </section>
+    </main>
+    <script>
+        const form = document.getElementById('fidelity-form');
+        const result = document.getElementById('fidelity-result');
+        form.addEventListener('submit', async (event) => {
+            event.preventDefault();
+            const formData = new FormData(form);
+            const payload = {
+                original_image_url: formData.get('original_image_url'),
+                generated_image_url: formData.get('generated_image_url'),
+            };
+            const response = await fetch('/api/creative/outputs/' + encodeURIComponent(formData.get('output_id')) + '/fidelity-check', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload),
+            });
+            result.textContent = await response.text();
+        });
+    </script>
+</body>
+</html>

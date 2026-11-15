@@ -54,6 +54,30 @@ class OmniRouteClient:
             logger.error("OmniRoute AI analysis failed: %s", exc)
             return None
 
+    async def analyze_images(self, prompt: str, image_urls: list[str], model: str = "gemini-2.5-flash") -> Optional[Dict[str, Any]]:
+        """Request structured image analysis from an OpenAI-compatible OmniRoute model."""
+        if not image_urls:
+            return None
+        url = f"{self.base_url}/chat/completions"
+        content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
+        for image_url in image_urls:
+            content.append({"type": "image_url", "image_url": {"url": image_url}})
+        payload = {
+            "model": model,
+            "messages": [{"role": "user", "content": content}],
+            "response_format": {"type": "json_object"},
+        }
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                response = await client.post(url, headers=self.headers, json=payload)
+                response.raise_for_status()
+                data = response.json()
+                content_str = data["choices"][0]["message"]["content"]
+                return json.loads(content_str)
+        except Exception as exc:
+            logger.error("OmniRoute image analysis failed: %s", exc)
+            return None
+
     async def optimize_seo(self, product_data: Dict[str, Any]) -> Dict[str, str]:
         """Optimize SEO title/description via OmniRoute."""
         prompt = f"Optimize SEO for this product: {json.dumps(product_data)}. Provide 'title' and 'description'."
