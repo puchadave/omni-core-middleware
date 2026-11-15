@@ -1,61 +1,77 @@
 {% extends "base.html" %}
-{% block title %}Produkte | Omni-Core Admin{% endblock %}
+{% block title %}Produkte | OMNI-CORE{% endblock %}
 {% block content %}
 <div x-data="productsPage()" x-init="load()" class="space-y-4 max-w-7xl mx-auto">
   <div class="flex flex-col md:flex-row md:items-end md:justify-between gap-3">
-    <div><h1 class="text-2xl md:text-3xl font-bold">Produktverwaltung</h1><p class="text-slate-400">Produkte anlegen, bearbeiten, löschen, suchen und filtern (reale Katalogdaten).</p></div>
-    <div class="flex gap-2"><button @click="openCreate()" class="btn btn-primary">+ Produkt</button><button @click="load()" class="btn btn-secondary">Aktualisieren</button></div>
+    <div>
+      <h1 class="text-2xl md:text-3xl font-bold">Produktverwaltung</h1>
+      <p class="text-slate-400">Produkte anlegen, bearbeiten und pflegen. Die Daten werden direkt aus Ihrem Katalog geladen (keine Platzhalter).</p>
+    </div>
+    <div class="flex gap-2">
+      <a href="/ui/matterhorn-import" class="btn btn-secondary">Produkte importieren</a>
+      <button @click="openCreate()" class="btn btn-primary">+ Neues Produkt</button>
+    </div>
   </div>
 
-  <div class="card p-4 grid md:grid-cols-4 gap-3">
-    <div class="md:col-span-2"><label class="label">Suche</label><input x-model="q" class="input" placeholder="SKU, Titel, Kategorie, Beschreibung"></div>
-    <div><label class="label">Status</label><select x-model="status" class="select"><option value="">Alle</option><option value="active">active</option><option value="draft">draft</option><option value="paused">paused</option><option value="archived">archived</option></select></div>
-    <div><label class="label">Typ</label><select x-model="kind" class="select"><option value="">Alle</option><option value="single">Einzelprodukt</option><option value="bundle">Bundle</option></select></div>
+  <div class="card p-4 space-y-3">
+    <div class="grid md:grid-cols-4 gap-3">
+      <div class="md:col-span-2"><label class="label">Suche</label><input x-model="q" class="input" placeholder="Nach Artikelnummer, Titel oder Kategorie suchen"></div>
+      <div><label class="label">Status</label><select x-model="status" class="select"><option value="">Alle Status</option><option value="active">Aktiv</option><option value="draft">Entwurf</option><option value="paused">Pausiert</option><option value="archived">Archiviert</option></select></div>
+      <div><label class="label">Typ</label><select x-model="kind" class="select"><option value="">Alle Typen</option><option value="single">Einzelprodukt</option><option value="bundle">Bundle</option></select></div>
+    </div>
   </div>
 
-  <template x-if="error"><div class="card p-4 border-red-800 text-red-200 bg-red-950/30" x-text="error"></div></template>
+  <template x-if="error"><div class="banner banner-error"><div class="font-medium">Produkte konnten nicht geladen werden</div><div class="text-sm mt-1" x-text="error"></div><button class="btn btn-secondary !py-1.5 mt-2" @click="load()">Erneut versuchen</button></div></template>
 
-  <div class="card">
-    <div class="flex items-center justify-between px-4 py-3 border-b border-slate-800"><div class="text-sm text-slate-400"><span x-text="filtered().length"></span> von <span x-text="items.length"></span> Produkten</div></div>
-    <div class="table-wrap" x-show="!loading">
-      <table class="tbl">
-        <thead><tr><th>SKU</th><th>Titel</th><th>Kategorie</th><th>EK-Preis</th><th>Bestand</th><th>Status</th><th>Typ</th><th>Aktualisiert</th><th>Aktionen</th></tr></thead>
+  <div class="card overflow-hidden">
+    <div class="flex items-center justify-between px-4 py-3 border-b border-slate-800">
+      <div class="text-sm text-slate-400"><span x-text="filtered().length"></span> von <span x-text="items.length"></span> Produkten</div>
+      <button @click="load()" class="text-sm text-indigo-400 hover:underline">Liste aktualisieren</button>
+    </div>
+    <div x-show="loading" class="p-4 space-y-2"><div class="skeleton h-10 w-full"></div><div class="skeleton h-10 w-full"></div><div class="skeleton h-10 w-5/6"></div></div>
+    <div class="table-wrap" x-show="!loading && !error">
+      <table class="tbl" x-show="filtered().length>0">
+        <thead><tr><th>Artikelnummer (SKU)</th><th>Produkt</th><th>Kategorie</th><th>Einkaufspreis</th><th>Bestand</th><th>Status</th><th>Typ</th><th>Aktionen</th></tr></thead>
         <tbody>
           <template x-for="p in filtered()" :key="p.sku">
             <tr class="hover:bg-slate-800/40">
               <td class="font-mono text-xs" x-text="p.sku"></td>
-              <td><div class="font-medium" x-text="p.ai_title||p.title||'—'"></div><div class="text-xs text-slate-500 line-clamp-2" x-text="p.raw_description||''"></div></td>
+              <td><div class="font-medium" x-text="p.ai_title||p.title||'Ohne Titel'"></div><div class="text-xs text-slate-500 line-clamp-2 max-w-md" x-text="p.raw_description||'Keine Beschreibung hinterlegt'"></div></td>
               <td x-text="p.category||'—'"></td>
               <td x-text="p.supplier_price!=null ? Number(p.supplier_price).toFixed(2)+' €' : '—'"></td>
-              <td><span :class="Number(p.stock||0)>0?'text-emerald-300':'text-amber-300'" x-text="p.stock??0"></span></td>
-              <td><span class="badge border-slate-700 bg-slate-800" x-text="p.status||'—'"></span></td>
-              <td x-text="p.is_bundle?'Bundle':'Einzel'"></td>
-              <td class="text-xs text-slate-400" x-text="fmtDate(p.updated_at)"></td>
-              <td class="whitespace-nowrap"><button class="text-indigo-400 hover:text-indigo-300 mr-2" @click="openEdit(p)">Bearbeiten</button><button class="text-red-400 hover:text-red-300" @click="remove(p)">Löschen</button></td>
+              <td><span class="badge" :class="Number(p.stock||0)>0?'badge-green':'badge-amber'" x-text="Number(p.stock||0)>0 ? (p.stock+' verfügbar') : 'Nicht auf Lager'"></span></td>
+              <td><span class="badge" :class="uiBadgeClass(p.status)" x-text="uiStatusLabel(p.status)"></span></td>
+              <td x-text="p.is_bundle?'Bundle':'Einzelprodukt'"></td>
+              <td class="whitespace-nowrap"><button class="text-indigo-400 hover:text-indigo-300 mr-3" @click="openEdit(p)">Bearbeiten</button><button class="text-red-400 hover:text-red-300" @click="remove(p)">Löschen</button></td>
             </tr>
           </template>
-          <tr x-show="filtered().length===0"><td colspan="9" class="p-6 text-center text-slate-400">Keine Produkte gefunden. Lege ein Produkt an oder importiere über Matterhorn.</td></tr>
         </tbody>
       </table>
+      <template x-if="filtered().length===0"><div x-html="emptyHtml()"></div></template>
     </div>
-    <div x-show="loading" class="p-6 text-slate-400">Lade Produkte…</div>
   </div>
 
-  <!-- Modal -->
-  <div x-show="modal" x-cloak class="fixed inset-0 z-40 flex items-center justify-center p-4">
-    <div class="absolute inset-0 bg-black/60" @click="modal=false"></div>
-    <div class="relative w-full max-w-2xl card p-5 space-y-4">
-      <div class="flex items-center justify-between"><h2 class="text-lg font-semibold" x-text="formMode==='create'?'Produkt anlegen':'Produkt bearbeiten'"></h2><button @click="modal=false" class="text-slate-400 hover:text-white">✕</button></div>
-      <div class="grid md:grid-cols-2 gap-3">
-        <div><label class="label">SKU *</label><input x-model="form.sku" :disabled="formMode==='edit'" class="input font-mono" placeholder="SKU-123"></div>
-        <div><label class="label">Status</label><select x-model="form.status" class="select"><option>active</option><option>draft</option><option>paused</option><option>archived</option></select></div>
-        <div class="md:col-span-2"><label class="label">Titel *</label><input x-model="form.title" class="input"></div>
-        <div><label class="label">Kategorie</label><input x-model="form.category" class="input"></div>
-        <div><label class="label">EK-Preis (Supplier)</label><input x-model.number="form.supplier_price" type="number" step="0.01" min="0" class="input"></div>
-        <div><label class="label">Bestand</label><input x-model.number="form.stock" type="number" step="1" min="0" class="input"></div>
-        <div class="md:col-span-2"><label class="label">Beschreibung</label><textarea x-model="form.raw_description" rows="4" class="textarea"></textarea></div>
+  <!-- Edit/Create Drawer -->
+  <div x-show="drawer" x-cloak class="fixed inset-0 z-50">
+    <div class="absolute inset-0 bg-black/60" @click="closeDrawer()"></div>
+    <div class="absolute right-0 top-0 h-full w-full max-w-2xl bg-slate-950 border-l border-slate-800 shadow-2xl flex flex-col" @keydown.escape.window="if(drawer) closeDrawer()">
+      <div class="p-4 border-b border-slate-800 flex items-center justify-between"><div><div class="text-sm text-slate-400" x-text="formMode==='create'?'Neues Produkt':'Produkt bearbeiten'"></div><div class="font-semibold text-lg" x-text="formMode==='create'?'Produkt anlegen':(form.sku||'Produkt')"></div></div><button class="btn btn-ghost !py-1.5" @click="closeDrawer()">Schließen</button></div>
+      <div class="flex-1 overflow-y-auto p-4 space-y-4">
+        <div class="banner banner-warn text-sm" x-show="formMode==='create'">Pflichtfelder: Artikelnummer (SKU) und Titel. Die Artikelnummer kann nach dem Anlegen nicht mehr geändert werden.</div>
+        <div class="grid md:grid-cols-2 gap-3">
+          <div><label class="label">Artikelnummer (SKU) *</label><input x-model="form.sku" :disabled="formMode==='edit'" class="input font-mono" placeholder="z. B. SKU-123"><p class="help-text">Eindeutige Kennung des Produkts.</p></div>
+          <div><label class="label">Status</label><select x-model="form.status" class="select"><option value="active">Aktiv (sichtbar/verkaufbar)</option><option value="draft">Entwurf</option><option value="paused">Pausiert</option><option value="archived">Archiviert</option></select></div>
+          <div class="md:col-span-2"><label class="label">Titel *</label><input x-model="form.title" class="input" placeholder="Aussagekräftiger Produktname"></div>
+          <div><label class="label">Kategorie</label><input x-model="form.category" class="input" placeholder="z. B. Bekleidung"></div>
+          <div><label class="label">Einkaufspreis (netto)</label><input x-model.number="form.supplier_price" type="number" step="0.01" min="0" class="input" placeholder="0,00"><p class="help-text">Ihr Bezugspreis beim Lieferanten.</p></div>
+          <div><label class="label">Bestand</label><input x-model.number="form.stock" type="number" step="1" min="0" class="input"><p class="help-text">Verfügbare Stückzahl im Lager.</p></div>
+          <div class="md:col-span-2"><label class="label">Beschreibung</label><textarea x-model="form.raw_description" rows="5" class="textarea" placeholder="Produktbeschreibung für Kunden und Kanäle"></textarea></div>
+        </div>
       </div>
-      <div class="flex justify-end gap-2"><button @click="modal=false" class="btn btn-secondary">Abbrechen</button><button @click="save()" class="btn btn-primary" :disabled="saving"><span x-show="!saving">Speichern</span><span x-show="saving">Speichere…</span></button></div>
+      <div class="p-4 border-t border-slate-800 flex justify-end gap-2">
+        <button @click="closeDrawer()" class="btn btn-secondary">Abbrechen</button>
+        <button @click="save()" class="btn btn-primary" :disabled="saving"><span x-show="!saving">Speichern</span><span x-show="saving">Wird gespeichert…</span></button>
+      </div>
     </div>
   </div>
 </div>
@@ -65,13 +81,18 @@
 function productsPage(){
   const empty=()=>({sku:'',title:'',category:'',supplier_price:0,stock:0,raw_description:'',status:'active'});
   return {
-    items:[],q:'',status:'',kind:'',loading:false,error:'',modal:false,saving:false,formMode:'create',form:empty(),
-    async load(){this.loading=true; this.error=''; try{const d=await apiFetch('/api/products?limit=1000'); this.items=Array.isArray(d)?d:(d.items||[]);}catch(e){this.error=e.message; this.items=[];} this.loading=false;},
+    items:[],q:'',status:'',kind:'',loading:false,error:'',drawer:false,saving:false,formMode:'create',form:empty(),
+    async load(){this.loading=true; this.error=''; try{const d=await apiFetch('/api/products?limit=500'); this.items=Array.isArray(d)?d:(d.items||[]);}catch(e){this.error=e.message; this.items=[];} this.loading=false;},
     filtered(){const q=(this.q||'').toLowerCase(); return this.items.filter(p=>{if(this.status && String(p.status)!==this.status) return false; if(this.kind==='bundle' && !p.is_bundle) return false; if(this.kind==='single' && p.is_bundle) return false; if(!q) return true; return [p.sku,p.title,p.ai_title,p.category,p.raw_description].some(v=>String(v||'').toLowerCase().includes(q));});},
-    openCreate(){this.formMode='create'; this.form=empty(); this.modal=true;},
-    openEdit(p){this.formMode='edit'; this.form={sku:p.sku,title:p.title||'',category:p.category||'',supplier_price:Number(p.supplier_price||0),stock:Number(p.stock||0),raw_description:p.raw_description||'',status:p.status||'active'}; this.modal=true;},
-    async save(){this.saving=true; try{const url=this.formMode==='create'?'/api/products':'/api/products/'+encodeURIComponent(this.form.sku); const method=this.formMode==='create'?'POST':'PUT'; await apiFetch(url,{method, body:JSON.stringify({sku:this.form.sku,title:this.form.title,category:this.form.category,supplier_price:Number(this.form.supplier_price||0),stock:parseInt(this.form.stock||0,10),raw_description:this.form.raw_description})}); toast('Produkt gespeichert','success'); this.modal=false; await this.load();}catch(e){toast(e.message,'error')} this.saving=false;},
-    async remove(p){if(!confirm(`Produkt ${p.sku} wirklich löschen?`)) return; try{await apiFetch('/api/products/'+encodeURIComponent(p.sku),{method:'DELETE'}); toast('Produkt gelöscht','success'); await this.load();}catch(e){toast(e.message,'error')}}
+    emptyHtml(){ if(this.items.length===0) return renderEmptyState({icon:'🛍️', title:'Noch keine Produkte vorhanden', text:'Legen Sie Ihr erstes Produkt an oder importieren Sie Artikel über den Lieferanten-Import (Matterhorn).', ctaLabel:'Produkte importieren', ctaHref:'/ui/matterhorn-import'}); return renderEmptyState({icon:'🔎', title:'Keine passenden Produkte', text:'Passen Sie die Suche oder Filter an, um Ergebnisse zu sehen.'}); },
+    openCreate(){this.formMode='create'; this.form=empty(); this.drawer=true;},
+    openEdit(p){this.formMode='edit'; this.form={sku:p.sku,title:p.title||'',category:p.category||'',supplier_price:Number(p.supplier_price||0),stock:Number(p.stock||0),raw_description:p.raw_description||'',status:p.status||'active'}; this.drawer=true;},
+    closeDrawer(){this.drawer=false;},
+    async save(){
+      if(!this.form.sku || !this.form.title){ toast('Bitte füllen Sie die Pflichtfelder Artikelnummer (SKU) und Titel aus.','warning'); return; }
+      this.saving=true; try{const url=this.formMode==='create'?'/api/products':'/api/products/'+encodeURIComponent(this.form.sku); const method=this.formMode==='create'?'POST':'PUT'; await apiFetch(url,{method, body:JSON.stringify({sku:this.form.sku,title:this.form.title,category:this.form.category,supplier_price:Number(this.form.supplier_price||0),stock:parseInt(this.form.stock||0,10),raw_description:this.form.raw_description})}); toast(this.formMode==='create'?'Produkt wurde angelegt.':'Änderungen wurden gespeichert.','success'); this.drawer=false; await this.load();}catch(e){toast(e.message,'error')} this.saving=false;
+    },
+    async remove(p){if(!confirm(`Möchten Sie das Produkt „${p.title||p.sku}“ wirklich löschen? Dieser Schritt kann nicht rückgängig gemacht werden.`)) return; try{await apiFetch('/api/products/'+encodeURIComponent(p.sku),{method:'DELETE'}); toast('Produkt wurde gelöscht.','success'); await this.load();}catch(e){toast(e.message,'error')}}
   }
 }
 </script>

@@ -42,6 +42,10 @@ class InsufficientStockError(DatabaseError):
     """Raised when an order cannot reserve inventory without overselling."""
 
 
+class FulfillmentBlockedError(DatabaseError):
+    """Raised when payment or an explicit lock prevents order fulfillment."""
+
+
 def uses_postgres() -> bool:
     """Return whether the configured backend is PostgreSQL."""
     return DATABASE_URL.startswith("postgresql://") or DATABASE_URL.startswith("postgres://")
@@ -2588,10 +2592,22 @@ async def recent_logs(limit: int = 50) -> list[dict[str, Any]]:
         return [dict(row) for row in rows]
 
 
-async def upsert_product(*, sku: str, title: str, category: str, supplier_price: float, stock: int, source_hash: str, raw_description: str = "") -> bool:
+async def upsert_product(
+    *,
+    sku: str,
+    title: str,
+    category: str,
+    supplier_price: float,
+    stock: int,
+    source_hash: str,
+    raw_description: str = "",
+    status: str = "active",
+) -> bool:
     """Idempotently persist a supplier product and report if its source changed."""
     if not sku or supplier_price < 0 or stock < 0:
         raise ValueError("SKU must be non-empty; price and stock cannot be negative.")
+    if status not in {"active", "draft", "paused", "archived"}:
+        raise ValueError("Product status must be active, draft, paused, or archived.")
     if uses_postgres():
         pool = await get_pg_pool()
         async with pool.acquire() as conn:
@@ -2599,13 +2615,13 @@ async def upsert_product(*, sku: str, title: str, category: str, supplier_price:
             if existing and existing["source_hash"] == source_hash:
                 return False
             await conn.execute(
-                """INSERT INTO products(sku, title, category, raw_description, supplier_price, stock, source_hash, updated_at)
-                   VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+                """INSERT INTO products(sku, title, category, raw_description, supplier_price, stock, source_hash, status, updated_at)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
                    ON CONFLICT(sku) DO UPDATE SET
                      title=EXCLUDED.title, category=EXCLUDED.category, raw_description=EXCLUDED.raw_description,
                      supplier_price=EXCLUDED.supplier_price, stock=EXCLUDED.stock, source_hash=EXCLUDED.source_hash,
-                     status=CASE WHEN products.is_bundle THEN products.status ELSE 'active' END, updated_at=NOW()""",
-                sku, title, category, raw_description, supplier_price, stock, source_hash,
+                     status=CASE WHEN products.is_bundle THEN products.status ELSE EXCLUDED.status END, updated_at=NOW()""",
+                sku, title, category, raw_description, supplier_price, stock, source_hash, status,
             )
         return True
     async with get_connection() as db:
@@ -2615,13 +2631,13 @@ async def upsert_product(*, sku: str, title: str, category: str, supplier_price:
         if existing and existing["source_hash"] == source_hash:
             return False
         await db.execute(
-            """INSERT INTO products(sku, title, category, raw_description, supplier_price, stock, source_hash, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """INSERT INTO products(sku, title, category, raw_description, supplier_price, stock, source_hash, status, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(sku) DO UPDATE SET
                  title=excluded.title, category=excluded.category, raw_description=excluded.raw_description,
                  supplier_price=excluded.supplier_price, stock=excluded.stock, source_hash=excluded.source_hash,
-                 status=CASE WHEN products.is_bundle = 1 THEN products.status ELSE 'active' END, updated_at=excluded.updated_at""",
-            (sku, title, category, raw_description, supplier_price, stock, source_hash, utc_now()),
+                 status=CASE WHEN products.is_bundle = 1 THEN products.status ELSE excluded.status END, updated_at=excluded.updated_at""",
+            (sku, title, category, raw_description, supplier_price, stock, source_hash, status, utc_now()),
         )
         await db.commit()
         return True
@@ -2799,7 +2815,16 @@ async def reserve_order_stock(order_id: str, sku: str, quantity: int) -> None:
         pool = await get_pg_pool()
         async with pool.acquire() as conn:
             async with conn.transaction():
-                existing = await conn.fetchrow("SELECT status FROM orders WHERE order_id=$1 FOR UPDATE", order_id)
+                existing = await conn.fetchrow(
+                    "SELECT status, payment_status, fulfillment_locked FROM orders WHERE order_id=$1 FOR UPDATE",
+                    order_id,
+                )
+                if not existing:
+                    raise DatabaseError(f"Order {order_id} must be persisted before fulfillment.")
+                if str(existing["payment_status"]).lower() != "paid" or bool(existing["fulfillment_locked"]):
+                    raise FulfillmentBlockedError(
+                        f"Fulfillment is blocked until order {order_id} is paid and unlocked."
+                    )
                 if existing and existing["status"] in {"reserved", "dispatching", "dispatched"}:
                     return
                 product = await conn.fetchrow("SELECT sku, stock, is_bundle, status FROM products WHERE sku=$1 FOR UPDATE", sku)
@@ -2832,9 +2857,18 @@ async def reserve_order_stock(order_id: str, sku: str, quantity: int) -> None:
     async with get_connection() as db:
         await db.execute("BEGIN IMMEDIATE")
         try:
-            cursor = await db.execute("SELECT status FROM orders WHERE order_id=?", (order_id,))
+            cursor = await db.execute(
+                "SELECT status, payment_status, fulfillment_locked FROM orders WHERE order_id=?",
+                (order_id,),
+            )
             existing = await cursor.fetchone()
             await cursor.close()
+            if not existing:
+                raise DatabaseError(f"Order {order_id} must be persisted before fulfillment.")
+            if str(existing["payment_status"]).lower() != "paid" or bool(existing["fulfillment_locked"]):
+                raise FulfillmentBlockedError(
+                    f"Fulfillment is blocked until order {order_id} is paid and unlocked."
+                )
             if existing and existing["status"] in {"reserved", "dispatching", "dispatched"}:
                 await db.commit()
                 return

@@ -21,13 +21,39 @@ from database import (
 )
 
 DEFAULT_ROLES = {
-    "SUPERADMIN": ["*"] ,
-    "ADMIN": ["users.manage","roles.manage","system.configure","audit.read","sessions.manage","products.write","pricing.write","bundles.manage","ai.configure","matterhorn.configure","shopware.configure","marketplace.manage","connectors.read","connectors.configure","connectors.activate","accounts.manage","mapping.manage","exports.execute","finance.read","finance.write"],
-    "MANAGER": ["products.write","pricing.write","bundles.manage","marketplace.manage","connectors.read","exports.execute","finance.read"],
-    "EDITOR": ["products.write","ai.generate","connectors.read"],
-    "ANALYST": ["audit.read","connectors.read","finance.read"],
-    "ACCOUNTANT": ["finance.read","finance.write","audit.read"],
-    "VIEWER": ["products.read","pricing.read","connectors.read"],
+    "SUPERADMIN": ["*"],
+    "ADMIN": [
+        "system.read", "system.configure", "users.manage", "roles.manage", "sessions.manage",
+        "audit.read", "products.read", "products.write", "products.delete", "pricing.read",
+        "pricing.write", "bundles.read", "bundles.manage", "ai.generate", "ai.configure",
+        "matterhorn.read", "matterhorn.configure", "matterhorn.import", "shopware.read",
+        "shopware.configure", "shopware.export", "connectors.read", "connectors.configure",
+        "connectors.activate", "accounts.manage", "mapping.manage", "exports.execute",
+        "exports.cancel", "exports.retry", "competitor.read", "competitor.manage",
+        "trends.read", "trends.manage", "fulfillment.read", "fulfillment.manage",
+        "finance.read", "finance.write",
+    ],
+    "MANAGER": [
+        "system.read", "products.read", "products.write", "pricing.read", "pricing.write",
+        "bundles.read", "bundles.manage", "matterhorn.read", "matterhorn.import",
+        "shopware.read", "connectors.read", "connectors.configure", "exports.execute",
+        "competitor.read", "competitor.manage", "trends.read", "trends.manage",
+        "fulfillment.read", "fulfillment.manage", "finance.read",
+    ],
+    "EDITOR": [
+        "system.read", "products.read", "products.write", "pricing.read", "bundles.read",
+        "ai.generate", "matterhorn.read", "connectors.read", "fulfillment.read",
+    ],
+    "ANALYST": [
+        "system.read", "audit.read", "products.read", "pricing.read", "bundles.read",
+        "shopware.read", "connectors.read", "competitor.read", "trends.read",
+        "fulfillment.read", "finance.read",
+    ],
+    "ACCOUNTANT": ["system.read", "finance.read", "finance.write", "audit.read"],
+    "VIEWER": [
+        "system.read", "products.read", "pricing.read", "bundles.read",
+        "connectors.read", "fulfillment.read",
+    ],
 }
 
 

@@ -141,7 +141,7 @@ services:
     volumes:
       - app_data:/app/data
     healthcheck:
-      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8000/api/health || exit 1"]
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8000/healthz || exit 1"]
       interval: 10s
       timeout: 3s
       retries: 12

@@ -296,8 +296,7 @@
             async loadSalesData() {
                 try {
                     // Sales overview
-                    const salesResponse = await fetch('/api/sales/overview');
-                    const salesData = await salesResponse.json();
+                    const salesData = await apiFetch('/api/sales/overview');
                     
                     const totalRevenue = document.getElementById('total-revenue');
                     const totalProducts = document.getElementById('total-products');
@@ -322,8 +321,7 @@
             // Load marketing data from API
             async loadMarketingData() {
                 try {
-                    const campaignsResponse = await fetch('/api/marketing/campaigns');
-                    const campaignsData = await campaignsResponse.json();
+                    const campaignsData = await apiFetch('/api/marketing/campaigns');
                     
                     const activeCampaignsCount = document.getElementById('active-campaigns-count');
                     const generatedContentCount = document.getElementById('generated-content-count');
@@ -359,13 +357,11 @@
                     google_shopping: document.getElementById('channel-google-status'),
                     ebay: document.getElementById('channel-ebay-status'),
                     zalando: document.getElementById('channel-zalando-status'),
-                    about_you: document.getElementById('channel-aboutyou-status'),
                 };
                 
                 for (const [channel, el] of Object.entries(adapterMap)) {
                     try {
-                        const response = await fetch(`/api/export/${channel}`);
-                        const data = await response.json();
+                        const data = await apiFetch(`/api/export/${encodeURIComponent(channel)}`);
                         if (el) {
                             el.textContent = data.status === 'ok' ? 'Verbunden' : 'Fehler';
                         }
@@ -454,8 +450,7 @@
         async function runSalesScoring() {
             tower.showFlash('Sales Scoring wird berechnet...', 'info');
             try {
-                const response = await fetch('/api/sales/product-scores');
-                const data = await response.json();
+                const data = await apiFetch('/api/sales/product-scores');
                 tower.showFlash('Sales Scoring completed', 'success');
                 console.log('Scoring data:', data);
             } catch (error) {
@@ -466,8 +461,7 @@
         async function smartPricing(sku) {
             tower.showFlash('Optimiere Preise...', 'info');
             try {
-                const response = await fetch('/api/sales/pricing-recommendations');
-                const data = await response.json();
+                const data = await apiFetch('/api/sales/pricing-recommendations');
                 tower.showFlash('Pricing Empfehlung erhalten', 'success');
                 console.log('Pricing data:', data);
             } catch (error) {
@@ -478,21 +472,19 @@
         async function generateProductContentUI(sku) {
             tower.showFlash('Generiere KI-Inhalte...', 'info');
             try {
-                const response = await fetch(`/api/marketing/products/${sku}/generate-content`);
-                const data = await response.json();
-                tower.showFlash('Inhalte generiert', 'success');
+                const data = await apiFetch(`/api/marketing/products/${encodeURIComponent(sku)}/generate-content`, {method: 'POST'});
+                tower.showFlash(data.message || 'Anfrage abgeschlossen', data.status === 'ok' ? 'info' : 'error');
                 console.log('Content generation:', data);
             } catch (error) {
-                tower.showFlash('Fehler bei Content-Generierung', 'error');
+                tower.showFlash('Fehler bei Content-Generierung: ' + error.message, 'error');
             }
         }
         
         async function createMarketingCampaign() {
             tower.showFlash('Erstelle Kampagne...', 'info');
             try {
-                const response = await fetch('/api/marketing/campaigns/generate', { method: 'POST' });
-                const data = await response.json();
-                tower.showFlash('Kampagne erstellt', 'success');
+                const data = await apiFetch('/api/marketing/campaigns/generate', { method: 'POST' });
+                tower.showFlash(data.message || 'Anfrage abgeschlossen', data.status === 'ok' ? 'info' : 'error');
                 console.log('Campaign:', data);
             } catch (error) {
                 tower.showFlash('Fehler bei Kampagnenerstellung', 'error');
@@ -502,9 +494,8 @@
         async function exportChannel(channel) {
             tower.showFlash(`Exportiere ${channel}...`, 'info');
             try {
-                const response = await fetch(`/api/export/${channel}/generate`, { method: 'POST' });
-                const data = await response.json();
-                tower.showFlash(`Export ${channel} gestartet`, 'success');
+                const data = await apiFetch(`/api/export/${encodeURIComponent(channel)}/generate`, { method: 'POST' });
+                tower.showFlash(data.message || `Exportanfrage für ${channel} abgeschlossen`, data.status === 'ok' ? 'info' : 'error');
                 console.log('Export:', data);
             } catch (error) {
                 tower.showFlash(`Fehler bei ${channel} Export`, 'error');
@@ -512,16 +503,19 @@
         }
         
         async function syncAllChannels() {
-            tower.showFlash('Synchronisiere alle Kanäle...', 'info');
             try {
-                const response = await fetch('/api/export/channels', { method: 'POST' });
-                const data = await response.json();
-                tower.showFlash('Synchronisierung abgeschlossen', 'success');
-                console.log('Sync result:', data);
-                // Reload channel status
+                const {channels = []} = await apiFetch('/api/export/channels');
+                const results = await Promise.allSettled(channels.map(channel =>
+                    apiFetch(`/api/export/${encodeURIComponent(channel)}/generate`, {method: 'POST'})
+                ));
+                const failures = results.filter(result => result.status === 'rejected');
+                if (failures.length) {
+                    throw new Error(`${failures.length} von ${channels.length} Exportanfragen konnten nicht gestartet werden.`);
+                }
+                tower.showFlash(`${channels.length} Exportanfragen wurden gestartet.`, 'info');
                 await tower.loadChannelStatus();
             } catch (error) {
-                tower.showFlash('Fehler bei Synchronisierung', 'error');
+                tower.showFlash('Fehler bei Synchronisierung: ' + error.message, 'error');
             }
         }
     </script>

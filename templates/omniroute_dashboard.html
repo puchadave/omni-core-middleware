@@ -91,8 +91,7 @@
     <script>
         async function loadStats() {
             try {
-                const res = await fetch('/api/omniroute/stats');
-                const data = await res.json();
+                const data = await apiFetch('/api/omniroute/stats');
                 document.getElementById('stat-providers').textContent = data.providers || 0;
                 document.getElementById('stat-models').textContent = data.models || 0;
                 document.getElementById('stat-rules').textContent = data.routing_rules || 0;
@@ -104,8 +103,7 @@
 
         async function loadProviders() {
             try {
-                const res = await fetch('/api/omniroute/providers');
-                const data = await res.json();
+                const data = await apiFetch('/api/omniroute/providers');
                 const container = document.getElementById('provider-list');
                 container.innerHTML = '';
                 data.providers.forEach(p => {
@@ -142,8 +140,7 @@
 
         async function loadModels() {
             try {
-                const res = await fetch('/api/omniroute/models');
-                const data = await res.json();
+                const data = await apiFetch('/api/omniroute/models');
                 const container = document.getElementById('model-list');
                 container.innerHTML = '';
                 data.models.forEach(m => {
@@ -183,7 +180,7 @@
             e.preventDefault();
             const caps = document.getElementById('pr-caps').value.split(',').map(s => s.trim()).filter(s => s);
             try {
-                await fetch('/api/omniroute/providers', {
+                await apiFetch('/api/omniroute/providers', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
@@ -208,7 +205,7 @@
             e.preventDefault();
             const caps = document.getElementById('mr-caps').value.split(',').map(s => s.trim()).filter(s => s);
             try {
-                await fetch('/api/omniroute/models', {
+                await apiFetch('/api/omniroute/models', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({

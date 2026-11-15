@@ -55,8 +55,7 @@
     <script>
         async function loadStats() {
             try {
-                const res = await fetch('/api/google/export/stats');
-                const data = await res.json();
+                const data = await apiFetch('/api/google/export/stats');
                 document.getElementById('stat-accounts').textContent = data.stats.total || 0;
                 document.getElementById('stat-queue').textContent = data.stats.pending || 0;
                 document.getElementById('stat-completed').textContent = data.stats.completed || 0;
@@ -68,8 +67,7 @@
 
         async function loadAccounts() {
             try {
-                const res = await fetch('/api/google/accounts');
-                const data = await res.json();
+                const data = await apiFetch('/api/google/accounts');
                 const container = document.getElementById('accounts-list');
                 container.innerHTML = '';
                 data.accounts.forEach(acc => {
@@ -96,8 +94,7 @@
 
         async function loadQueue() {
             try {
-                const res = await fetch('/api/google/export/queue?limit=20');
-                const data = await res.json();
+                const data = await apiFetch('/api/google/export/queue?limit=20');
                 const container = document.getElementById('queue-list');
                 container.innerHTML = '';
                 data.queue.forEach(item => {
@@ -123,8 +120,7 @@
 
         async function testConnection(accountId) {
             try {
-                const res = await fetch(`/api/google/accounts/${accountId}/test`, { method: 'POST' });
-                const data = await res.json();
+                const data = await apiFetch(`/api/google/accounts/${encodeURIComponent(accountId)}/test`, { method: 'POST' });
                 alert(`Verbindung: ${data.health.status}`);
                 loadAccounts();
             } catch (e) {
@@ -134,7 +130,7 @@
 
         async function retryItem(exportId) {
             try {
-                await fetch('/api/google/export/retry', { method: 'POST' });
+                await apiFetch(`/api/google/export/retry?export_id=${encodeURIComponent(exportId)}`, { method: 'POST' });
                 loadQueue();
             } catch (e) {
                 alert('Wiederholung fehlgeschlagen: ' + e.message);

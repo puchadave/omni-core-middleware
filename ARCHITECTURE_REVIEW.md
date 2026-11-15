@@ -6,6 +6,27 @@ Omni-Core is a functional FastAPI ERP/BI middleware with PostgreSQL/SQLite suppo
 
 The repository is operationally feature-rich but structurally ahead of its hardening layer: the central application file is monolithic, a legacy `omni_core/` implementation coexists with the current root application, and some modules still expose placeholder business logic.
 
+## Target-domain inventory
+
+The proposal is a Commerce + ERP Integration + Finance + BI + AI control plane, not a Shopware-only connector. The active root application already contains substantial parts of that target; these are the current boundaries and gaps:
+
+| Domain | Existing foundation | Main gap |
+|---|---|---|
+| Core platform | `database.py`, IAM, jobs/scheduler, `services/event_bus.py` | Durable event store, migrations, trace/idempotency guarantees |
+| Product intelligence | Matterhorn importer, `services/canonical_product_mapping.py`, GTIN and media services | Persisted versioned canonical product lifecycle and provenance |
+| Commerce / orders | Root APIs, `services/order_management.py`, Shopware services | Shared order lifecycle across channels and financial records |
+| Sales channels | Connector SDK/registry, channel adapters, Google Merchant | Complete connector coverage, contracts, rate-limit and sync telemetry |
+| Inventory / procurement | Inventory guard/sync and stock reservation | Purchase orders, goods receipts, supplier invoices, demand/reorder planning |
+| Pricing | Price engine and competitor pricing | Persisted per-channel cost inputs and realized-margin feedback |
+| Fulfillment | Fulfillment service and order worker | Returns/shipping carrier lifecycle linked to orders, payments, and invoices |
+| Finance | New provider-keyed document, transaction, settlement, and reconciliation records | Settlement-to-transaction matching and links to canonical orders/products |
+| Accounting integration | Finance API boundary only | DATEV/other provider adapters, e-invoicing, document archive and validation |
+| BI / intelligence | BI engine and Global Control Center | Transaction-backed facts, profitability, cashflow, forecast and anomaly metrics |
+| AI | OmniRoute, content, trends, creative/media and agent services | Usage/cost provenance and validated workflows across finance and commerce |
+| CRM / marketing | CRM adapters/services and marketing modules | Attribution linked to orders, contribution margin and consent/retention policy |
+
+This is an incremental inventory, not a claim that each listed foundation is production-complete. The canonical data chain still needs explicit IDs/correlation and audited lifecycle transitions across domains.
+
 ## Finalized in this revision
 
 - Unified root dashboard as Global Control Center.
@@ -26,7 +47,8 @@ The repository is operationally feature-rich but structurally ahead of its harde
 - Added authenticated `/api/finance/*` ingestion, listing, overview, and payment-to-invoice reconciliation endpoints.
 - Added conservative reconciliation statuses: matched, partial, mismatch, missing document, ambiguous, and review required.
 - Amount-only matches are never auto-confirmed; only one exact invoice match with a matching order reference is automatic.
-- Added an Accountant role and currency-grouped finance source totals to the Global Control Center BI payload.
+- Added an Accountant role and a permission-protected, currency-grouped finance overview API.
+- Kept finance totals out of the general Global Control Center response until its BI permissions are explicitly scoped.
 - Contribution margin is calculated only when every required cost input is supplied; this foundation does not create accounting postings or claim tax-compliance.
 
 ## Remaining architectural work

@@ -1,29 +1,29 @@
 {% extends "base.html" %}
-{% block title %}Integrationen | Omni-Core{% endblock %}
+{% block title %}Integrationsstatus | OMNI-CORE{% endblock %}
 {% block content %}
-<div x-data="pageState()" x-init="loadAll()" class="space-y-4 max-w-7xl mx-auto">
+<div x-data="page()" x-init="load()" class="space-y-4 max-w-7xl mx-auto">
   <div class="flex flex-col md:flex-row md:items-end md:justify-between gap-3">
     <div>
-      <h1 class="text-2xl md:text-3xl font-bold">Integrationen</h1>
-      <p class="text-slate-400">Übersicht aller konfigurierten Integrationen und Connector-Status.</p>
+      <h1 class="text-2xl md:text-3xl font-bold">Integrationsstatus</h1>
+      <p class="text-slate-400">Prüfen Sie auf einen Blick, welche Anbindungen betriebsbereit sind. Für fehlende oder fehlerhafte Verbindungen finden Sie Hinweise zur Behebung.</p>
     </div>
-    <button @click="loadAll()" class="bg-slate-700 hover:bg-slate-600 px-4 py-2 rounded text-sm">Aktualisieren</button>
+    <div class="flex gap-2"><a href="/ui/settings" class="btn btn-secondary">Einstellungen öffnen</a><button @click="load()" class="btn btn-primary">Status prüfen</button></div>
   </div>
 
-  <template x-if="globalError"><div class="rounded border border-red-700 bg-red-900/30 p-3 text-sm text-red-200" x-text="globalError"></div></template>
+  <template x-if="error"><div class="banner banner-error"><div class="font-medium">Status konnte nicht abgerufen werden</div><div class="text-sm mt-1" x-text="error"></div><p class="text-xs mt-2">Bitte prüfen Sie Ihre Verbindung zum System und versuchen Sie es erneut.</p><button class="btn btn-secondary !py-1.5 mt-2" @click="load()">Erneut versuchen</button></div></template>
 
-  <div class="grid lg:grid-cols-2 gap-4">
-    <template x-for="ep in endpoints" :key="ep.url">
-      <div class="bg-slate-900 border border-slate-800 rounded-lg p-4">
-        <div class="flex items-center justify-between mb-2">
-          <h2 class="font-semibold" x-text="ep.label"></h2>
-          <span class="text-xs" :class="ep.state==='ok'?'text-emerald-400':(ep.state==='error'?'text-red-400':(ep.state==='empty'?'text-amber-400':'text-slate-400'))" x-text="ep.state"></span>
+  <div class="grid md:grid-cols-2 lg:grid-cols-3 gap-4" x-show="!error">
+    <template x-if="loading"><template x-for="i in 6" :key="i"><div class="card p-4 space-y-2"><div class="skeleton h-5 w-1/2"></div><div class="skeleton h-6 w-24"></div><div class="skeleton h-4 w-3/4"></div></div></template></template>
+    <template x-if="!loading && Object.keys(integrations).length===0">
+      <div class="md:col-span-2 lg:col-span-3 card"><div class="empty-state"><div class="icon">🔗</div><div class="title">Noch keine Integrationen eingerichtet</div><div class="text-sm">Verbinden Sie z. B. Shopware, Marktplätze oder das KI-Gateway in den Einstellungen, damit Daten synchronisiert werden können.</div><a href="/ui/settings" class="btn btn-primary mt-3">Anbindungen einrichten</a></div></div>
+    </template>
+    <template x-for="(val,name) in integrations" :key="name">
+      <div class="card p-4 flex flex-col gap-2">
+        <div class="flex items-center justify-between"><h2 class="font-semibold capitalize" x-text="label(name)"></h2><span class="badge" :class="uiBadgeClass(norm(val))" x-text="uiStatusLabel(norm(val))"></span></div>
+        <p class="text-sm text-slate-400" x-text="hint(name, val)"></p>
+        <div class="mt-auto pt-2 flex gap-2">
+          <a href="/ui/settings" class="btn btn-secondary !py-1.5 !text-xs">In Einstellungen prüfen</a>
         </div>
-        <div class="text-xs text-slate-500 mb-2" x-text="ep.url"></div>
-        <template x-if="ep.state==='loading'"><div class="text-sm text-slate-400">Lade…</div></template>
-        <template x-if="ep.state==='error'"><div class="text-sm text-red-300" x-text="ep.error"></div></template>
-        <template x-if="ep.state==='empty'"><div class="text-sm text-amber-300">Keine Daten / nicht konfiguriert oder leer.</div></template>
-        <template x-if="ep.state==='ok'"><pre class="text-xs bg-slate-950 border border-slate-800 rounded p-3 overflow-auto max-h-96" x-text="formatData(ep.data)"></pre></template>
       </div>
     </template>
   </div>
@@ -31,32 +31,12 @@
 {% endblock %}
 {% block scripts %}
 <script>
-function pageState(){
-  return {
-    endpoints: [{url:'/api/integrations/status',label:'Status'},{url:'/api/matterhorn/status',label:'Matterhorn'},{url:'/api/events/stats',label:'Event Bus'}],
-    globalError: '',
-    supplier: 10, calcResult: null,
-    query: '', actionResult: null, busy: false,
-    q:'', status:'',
-    setKey:'', setVal:'', actionMsg:'', actionErr:false,
-    async loadAll(){ this.globalError=''; await Promise.all(this.endpoints.map(e=>this.loadEp(e))); },
-    async loadEp(ep){
-      ep.state='loading'; ep.error=''; ep.data=null;
-      try {
-        const d = await apiFetch(ep.url);
-        ep.data = d;
-        const empty = d==null || (Array.isArray(d) && d.length===0) || (typeof d==='object' && !Array.isArray(d) && Object.keys(d).length===0);
-        ep.state = empty ? 'empty' : 'ok';
-      } catch(e){ ep.state='error'; ep.error=e.message; }
-    },
-    formatData(d){ try{ return JSON.stringify(d, null, 2); }catch(_ ){ return String(d); } },
-    filteredProducts(){ const all = (this.endpoints.find(e=>e.url.startsWith('/api/products'))||{}).data||[]; const q=(this.q||'').toLowerCase(); return (Array.isArray(all)?all:[]).filter(p=>{ if(this.status && String(p.status)!==this.status) return false; if(!q) return true; return [p.sku,p.title,p.ai_title,p.category].some(v=>String(v||'').toLowerCase().includes(q)); }); },
-    orders(){ const all=(this.endpoints.find(e=>e.url.startsWith('/api/orders'))||{}).data||[]; return Array.isArray(all)?all:(all.items||[]); },
-    async calc(){ try{ this.calcResult=await apiFetch('/api/pricing/calculate',{method:'POST',body:JSON.stringify({supplier_price:Number(this.supplier||0)})}); }catch(e){ this.calcResult={error:e.message}; } },
-    async search(){ try{ this.actionResult=await apiFetch('/api/competitor/search',{method:'POST',body:JSON.stringify({query:this.query,limit:10})}); }catch(e){ this.actionResult={error:e.message}; } },
-    async runTrend(){ this.busy=true; try{ this.actionResult=await apiFetch('/api/ai/trend-analysis',{method:'POST'}); }catch(e){ this.actionResult={error:e.message}; } this.busy=false; },
-    async saveSetting(){ this.actionMsg=''; this.actionErr=false; try{ await apiFetch('/api/settings',{method:'POST',body:JSON.stringify({key:this.setKey,value:this.setVal})}); this.actionMsg='Gespeichert.'; await this.loadAll(); }catch(e){ this.actionErr=true; this.actionMsg='Fehler: '+e.message; } }
-  }
-}
+function page(){return{
+  loading:true,error:'',integrations:{},
+  norm(v){return typeof v==='string'?v:(v&&(v.status||v.state))||'unknown';},
+  label(n){const m={shopware:'Shopware',amazon:'Amazon',ebay:'eBay',email:'E-Mail',messenger:'Messenger',omniroute:'KI-Gateway (OmniRoute)',google:'Google Merchant',matterhorn:'Matterhorn (Lieferant)'}; return m[n]||n;},
+  hint(name,v){const s=String(this.norm(v)).toLowerCase(); if(['ok','connected','healthy','configured','active'].includes(s)) return 'Die Anbindung ist eingerichtet und einsatzbereit.'; if(['error','failed','down'].includes(s)) return 'Es liegt ein Problem vor. Bitte prüfen Sie Zugangsdaten und Erreichbarkeit in den Einstellungen.'; if(s==='not_configured'||s==='unknown'||s==='inactive'||s==='disabled') return 'Diese Anbindung ist noch nicht eingerichtet. Hinterlegen Sie die erforderlichen Zugangsdaten in den Einstellungen.'; return 'Status unbekannt – bitte in den Einstellungen prüfen.';},
+  async load(){this.loading=true; this.error=''; try{this.integrations=await apiFetch('/api/integrations/status')||{};}catch(e){this.error=e.message; this.integrations={};} this.loading=false;}
+}}
 </script>
 {% endblock %}

@@ -32,10 +32,12 @@ from pydantic import BaseModel, Field, field_validator
 
 from database import (
     DATABASE_URL,
+    FulfillmentBlockedError,
     InsufficientStockError,
     close_pg_pool,
     count_dashboard_metrics,
     create_order as persist_order,
+    fetch_order,
     fetch_product,
     get_setting,
     init_db,
@@ -177,7 +179,7 @@ RBAC_RULES: list[tuple[str, tuple[str, ...], str]] = [
     ("GET", ("/api/connectors", "/ui/connectors"), "connectors.read"),
     ("POST", ("/api/connectors",), "connectors.configure"),
     ("DELETE", ("/api/connectors",), "connectors.configure"),
-    ("GET", ("/api/crm/",), "products.read"),
+    ("GET", ("/api/crm/", "/ui/crm"), "products.read"),
     ("POST", ("/api/crm/",), "system.configure"),
     ("GET", ("/api/competitor/providers", "/api/stats/competitor", "/ui/competitor-intelligence"), "competitor.read"),
     ("POST", ("/api/competitor/",), "competitor.manage"),
@@ -225,6 +227,7 @@ class ProductCreate(BaseModel):
     supplier_price: float = Field(ge=0, le=1_000_000)
     stock: int = Field(default=0, ge=0, le=10_000_000)
     raw_description: str = Field(default="", max_length=20_000)
+    status: Literal["active", "draft", "paused", "archived"] = "active"
 
 
 class OrderCreate(BaseModel):
@@ -475,7 +478,16 @@ async def _handle_fulfillment_job(job: dict[str, Any]) -> None:
     order_id = str(job["order_id"])
     try:
         await reserve_order_stock(order_id, str(job["sku"]), int(job["quantity"]))
-        result = await runtime.fulfillment.dispatch_reserved_order(job)
+        persisted_order = await fetch_order(order_id)
+        if (
+            not persisted_order
+            or str(persisted_order.get("payment_status") or "").lower() != "paid"
+            or bool(persisted_order.get("fulfillment_locked"))
+        ):
+            raise FulfillmentBlockedError(
+                f"Fulfillment is blocked until order {order_id} is paid and unlocked."
+            )
+        result = await runtime.fulfillment.dispatch_reserved_order({**job, **persisted_order})
         if result["status"] == "dispatched":
             await write_log("INFO", "order_dispatched", f"Order {order_id} dispatched.", {"order_id": order_id})
         else:
@@ -483,6 +495,9 @@ async def _handle_fulfillment_job(job: dict[str, Any]) -> None:
     except InsufficientStockError as exc:
         await update_order_status(order_id, "failed", error=str(exc))
         await write_log("WARNING", "order_stock_rejected", str(exc), {"order_id": order_id})
+    except FulfillmentBlockedError as exc:
+        await update_order_status(order_id, "received", error=str(exc))
+        await write_log("WARNING", "order_fulfillment_blocked", str(exc), {"order_id": order_id})
     except Exception as exc:  # Defensive boundary: worker remains alive.
         logger.exception("Fulfillment job failed for %s", order_id)
         await update_order_status(order_id, "failed", error="Supplier dispatch failed")
@@ -1159,7 +1174,7 @@ async def products(
 async def create_product(payload: ProductCreate) -> dict[str, str]:
     """Create or update a manually managed product idempotently."""
     source_hash = hashlib.sha256(
-        f"manual|{payload.sku}|{payload.title}|{payload.supplier_price}|{payload.stock}|{payload.raw_description}".encode()
+        f"manual|{payload.sku}|{payload.title}|{payload.supplier_price}|{payload.stock}|{payload.raw_description}|{payload.status}".encode()
     ).hexdigest()
     await upsert_product(
         sku=payload.sku,
@@ -1169,6 +1184,7 @@ async def create_product(payload: ProductCreate) -> dict[str, str]:
         stock=payload.stock,
         source_hash=source_hash,
         raw_description=payload.raw_description,
+        status=payload.status,
     )
     await refresh_all_bundle_stocks()
     return {"status": "success", "sku": payload.sku}
@@ -1186,12 +1202,10 @@ async def product(sku: str) -> dict[str, Any]:
 async def update_product(sku: str, payload: ProductCreate) -> dict[str, str]:
     """Create or update a product by SKU (idempotent upsert)."""
     if payload.sku != sku:
-        # allow upsert under path sku for simplicity
-        payload_sku = sku
-    else:
-        payload_sku = sku
+        raise HTTPException(status_code=422, detail="Path SKU must match the product SKU in the request body.")
+    payload_sku = sku
     source_hash = hashlib.sha256(
-        f"manual|{payload_sku}|{payload.title}|{payload.supplier_price}|{payload.stock}|{payload.raw_description}".encode()
+        f"manual|{payload_sku}|{payload.title}|{payload.supplier_price}|{payload.stock}|{payload.raw_description}|{payload.status}".encode()
     ).hexdigest()
     await upsert_product(
         sku=payload_sku,
@@ -1201,6 +1215,7 @@ async def update_product(sku: str, payload: ProductCreate) -> dict[str, str]:
         stock=payload.stock,
         source_hash=source_hash,
         raw_description=payload.raw_description,
+        status=payload.status,
     )
     await refresh_all_bundle_stocks()
     return {"status": "success", "sku": payload_sku}
@@ -1245,9 +1260,7 @@ async def bundles() -> list[dict[str, Any]]:
 
 @app.post("/api/orders", status_code=202)
 async def create_channel_order(payload: OrderCreate) -> dict[str, str]:
-    """Persist a channel order and enqueue it for single-worker fulfillment."""
-    if runtime.jobs.full():
-        raise HTTPException(status_code=503, detail="Fulfillment queue is full; retry later.")
+    """Persist an order and queue it only after payment is verified."""
     await persist_order(
         order_id=payload.order_id,
         sku=payload.sku,
@@ -1255,9 +1268,23 @@ async def create_channel_order(payload: OrderCreate) -> dict[str, str]:
         marketplace=payload.marketplace,
         customer_reference=payload.customer_reference,
     )
+    order = await fetch_order(payload.order_id)
+    if not order:
+        raise RuntimeError(f"Persisted order {payload.order_id} could not be reloaded.")
+    payment_status = str(order.get("payment_status") or "").lower()
+    if payment_status != "paid" or bool(order.get("fulfillment_locked")):
+        await write_log(
+            "INFO",
+            "order_waiting_for_payment",
+            f"Order {payload.order_id} was persisted but not queued for fulfillment.",
+            {"payment_status": payment_status, "fulfillment_locked": bool(order.get("fulfillment_locked"))},
+        )
+        return {"status": "awaiting_payment", "order_id": payload.order_id}
+    if runtime.jobs.full():
+        raise HTTPException(status_code=503, detail="Fulfillment queue is full; retry later.")
     await runtime.jobs.put({"type": "fulfillment", **payload.model_dump()})
     await write_log("INFO", "order_received", f"Order {payload.order_id} queued.", {"marketplace": payload.marketplace})
-    return {"status": "accepted", "order_id": payload.order_id}
+    return {"status": "queued", "order_id": payload.order_id}
 
 
 @app.get("/api/orders")
@@ -1814,24 +1841,24 @@ async def generate_campaign():
         "message": "Campaign generation endpoint - requires OmniRoute gateway",
     }
 
-@app.post("/api/marketing/products/{product_id}/generate-content")
-async def generate_product_content(product_id: int):
+@app.post("/api/marketing/products/{product_sku}/generate-content")
+async def generate_product_content(product_sku: str):
     """Generate marketing content for a product."""
     return {
         "status": "ok",
-        "product_id": product_id,
+        "product_sku": product_sku,
         "message": "Product content generation endpoint",
     }
 
-@app.get("/api/marketing/products/{product_id}/content")
-async def get_product_content(product_id: int):
+@app.get("/api/marketing/products/{product_sku}/content")
+async def get_product_content(product_sku: str):
     """Get stored marketing content for a product."""
     from database import get_connection
     
     async with get_connection() as db:
         cursor = await db.execute(
             "SELECT content_type, content_json, channel FROM channel_content WHERE product_sku = ?",
-            (str(product_id),)
+            (product_sku,)
         )
         rows = await cursor.fetchall()
         columns = [desc[0] for desc in cursor.description]
@@ -1851,7 +1878,7 @@ async def list_export_channels():
     """List available export channels."""
     return {
         "status": "ok",
-        "channels": ["shopify", "amazon", "google_shopping", "ebay", "zalando", "about_you"],
+        "channels": ["shopify", "amazon", "google_shopping", "ebay", "zalando"],
     }
 
 @app.get("/api/export/{channel}")
@@ -2080,7 +2107,7 @@ async def add_shopware_export(payload: ShopwareExportCreate):
     return {"status": "ok", "queue_id": queue_id}
 
 @app.get("/api/shopware/export/queue")
-async def list_shopware_export_queue(status: str = None, limit: int = 100):
+async def list_shopware_export_queue(status: str | None = None, limit: int = Query(default=100, ge=1, le=500)):
     """List Shopware export queue items."""
     if not runtime.shopware_export_manager:
         raise HTTPException(status_code=503, detail="Export manager not initialized")
@@ -2399,7 +2426,7 @@ async def google_export_product(payload: GoogleProductExportRequest):
     return {"status": "ok", "export_id": queue_id, "product_sku": payload.product_sku}
 
 @app.get("/api/google/export/queue")
-async def list_google_export_queue(account_id: str | None = None, status: str | None = None, limit: int = 100):
+async def list_google_export_queue(account_id: str | None = None, status: str | None = None, limit: int = Query(default=100, ge=1, le=500)):
     """List Google export queue items."""
     all_items = []
     for acc_id, engine in runtime.google_export_engines.items():
@@ -2440,13 +2467,15 @@ async def process_google_export(account_id: str, max_items: int = 10):
     return {"status": "ok", "account_id": account_id, "result": result}
 
 @app.post("/api/google/export/retry")
-async def retry_google_failed(account_id: str | None = None):
+async def retry_google_failed(account_id: str | None = None, export_id: str | None = None):
     """Retry failed Google export items."""
     retried = 0
     for acc_id, engine in runtime.google_export_engines.items():
         if account_id and acc_id != account_id:
             continue
-        retried += await engine.retry_failed(account_id=acc_id)
+        retried += await engine.retry_failed(account_id=acc_id, export_id=export_id)
+    if export_id and retried == 0:
+        raise HTTPException(status_code=404, detail="Failed export item not found.")
     return {"status": "ok", "retried": retried}
 
 @app.post("/api/google/sync")

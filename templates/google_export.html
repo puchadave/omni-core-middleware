@@ -54,8 +54,7 @@
     <script>
         async function loadAccounts() {
             try {
-                const res = await fetch('/api/google/accounts');
-                const data = await res.json();
+                const data = await apiFetch('/api/google/accounts');
                 const select = document.getElementById('account-select');
                 select.innerHTML = '<option value="">Konto auswählen...</option>';
                 data.accounts.forEach(acc => {
@@ -71,8 +70,7 @@
 
         async function loadRecent() {
             try {
-                const res = await fetch('/api/google/export/queue?limit=10');
-                const data = await res.json();
+                const data = await apiFetch('/api/google/export/queue?limit=10');
                 const container = document.getElementById('recent-exports');
                 container.innerHTML = '';
                 data.queue.slice(0, 10).forEach(item => {
@@ -105,20 +103,17 @@
             }
 
             try {
-                const res = await fetch('/api/google/export', {
+                const data = await apiFetch('/api/google/export', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ account_id: accountId, product_sku: sku, ai_title: aiTitle || null, shop_url: shopUrl || null })
                 });
-                const data = await res.json();
                 const resultDiv = document.getElementById('export-result');
-                resultDiv.className = 'mt-4 p-4 rounded-lg ' + (data.status === 'ok' ? 'bg-green-900/20 border border-green-500/50 text-green-200' : 'bg-red-900/20 border border-red-500/50 text-red-200');
+                resultDiv.className = 'mt-4 p-4 rounded-lg bg-green-900/20 border border-green-500/50 text-green-200';
                 resultDiv.classList.remove('hidden');
-                resultDiv.textContent = data.status === 'ok' ? `Export gestartet: ${data.export_id}` : data.detail || 'Fehler beim Export';
-                if (data.status === 'ok') {
-                    document.getElementById('product-sku').value = '';
-                    loadRecent();
-                }
+                resultDiv.textContent = `Export gestartet: ${data.export_id}`;
+                document.getElementById('product-sku').value = '';
+                loadRecent();
             } catch (err) {
                 alert('Export fehlgeschlagen: ' + err.message);
             }

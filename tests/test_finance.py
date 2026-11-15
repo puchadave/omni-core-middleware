@@ -4,7 +4,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 import database
-from main import app
+from database import _finance_amount
+from main import _has_permission, _required_permission, app
 from services.finance import calculate_contribution_margin, reconcile_payment_to_documents
 
 
@@ -50,6 +51,25 @@ def test_amount_only_reconciliation_is_review_required():
     assert result["target_id"] == ""
 
 
+def test_reconciliation_does_not_auto_match_credit_notes_or_overpayments():
+    payment = {"currency": "EUR", "order_reference": "ORDER-1", "amount": Decimal("119.00")}
+    credit_note = {
+        **_document("credit-1", "119.00"),
+        "document_type": "credit_note",
+    }
+    result = reconcile_payment_to_documents(payment, [credit_note])
+    assert result["status"] == "review_required"
+
+    overpayment = reconcile_payment_to_documents(
+        {**payment, "amount": Decimal("120.00")},
+        [_document("invoice-1", "119.00")],
+    )
+    assert overpayment["status"] == "mismatch"
+
+    missing = reconcile_payment_to_documents(payment, [])
+    assert missing["status"] == "missing_document"
+
+
 def test_contribution_margin_does_not_infer_missing_costs():
     incomplete = calculate_contribution_margin(
         revenue="100.00",
@@ -77,6 +97,26 @@ def test_contribution_margin_does_not_infer_missing_costs():
     )
     assert complete["status"] == "complete"
     assert Decimal(complete["contribution"]) == Decimal("42.00")
+
+    zero_revenue = calculate_contribution_margin(
+        revenue="0",
+        currency="EUR",
+        cost_of_goods="0",
+        marketplace_fee="0",
+        payment_fee="0",
+        shipping="0",
+        packaging="0",
+        returns="0",
+    )
+    assert zero_revenue["margin_percent"] is None
+
+
+def test_finance_amount_precision_matches_database_contract():
+    assert _finance_amount("99999999999999.999999", field="amount") == Decimal("99999999999999.999999")
+    with pytest.raises(ValueError):
+        _finance_amount("100000000000000", field="amount")
+    with pytest.raises(ValueError):
+        _finance_amount("0.0000001", field="amount")
 
 
 @pytest.mark.asyncio
@@ -150,8 +190,34 @@ async def test_finance_persistence_is_idempotent_and_reconciliation_is_durable(t
     )
     assert persisted["status"] == "matched"
     assert len(await database.finance_reconciliation_list()) == 1
+
+    await database.finance_settlement_upsert(
+        {
+            "provider": "marketplace",
+            "external_id": "settlement-1",
+            "currency": "EUR",
+            "gross_amount": Decimal("0.10"),
+            "fees_amount": Decimal("0.20"),
+            "net_amount": Decimal("-0.10"),
+            "payload_json": {},
+        }
+    )
+    await database.finance_settlement_upsert(
+        {
+            "provider": "marketplace",
+            "external_id": "settlement-2",
+            "currency": "EUR",
+            "gross_amount": Decimal("0.20"),
+            "fees_amount": Decimal("0.10"),
+            "net_amount": Decimal("0.10"),
+            "payload_json": {},
+        }
+    )
     overview = await database.finance_overview()
     assert overview["documents"][0]["currency"] == "EUR"
+    assert Decimal(overview["settlements"][0]["gross_amount"]) == Decimal("0.30")
+    assert Decimal(overview["settlements"][0]["fees_amount"]) == Decimal("0.30")
+    assert Decimal(overview["settlements"][0]["net_amount"]) == Decimal("0")
 
 
 def test_finance_api_import_and_reconcile(tmp_path, monkeypatch):
@@ -202,7 +268,47 @@ def test_finance_api_import_and_reconcile(tmp_path, monkeypatch):
         assert result.json()["status"] == "matched"
         assert client.get("/api/finance/overview", headers=headers).status_code == 200
 
+        margin = client.post(
+            "/api/finance/contribution-margin",
+            headers=headers,
+            json={
+                "revenue": "100.00",
+                "currency": "eur",
+                "cost_of_goods": "40.00",
+                "marketplace_fee": "8.00",
+                "payment_fee": "3.00",
+                "shipping": "5.00",
+                "packaging": "2.00",
+                "returns": "0.00",
+            },
+        )
+        assert margin.status_code == 200
+        assert margin.json()["status"] == "complete"
+        assert margin.json()["contribution"] == "42.00"
 
-def test_finance_api_requires_authentication(monkeypatch):
+        incomplete_margin = client.post(
+            "/api/finance/contribution-margin",
+            headers=headers,
+            json={"revenue": "100.00", "currency": "EUR"},
+        )
+        assert incomplete_margin.status_code == 200
+        assert incomplete_margin.json()["status"] == "incomplete"
+        assert incomplete_margin.json()["contribution"] is None
+
+
+def test_finance_api_requires_authentication(tmp_path, monkeypatch):
+    monkeypatch.setattr(database, "DATABASE_URL", "")
+    monkeypatch.setattr(database, "DATABASE_PATH", tmp_path / "finance-auth.sqlite")
     monkeypatch.setenv("INTERNAL_API_KEY", "finance-test-key")
-    assert TestClient(app).get("/api/finance/overview").status_code == 401
+    with TestClient(app) as client:
+        assert client.get("/api/finance/overview").status_code == 401
+
+
+def test_finance_api_permissions_are_separate_from_general_read_access():
+    permission = _required_permission("GET", "/api/finance/overview")
+    assert permission == "finance.read"
+    assert not _has_permission(
+        {"authenticated": True, "permissions": ["products.read"]},
+        permission,
+    )
+    assert _required_permission("POST", "/api/finance/contribution-margin") == "finance.read"

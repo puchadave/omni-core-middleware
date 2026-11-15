@@ -30,7 +30,7 @@ class ChannelAdapter:
 
     async def fetch_channel_content(self, sku: str, channel_name: str) -> Optional[Dict[str, Any]]:
         """Fetch channel-specific content from PostgreSQL channel_content table."""
-        from services.database import get_connection
+        from database import get_connection
 
         if not self.db_session:
             async with get_connection() as db:
@@ -70,7 +70,7 @@ class ShopifyAdapter(ChannelAdapter):
 
     async def export_product_feed(self, skus: List[str] | None = None) -> Dict[str, Any]:
         """Export product feed for Shopify integration."""
-        from services.database import get_connection
+        from database import get_connection
 
         async with get_connection() as db:
             if skus:
@@ -151,7 +151,7 @@ class AmazonAdapter(ChannelAdapter):
 
     async def export_inventory_feed(self, skus: List[str] | None = None) -> Dict[str, Any]:
         """Export Amazon inventory feed XML."""
-        from services.database import get_connection
+        from database import get_connection
 
         async with get_connection() as db:
             if skus:
@@ -198,7 +198,7 @@ class AmazonAdapter(ChannelAdapter):
 
     async def export_price_feed(self, skus: List[str] | None = None) -> Dict[str, Any]:
         """Export Amazon price feed with competitive pricing."""
-        from services.database import get_connection
+        from database import get_connection
 
         async with get_connection() as db:
             if skus:
@@ -252,7 +252,7 @@ class GoogleShoppingAdapter(ChannelAdapter):
 
     async def export_merchant_center_feed(self, skus: List[str] | None = None) -> Dict[str, Any]:
         """Export Google Merchant Center compliant XML feed."""
-        from services.database import get_connection
+        from database import get_connection
 
         async with get_connection() as db:
             if skus:
@@ -319,7 +319,7 @@ class EbayAdapter(ChannelAdapter):
 
     async def export_inventory_feed(self, skus: List[str] | None = None) -> Dict[str, Any]:
         """Export eBay inventory status feed."""
-        from services.database import get_connection
+        from database import get_connection
 
         async with get_connection() as db:
             if skus:
@@ -369,7 +369,7 @@ class ZalandoAdapter(ChannelAdapter):
 
     async def export_zalando_feed(self, skus: List[str] | None = None) -> Dict[str, Any]:
         """Export Zalando-specific fashion feed with attribute mapping."""
-        from services.database import get_connection
+        from database import get_connection
 
         async with get_connection() as db:
             if skus:

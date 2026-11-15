@@ -582,14 +582,20 @@ class AutonomousExportEngine:
 
     # ── Retry Failed ────────────────────────────────────────────────────
 
-    async def retry_failed(self, account_id: str | None = None) -> int:
-        """Retry all failed export items.
+    async def retry_failed(
+        self,
+        account_id: str | None = None,
+        export_id: str | None = None,
+    ) -> int:
+        """Retry failed export items, optionally limited to one account and item.
 
         Returns the number of items re-queued.
         """
         retried = 0
         for item in list(self._errors) + list(self._dead_letter):
             if account_id and item.account_id != account_id:
+                continue
+            if export_id and item.export_id != export_id:
                 continue
             item.status = EXPORT_PENDING
             item.retry_count = 0

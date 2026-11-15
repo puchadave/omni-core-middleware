@@ -5,16 +5,6 @@ from __future__ import annotations
 from decimal import Decimal, InvalidOperation
 from typing import Any, Mapping, Sequence
 
-RECONCILIATION_STATUSES = {
-    "matched",
-    "partial_match",
-    "mismatch",
-    "missing_document",
-    "ambiguous",
-    "review_required",
-}
-
-
 def _decimal(value: Any, *, field: str) -> Decimal:
     try:
         amount = Decimal(str(value))
@@ -162,13 +152,13 @@ def calculate_contribution_margin(
         raise ValueError("Cost inputs cannot be negative")
     total_costs = sum(parsed_costs.values(), Decimal("0"))
     contribution = revenue_amount - total_costs
-    margin_percent = (contribution / revenue_amount * Decimal("100")) if revenue_amount else Decimal("0")
+    margin_percent = (contribution / revenue_amount * Decimal("100")) if revenue_amount else None
     return {
         "status": "complete",
         "currency": normalized_currency,
         "revenue": str(revenue_amount),
         "costs": str(total_costs),
         "contribution": str(contribution),
-        "margin_percent": str(margin_percent),
+        "margin_percent": str(margin_percent) if margin_percent is not None else None,
         "missing_inputs": [],
     }
