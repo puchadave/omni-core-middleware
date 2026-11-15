@@ -17,6 +17,8 @@ import json
 import logging
 import os
 import time
+import uuid
+from datetime import datetime, timezone
 import xml.etree.ElementTree as ET
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator
@@ -47,6 +49,11 @@ from database import (
     update_order_status,
     upsert_product,
     write_log,
+    jobs_list, job_create, job_get, job_update, job_claim_next,
+    scheduled_tasks_list, scheduled_task_upsert, scheduled_task_update,
+    audit_events_list, audit_event_create,
+    news_sources_list, news_source_upsert, news_items_list, news_item_upsert,
+    knowledge_list, knowledge_get, knowledge_upsert,
 )
 from services.asset_manager import create_asset_from_upload, get_asset, list_assets, update_asset, create_asset_version_from_upload, list_asset_versions
 from services.creative_studio import create_project, list_projects, get_project, update_project, create_job, list_jobs, get_job, update_job, generate_image_for_job, list_outputs, create_video_project, list_video_projects, create_video_scene, list_video_scenes, create_campaign, list_campaigns as list_creative_campaigns, get_campaign, update_campaign
@@ -91,6 +98,11 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 SECRET_KEY_MARKERS = ("api_key", "token", "secret", "password", "credential")
+
+
+
+def utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
 class SettingsUpdate(BaseModel):
@@ -454,6 +466,8 @@ class AppRuntime:
         # Internal communication & control center
         self.event_bus: EventBus | None = None
         self.control_center: GlobalControlCenter | None = None
+        self.persistent_job_task: asyncio.Task[None] | None = None
+        self.scheduler_loop_task: asyncio.Task[None] | None = None
 
     @property
     def uptime_seconds(self) -> int:
@@ -543,6 +557,99 @@ async def trend_scheduler() -> None:
         await asyncio.sleep(7 * 24 * 60 * 60)
 
 
+
+async def persistent_job_worker() -> None:
+    """Background worker processing persistent DB jobs (Queued/Retrying)."""
+    while True:
+        try:
+            job = await job_claim_next()
+            if not job:
+                await asyncio.sleep(2)
+                continue
+            jid = str(job.get("id"))
+            try:
+                result = await _execute_persistent_job(job)
+                if result.get("ok", True) and result.get("status") not in {"NOT_CONFIGURED"}:
+                    await job_update(jid, status="Completed", finished_at=utc_now(), result_json=result, error_message="")
+                elif result.get("status") == "NOT_CONFIGURED":
+                    await job_update(jid, status="Failed", finished_at=utc_now(), result_json=result, error_message=str(result.get("message","Not configured")))
+                else:
+                    attempts = int(job.get("attempts", 0) or 0)
+                    max_attempts = int(job.get("max_attempts", 3) or 3)
+                    if attempts < max_attempts:
+                        await job_update(jid, status="Retrying", result_json=result, error_message=str(result.get("error") or result.get("message") or "retry"))
+                    else:
+                        await job_update(jid, status="Failed", finished_at=utc_now(), result_json=result, error_message=str(result.get("error") or result.get("message") or "failed"))
+            except Exception as e:
+                attempts = int(job.get("attempts", 0) or 0)
+                max_attempts = int(job.get("max_attempts", 3) or 3)
+                if attempts < max_attempts:
+                    await job_update(jid, status="Retrying", error_message=str(e))
+                else:
+                    await job_update(jid, status="Failed", finished_at=utc_now(), error_message=str(e))
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Persistent job worker error")
+            await asyncio.sleep(2)
+
+
+async def scheduler_loop() -> None:
+    """Simple persistent scheduler: enqueues jobs for due enabled tasks."""
+    # seed defaults if empty
+    try:
+        tasks = await scheduled_tasks_list()
+        existing = {t.get("name") for t in tasks}
+        defaults = [
+            ("matterhorn_import_daily", "matterhorn_import", 24*3600),
+            ("inventory_sync_hourly", "health_check", 3600),
+            ("pricing_calculation_daily", "health_check", 24*3600),
+            ("trend_analysis_weekly", "trend_analysis", 7*24*3600),
+            ("competitor_scan_daily", "health_check", 24*3600),
+            ("bundle_generation_weekly", "bundle_generation", 7*24*3600),
+        ]
+        for name, jtype, interval in defaults:
+            if name not in existing:
+                from datetime import timedelta
+                nxt = (datetime.now(timezone.utc) + timedelta(seconds=interval)).isoformat(timespec="seconds")
+                await scheduled_task_upsert(task_id=str(uuid.uuid4()), name=name, job_type=jtype, interval_seconds=interval, enabled=(jtype != "trend_analysis" or runtime.omniroute is not None), config={}, next_run_at=nxt)
+    except Exception:
+        logger.exception("Failed to seed scheduled tasks")
+
+    while True:
+        try:
+            now_dt = datetime.now(timezone.utc)
+            for task in await scheduled_tasks_list():
+                if not task.get("enabled"):
+                    continue
+                nxt = task.get("next_run_at")
+                due = False
+                if not nxt:
+                    due = True
+                else:
+                    try:
+                        nval = str(nxt).replace("Z", "+00:00")
+                        due = datetime.fromisoformat(nval) <= now_dt
+                    except Exception:
+                        due = True
+                if not due:
+                    continue
+                # create job
+                try:
+                    await job_create(job_id=str(uuid.uuid4()), job_type=str(task.get("job_type")), payload=(json.loads(task.get("config_json") or "{}") if isinstance(task.get("config_json"), str) else (task.get("config_json") or {})), status="Queued")
+                except Exception:
+                    pass
+                interval = int(task.get("interval_seconds") or 3600)
+                from datetime import timedelta
+                next_at = (now_dt + timedelta(seconds=interval)).isoformat(timespec="seconds")
+                await scheduled_task_update(str(task.get("name")), last_run_at=now_dt.isoformat(timespec="seconds"), next_run_at=next_at)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Scheduler loop error")
+        await asyncio.sleep(30)
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     """Initialize storage, services and workers; cancel them cleanly on shutdown."""
@@ -550,6 +657,8 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     await configure_omniroute()
     runtime.worker_task = asyncio.create_task(fulfillment_worker(), name="fulfillment-worker")
     runtime.trend_task = asyncio.create_task(trend_scheduler(), name="trend-scheduler")
+    runtime.persistent_job_task = asyncio.create_task(persistent_job_worker(), name="persistent-job-worker")
+    runtime.scheduler_loop_task = asyncio.create_task(scheduler_loop(), name="scheduler-loop")
     # Initialize Shopware services
     runtime.shopware_export_manager = ExportManager(
         connection_manager=ShopwareConnectionManager("", "", ""),
@@ -591,10 +700,10 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
-        for task in (runtime.worker_task, runtime.trend_task):
+        for task in (runtime.worker_task, runtime.trend_task, runtime.persistent_job_task, runtime.scheduler_loop_task):
             if task is not None:
                 task.cancel()
-        tasks = [task for task in (runtime.worker_task, runtime.trend_task) if task is not None]
+        tasks = [task for task in (runtime.worker_task, runtime.trend_task, runtime.persistent_job_task, runtime.scheduler_loop_task) if task is not None]
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
         try:
@@ -678,13 +787,27 @@ async def internal_api_key_middleware(request: Request, call_next):
             csrf_header = request.headers.get("X-CSRF-Token", "")
             if not csrf_cookie or not csrf_header or not hmac.compare_digest(csrf_cookie, csrf_header):
                 return JSONResponse(status_code=403, content={"detail": "CSRF validation failed"})
-        return await call_next(request)
+        response = await call_next(request)
+        if _is_state_changing(request) and path.startswith("/api/") and response.status_code < 400:
+            try:
+                actor = str(session.get("sub", "admin"))
+                role = str(session.get("role", "admin"))
+                await audit_event_create(actor=actor, actor_role=role, action=f"http.{request.method.lower()}", resource_type="api", resource_id=path, details={"status_code": response.status_code})
+            except Exception:
+                pass
+        return response
 
     provided_api_key = request.headers.get(_INTERNAL_API_KEY_HEADER, "")
     expected_api_key = os.getenv("INTERNAL_API_KEY", "").strip()
     if expected_api_key and hmac.compare_digest(provided_api_key, expected_api_key):
         request.state.session = {"sub": "admin", "role": "admin", "auth": "api_key"}
-        return await call_next(request)
+        response = await call_next(request)
+        if _is_state_changing(request) and path.startswith("/api/") and response.status_code < 400:
+            try:
+                await audit_event_create(actor="api_key", actor_role="admin", action=f"http.{request.method.lower()}", resource_type="api", resource_id=path, details={"status_code": response.status_code})
+            except Exception:
+                pass
+        return response
 
     if path.startswith("/api/"):
         return JSONResponse(status_code=401, content={"detail": "Unauthorized"})
@@ -1780,6 +1903,12 @@ async def import_matterhorn() -> dict[str, Any]:
     return await runtime.importer.import_products()
 
 
+@app.get("/api/import/matterhorn/preview")
+async def import_matterhorn_preview(limit: int = Query(default=50, ge=1, le=200)) -> dict[str, Any]:
+    """Preview/validate Matterhorn feed without persisting data."""
+    return await runtime.importer.preview_products(limit=limit)
+
+
 @app.get("/api/import-runs")
 async def import_runs(limit: int = Query(default=10, ge=1, le=50)) -> list[dict[str, Any]]:
     """Return recent import runs."""
@@ -2100,7 +2229,7 @@ class ShopwareExportCreate(BaseModel):
 async def create_shopware_connection(payload: ShopwareConnectionCreate):
     """Create a new Shopware connection."""
     from uuid import uuid4
-    conn_id = str(uuid4())
+    conn_id = str(uuid.uuid4())
     cm = ShopwareConnectionManager(
         shop_url=payload.shop_url,
         client_id=payload.api_client_id,
@@ -2145,9 +2274,8 @@ async def test_shopware_connection(conn_id: str):
 @app.post("/api/shopware/connections/{conn_id}/mappings")
 async def create_shopware_mapping(conn_id: str, payload: ShopwareMappingCreate):
     """Create a field mapping for a Shopware connection."""
-    from uuid import uuid4
     mapping = FieldMapping(
-        mapping_id=str(uuid4()),
+        mapping_id=str(uuid.uuid4()),
         connection_id=conn_id,
         matterhorn_field=payload.matterhorn_field,
         shopware_field=payload.shopware_field,
@@ -2408,8 +2536,7 @@ class GoogleSyncRequest(BaseModel):
 @app.post("/api/google/accounts")
 async def create_google_account(payload: GoogleAccountCreate):
     """Create a Google Merchant Center account connection."""
-    from uuid import uuid4
-    account_id = str(uuid4())
+    account_id = str(uuid.uuid4())
     
     from database import google_upsert_account
     await google_upsert_account(
@@ -2564,9 +2691,8 @@ async def google_sync(payload: GoogleSyncRequest):
     if not engine:
         raise HTTPException(status_code=404, detail="Account not found or export engine not initialized")
     
-    from uuid import uuid4
     from database import google_upsert_sync_job
-    job_id = str(uuid4())
+    job_id = str(uuid.uuid4())
     await google_upsert_sync_job(
         job_id=job_id,
         account_id=payload.account_id,
@@ -2635,10 +2761,9 @@ class OmniRoutePolicyCreate(BaseModel):
 @app.post("/api/omniroute/providers")
 async def create_omniroute_provider(payload: OmniRouteProviderCreate):
     """Create an AI provider."""
-    from uuid import uuid4
     from database import ai_upsert_provider
     
-    provider_id = str(uuid4())
+    provider_id = str(uuid.uuid4())
     provider = AIProvider(
         provider_id=provider_id,
         name=payload.name,
@@ -2707,10 +2832,9 @@ async def omniroute_provider_health_all():
 @app.post("/api/omniroute/models")
 async def create_omniroute_model(payload: OmniRouteModelCreate):
     """Register an AI model."""
-    from uuid import uuid4
     from database import ai_upsert_model
     
-    model_id = str(uuid4())
+    model_id = str(uuid.uuid4())
     model = AIModel(
         model_id=model_id,
         provider_id=payload.provider_id,
@@ -2773,8 +2897,7 @@ async def list_models(provider_id: str | None = None, category: str | None = Non
 @app.post("/api/omniroute/routing/rules")
 async def create_omniroute_routing_rule(payload: OmniRouteRuleCreate):
     """Create a routing rule."""
-    from uuid import uuid4
-    rule_id = str(uuid4())
+    rule_id = str(uuid.uuid4())
     rule = RoutingRule(
         rule_id=rule_id,
         name=payload.name,
@@ -2804,8 +2927,7 @@ async def list_omniroute_routing_rules():
 @app.post("/api/omniroute/routing/policies")
 async def create_omniroute_routing_policy(payload: OmniRoutePolicyCreate):
     """Create a routing policy for a workflow."""
-    from uuid import uuid4
-    policy_id = str(uuid4())
+    policy_id = str(uuid.uuid4())
     policy = RoutingPolicy(
         policy_id=policy_id,
         workflow_name=payload.workflow_name,
@@ -2916,10 +3038,9 @@ async def omniroute_dashboard_page(request: Request):
 @app.post("/api/photoshoot/start")
 async def start_photoshoot(request: dict[str, Any]) -> dict[str, Any]:
     """Start an AI photoshoot."""
-    from uuid import uuid4
 
     result = await get_photoshoot_provider().generate(request)
-    return {"shoot_id": str(uuid4()), "status": "processing", **result}
+    return {"shoot_id": str(uuid.uuid4()), "status": "processing", **result}
 
 
 @app.get("/api/photoshoot/status/{shootId}")
@@ -3148,7 +3269,62 @@ async def sales_marketing_tower_page(request: Request):
 async def photoshoot_page(request: Request):
     return templates.TemplateResponse("photoshoot.html", {"request": request})
 
-# --- Supporting APIs ---
+# --- Supporting APIs (jobs, scheduler, audit, news, knowledge) ---
+
+class JobCreate(BaseModel):
+    job_type: str = Field(min_length=1, max_length=128)
+    payload: dict[str, Any] = Field(default_factory=dict)
+    priority: int = Field(default=100, ge=0, le=1000)
+    max_attempts: int = Field(default=3, ge=1, le=20)
+    scheduled_for: str | None = None
+
+class NewsSourceCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=256)
+    url: str = Field(min_length=1, max_length=2048)
+    category: str = Field(default="", max_length=128)
+    fetch_method: str = Field(default="rss", max_length=64)
+    refresh_interval_seconds: int = Field(default=3600, ge=60, le=604800)
+    active: bool = True
+
+class KnowledgeCreate(BaseModel):
+    entry_type: str = Field(default="note", max_length=64)
+    title: str = Field(min_length=1, max_length=256)
+    content: str = Field(default="", max_length=20000)
+    tags: list[str] = Field(default_factory=list)
+    source: str = Field(default="", max_length=512)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+async def _execute_persistent_job(job: dict[str, Any]) -> dict[str, Any]:
+    jtype = job.get("job_type", "")
+    payload = job.get("payload_json")
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except Exception:
+            payload = {}
+    payload = payload or {}
+    if jtype == "matterhorn_import":
+        result = await runtime.importer.import_products()
+        return {"ok": True, "result": result}
+    if jtype == "trend_analysis":
+        if runtime.omniroute is None:
+            return {"ok": False, "status": "NOT_CONFIGURED", "message": "OmniRoute nicht konfiguriert"}
+        result = await TrendEngine(runtime.omniroute).run_weekly_trend_job()
+        return {"ok": True, "result": result}
+    if jtype == "bundle_generation":
+        count = int(payload.get("count", 10))
+        try:
+            from services.bundle_intelligence import generate_bundles
+            result = await generate_bundles(count=count)
+            return {"ok": True, "result": result}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+    if jtype == "health_check":
+        return {"ok": True, "result": await health_check()}
+    # Unknown but recordable
+    return {"ok": True, "status": "NOOP", "message": f"Kein Handler für Jobtyp '{jtype}' implementiert; Job protokolliert."}
+
 
 @app.get("/api/integrations/status")
 async def integrations_status() -> dict[str, Any]:
@@ -3162,13 +3338,11 @@ async def integrations_status() -> dict[str, Any]:
         },
         "matterhorn": {
             "configured": bool(await get_setting("matterhorn_api_token")),
+            "feed_url": "https://matterhorn-moda.de/?str=xmloffer",
         },
-        "shopware": {
-            "connections": len(getattr(runtime, "shopware_connections", {}) or {}),
-        },
-        "google_merchant": {
-            "configured": len(getattr(runtime, "google_merchant_clients", {}) or {}) > 0,
-        },
+        "shopware": {"connections": len(getattr(runtime, "shopware_connections", {}) or {})},
+        "google_merchant": {"configured": len(getattr(runtime, "google_merchant_clients", {}) or {}) > 0},
+        "competitor": {"configured": bool(getattr(runtime, "competitor_matching_engine", None))},
     }
     try:
         status["health"] = await health_check()
@@ -3176,71 +3350,186 @@ async def integrations_status() -> dict[str, Any]:
         status["health_error"] = str(exc)
     return status
 
+
 @app.get("/api/jobs")
-async def list_jobs_api(limit: int = Query(default=100, ge=1, le=500)) -> dict[str, Any]:
-    """Return job/operation overview from available persistent sources."""
-    jobs = {"items": [], "counts": {}}
+async def list_jobs_api(limit: int = Query(default=100, ge=1, le=500), status: str | None = Query(default=None)) -> dict[str, Any]:
+    """Return persistent jobs plus import-run history."""
+    items = []
+    counts: dict[str, int] = {}
+    try:
+        for j in await jobs_list(status=status, limit=limit):
+            items.append({**j, "source": "jobs"})
+            counts[str(j.get("status"))] = counts.get(str(j.get("status")), 0) + 1
+    except Exception as e:
+        items.append({"source": "jobs_error", "error": str(e)})
     try:
         runs = await recent_import_runs(min(limit, 50))
         for r in runs:
-            jobs["items"].append({
-                "id": f"import:{r.get('id')}",
-                "type": "matterhorn_import",
-                "status": {"running": "Running", "success": "Completed", "failed": "Failed"}.get(r.get("status"), r.get("status")),
-                "started_at": r.get("started_at"),
-                "finished_at": r.get("finished_at"),
-                "details": r,
-            })
+            st = {"running": "Running", "success": "Completed", "failed": "Failed"}.get(r.get("status"), r.get("status"))
+            items.append({"id": f"import:{r.get('id')}", "job_type": "matterhorn_import", "status": st, "source": "import_runs", **r})
+            counts[str(st)] = counts.get(str(st), 0) + 1
     except Exception as e:
-        jobs["import_runs_error"] = str(e)
-    # queue runtime info
-    jobs["runtime_queue_size"] = runtime.jobs.qsize()
-    jobs["uptime_seconds"] = runtime.uptime_seconds
-    return jobs
+        items.append({"source": "import_runs_error", "error": str(e)})
+    return {"items": items, "counts": counts, "runtime_queue_size": runtime.jobs.qsize(), "uptime_seconds": runtime.uptime_seconds}
+
+
+@app.post("/api/jobs", status_code=201)
+async def create_job_api(payload: JobCreate) -> dict[str, Any]:
+    job_id = str(uuid.uuid4())
+    job = await job_create(job_id=job_id, job_type=payload.job_type, payload=payload.payload, priority=payload.priority, max_attempts=payload.max_attempts, scheduled_for=payload.scheduled_for)
+    await audit_event_create(action="job.created", resource_type="job", resource_id=job_id, details={"job_type": payload.job_type})
+    # Opportunistic immediate execution for known synchronous job types when no schedule in future
+    if not payload.scheduled_for:
+        try:
+            claimed = await job_get(job_id)
+            if claimed and claimed.get("status") in {"Queued", "Retrying"}:
+                await job_update(job_id, status="Running", started_at=utc_now(), attempts=int(claimed.get("attempts",0))+1)
+                result = await _execute_persistent_job({**claimed, "job_type": payload.job_type, "payload_json": json.dumps(payload.payload)})
+                if result.get("ok", True):
+                    await job_update(job_id, status="Completed", finished_at=utc_now(), result_json=result, error_message="")
+                else:
+                    await job_update(job_id, status="Failed", finished_at=utc_now(), result_json=result, error_message=str(result.get("error") or result.get("message") or "failed"))
+                job = await job_get(job_id) or job
+        except Exception as e:
+            await job_update(job_id, status="Failed", finished_at=utc_now(), error_message=str(e))
+            job = await job_get(job_id) or job
+    return job
+
+
+@app.get("/api/jobs/{job_id}")
+async def get_job_api(job_id: str) -> dict[str, Any]:
+    job = await job_get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return job
+
+
+@app.post("/api/jobs/{job_id}/retry")
+async def retry_job_api(job_id: str) -> dict[str, Any]:
+    job = await job_get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    await job_update(job_id, status="Retrying", error_message="", finished_at=None)
+    await audit_event_create(action="job.retry_requested", resource_type="job", resource_id=job_id)
+    # execute retry inline for known types
+    job = await job_get(job_id) or job
+    await job_update(job_id, status="Running", started_at=utc_now(), attempts=int(job.get("attempts",0))+1)
+    try:
+        result = await _execute_persistent_job(job)
+        if result.get("ok", True):
+            await job_update(job_id, status="Completed", finished_at=utc_now(), result_json=result, error_message="")
+        else:
+            await job_update(job_id, status="Failed", finished_at=utc_now(), result_json=result, error_message=str(result.get("error") or result.get("message") or "failed"))
+    except Exception as e:
+        await job_update(job_id, status="Failed", finished_at=utc_now(), error_message=str(e))
+    return await job_get(job_id) or {"id": job_id}
+
+
+@app.post("/api/jobs/{job_id}/cancel")
+async def cancel_job_api(job_id: str) -> dict[str, Any]:
+    job = await job_get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    await job_update(job_id, status="Cancelled", finished_at=utc_now())
+    await audit_event_create(action="job.cancelled", resource_type="job", resource_id=job_id)
+    return await job_get(job_id) or {"id": job_id}
+
 
 @app.get("/api/scheduler/config")
 async def scheduler_config() -> dict[str, Any]:
-    """Return scheduler/automation configuration and defaults."""
+    """Return scheduler/automation configuration and persisted tasks."""
+    tasks = []
+    try:
+        tasks = await scheduled_tasks_list()
+    except Exception as e:
+        tasks = [{"error": str(e)}]
     return {
-        "persistent_scheduler": "in-app-asyncio",
+        "persistent_scheduler": "in-app-asyncio+persistent-tasks",
+        "tasks": tasks,
         "automations": [
             {"name": "Trend analysis", "type": "interval", "interval_seconds": 7*24*60*60, "enabled": runtime.omniroute is not None, "configurable": True},
             {"name": "Fulfillment worker", "type": "queue", "enabled": True, "configurable": False},
         ],
-        "defaults": [
-            "Matterhorn Import",
-            "Lagerbestandssynchronisierung",
-            "Preisberechnung",
-            "Trendanalyse",
-            "Wettbewerberanalyse",
-            "Bundle Generation",
-        ],
-        "note": "Frequenzen über Settings/Umgebung konfigurierbar; persistente DB-Scheduler-Erweiterung vorgesehen."
+        "defaults": ["Matterhorn Import", "Lagerbestandssynchronisierung", "Preisberechnung", "Trendanalyse", "Wettbewerberanalyse", "Bundle Generation"],
     }
+
+
+@app.post("/api/scheduler/tasks")
+async def upsert_scheduler_task(payload: dict[str, Any]) -> dict[str, Any]:
+    name = str(payload.get("name") or "").strip()
+    job_type = str(payload.get("job_type") or name or "custom").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="name required")
+    task_id = str(payload.get("id") or uuid.uuid4())
+    await scheduled_task_upsert(task_id=task_id, name=name, job_type=job_type,
+                                cron_or_interval=str(payload.get("cron_or_interval","interval")),
+                                interval_seconds=int(payload.get("interval_seconds",3600)),
+                                enabled=bool(payload.get("enabled",True)),
+                                config=payload.get("config") if isinstance(payload.get("config"), dict) else {},
+                                next_run_at=payload.get("next_run_at"))
+    await audit_event_create(action="scheduler.task_upserted", resource_type="scheduled_task", resource_id=name)
+    return {"status": "ok", "name": name}
+
 
 @app.get("/api/audit-log")
 async def audit_log(limit: int = Query(default=200, ge=1, le=1000)) -> dict[str, Any]:
-    """Return audit-relevant events from system logs (and available audit sources)."""
+    """Return persisted audit events merged with recent system logs."""
     items = []
     try:
-        logs = await recent_logs(limit)
-        for l in logs:
+        for ev in await audit_events_list(limit):
+            items.append({"source": "audit_events", **ev})
+    except Exception as e:
+        items.append({"source": "audit_events_error", "error": str(e)})
+    try:
+        for l in await recent_logs(limit):
             items.append({"source": "system_logs", **l})
     except Exception as e:
-        items.append({"source": "error", "error": str(e)})
-    return {"items": items, "count": len(items)}
+        items.append({"source": "system_logs_error", "error": str(e)})
+    items.sort(key=lambda x: str(x.get("created_at","")), reverse=True)
+    return {"items": items[:limit], "count": min(len(items), limit)}
+
 
 @app.get("/api/news")
 async def news_feed(limit: int = Query(default=50, ge=1, le=200)) -> dict[str, Any]:
-    """News & events feed (requires configured sources/providers)."""
-    return {"items": [], "status": "NOT_CONFIGURED", "message": "Keine News-Quellen konfiguriert. Quellenverwaltung über Settings/Integrationen ergänzen."}
+    try:
+        items = await news_items_list(limit)
+        sources = await news_sources_list()
+        status = "OK" if items or sources else "NOT_CONFIGURED"
+        msg = "" if status == "OK" else "Keine News-Quellen konfiguriert. Quellenverwaltung über API/Settings ergänzen."
+        return {"items": items, "sources": sources, "status": status, "message": msg}
+    except Exception as e:
+        return {"items": [], "sources": [], "status": "ERROR", "message": str(e)}
+
+
+@app.post("/api/news/sources", status_code=201)
+async def create_news_source(payload: NewsSourceCreate) -> dict[str, Any]:
+    sid = str(uuid.uuid4())
+    await news_source_upsert(source_id=sid, name=payload.name, url=payload.url, category=payload.category,
+                             fetch_method=payload.fetch_method, refresh_interval_seconds=payload.refresh_interval_seconds, active=payload.active)
+    await audit_event_create(action="news.source_upserted", resource_type="news_source", resource_id=sid)
+    return {"id": sid, "status": "ok"}
+
 
 @app.get("/api/knowledge")
 async def knowledge_base(limit: int = Query(default=50, ge=1, le=200)) -> dict[str, Any]:
-    """Knowledge base entries (derived/configured)."""
-    return {"items": [], "status": "NOT_CONFIGURED", "message": "Knowledge-Base noch nicht befüllt/konfiguriert."}
+    try:
+        items = await knowledge_list(limit)
+        status = "OK" if items else "NOT_CONFIGURED"
+        msg = "" if status == "OK" else "Knowledge-Base noch nicht befüllt/konfiguriert."
+        return {"items": items, "status": status, "message": msg}
+    except Exception as e:
+        return {"items": [], "status": "ERROR", "message": str(e)}
+
+
+@app.post("/api/knowledge", status_code=201)
+async def create_knowledge_entry(payload: KnowledgeCreate) -> dict[str, Any]:
+    eid = str(uuid.uuid4())
+    entry = await knowledge_upsert(entry_id=eid, entry_type=payload.entry_type, title=payload.title, content=payload.content,
+                                   tags=payload.tags, source=payload.source, metadata=payload.metadata)
+    await audit_event_create(action="knowledge.entry_created", resource_type="knowledge_entry", resource_id=eid)
+    return entry
+
 
 @app.get("/api/control-center/dashboard")
 async def control_center_dashboard_alias():
     return await control_center_overview()
-

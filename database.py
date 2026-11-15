@@ -1074,6 +1074,105 @@ POSTGRES_SCHEMA: tuple[str, ...] = (
     )
     """,
     "CREATE INDEX IF NOT EXISTS idx_bundles_intelligence_products_bundle_sku ON bundles_intelligence_products(bundle_sku)",
+    """
+    CREATE TABLE IF NOT EXISTS jobs (
+        id TEXT PRIMARY KEY,
+        job_type TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'Queued' CHECK (status IN ('Queued','Running','Completed','Failed','Retrying','Cancelled')),
+        payload_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+        result_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+        error_message TEXT NOT NULL DEFAULT '',
+        attempts INTEGER NOT NULL DEFAULT 0,
+        max_attempts INTEGER NOT NULL DEFAULT 3,
+        priority INTEGER NOT NULL DEFAULT 100,
+        scheduled_for TIMESTAMPTZ,
+        started_at TIMESTAMPTZ,
+        finished_at TIMESTAMPTZ,
+        created_by TEXT NOT NULL DEFAULT 'system',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_jobs_status_sched ON jobs(status, scheduled_for, priority)",
+    "CREATE INDEX IF NOT EXISTS idx_jobs_type_created ON jobs(job_type, created_at DESC)",
+    """
+    CREATE TABLE IF NOT EXISTS scheduled_tasks (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL UNIQUE,
+        job_type TEXT NOT NULL,
+        cron_or_interval TEXT NOT NULL DEFAULT 'interval',
+        interval_seconds INTEGER NOT NULL DEFAULT 3600,
+        enabled BOOLEAN NOT NULL DEFAULT TRUE,
+        config_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+        last_run_at TIMESTAMPTZ,
+        next_run_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS audit_events (
+        id BIGSERIAL PRIMARY KEY,
+        actor TEXT NOT NULL DEFAULT 'system',
+        actor_role TEXT NOT NULL DEFAULT 'admin',
+        action TEXT NOT NULL,
+        resource_type TEXT NOT NULL DEFAULT '',
+        resource_id TEXT NOT NULL DEFAULT '',
+        details_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+        ip_address TEXT NOT NULL DEFAULT '',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_audit_events_created_at ON audit_events(created_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_audit_events_action ON audit_events(action)",
+    """
+    CREATE TABLE IF NOT EXISTS news_sources (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        url TEXT NOT NULL,
+        category TEXT NOT NULL DEFAULT '',
+        fetch_method TEXT NOT NULL DEFAULT 'rss',
+        refresh_interval_seconds INTEGER NOT NULL DEFAULT 3600,
+        active BOOLEAN NOT NULL DEFAULT TRUE,
+        last_success_at TIMESTAMPTZ,
+        last_status TEXT NOT NULL DEFAULT 'never',
+        last_error TEXT NOT NULL DEFAULT '',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS news_items (
+        id TEXT PRIMARY KEY,
+        source_id TEXT REFERENCES news_sources(id) ON DELETE SET NULL,
+        title TEXT NOT NULL,
+        source_name TEXT NOT NULL DEFAULT '',
+        url TEXT NOT NULL DEFAULT '',
+        published_at TIMESTAMPTZ,
+        summary TEXT NOT NULL DEFAULT '',
+        categories_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+        keywords_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+        relevance_score NUMERIC(6,3) NOT NULL DEFAULT 0,
+        trend_score NUMERIC(6,3) NOT NULL DEFAULT 0,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE(url)
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_news_items_created_at ON news_items(created_at DESC)",
+    """
+    CREATE TABLE IF NOT EXISTS knowledge_entries (
+        id TEXT PRIMARY KEY,
+        entry_type TEXT NOT NULL DEFAULT 'note',
+        title TEXT NOT NULL,
+        content TEXT NOT NULL DEFAULT '',
+        tags_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+        source TEXT NOT NULL DEFAULT '',
+        metadata_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
+
 )
 
 SQLITE_SCHEMA = """
@@ -1959,6 +2058,94 @@ CREATE TABLE IF NOT EXISTS bundles_intelligence_products (
     PRIMARY KEY (bundle_sku, product_sku)
 );
 CREATE INDEX IF NOT EXISTS idx_bundles_intelligence_products_bundle_sku ON bundles_intelligence_products(bundle_sku);
+
+CREATE TABLE IF NOT EXISTS jobs (
+    id TEXT PRIMARY KEY,
+    job_type TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'Queued' CHECK (status IN ('Queued','Running','Completed','Failed','Retrying','Cancelled')),
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    result_json TEXT NOT NULL DEFAULT '{}',
+    error_message TEXT NOT NULL DEFAULT '',
+    attempts INTEGER NOT NULL DEFAULT 0,
+    max_attempts INTEGER NOT NULL DEFAULT 3,
+    priority INTEGER NOT NULL DEFAULT 100,
+    scheduled_for TEXT,
+    started_at TEXT,
+    finished_at TEXT,
+    created_by TEXT NOT NULL DEFAULT 'system',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_jobs_status_sched ON jobs(status, scheduled_for, priority);
+CREATE INDEX IF NOT EXISTS idx_jobs_type_created ON jobs(job_type, created_at DESC);
+CREATE TABLE IF NOT EXISTS scheduled_tasks (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    job_type TEXT NOT NULL,
+    cron_or_interval TEXT NOT NULL DEFAULT 'interval',
+    interval_seconds INTEGER NOT NULL DEFAULT 3600,
+    enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0,1)),
+    config_json TEXT NOT NULL DEFAULT '{}',
+    last_run_at TEXT,
+    next_run_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS audit_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    actor TEXT NOT NULL DEFAULT 'system',
+    actor_role TEXT NOT NULL DEFAULT 'admin',
+    action TEXT NOT NULL,
+    resource_type TEXT NOT NULL DEFAULT '',
+    resource_id TEXT NOT NULL DEFAULT '',
+    details_json TEXT NOT NULL DEFAULT '{}',
+    ip_address TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_audit_events_created_at ON audit_events(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_events_action ON audit_events(action);
+CREATE TABLE IF NOT EXISTS news_sources (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    url TEXT NOT NULL,
+    category TEXT NOT NULL DEFAULT '',
+    fetch_method TEXT NOT NULL DEFAULT 'rss',
+    refresh_interval_seconds INTEGER NOT NULL DEFAULT 3600,
+    active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0,1)),
+    last_success_at TEXT,
+    last_status TEXT NOT NULL DEFAULT 'never',
+    last_error TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS news_items (
+    id TEXT PRIMARY KEY,
+    source_id TEXT REFERENCES news_sources(id) ON DELETE SET NULL,
+    title TEXT NOT NULL,
+    source_name TEXT NOT NULL DEFAULT '',
+    url TEXT NOT NULL DEFAULT '',
+    published_at TEXT,
+    summary TEXT NOT NULL DEFAULT '',
+    categories_json TEXT NOT NULL DEFAULT '[]',
+    keywords_json TEXT NOT NULL DEFAULT '[]',
+    relevance_score REAL NOT NULL DEFAULT 0,
+    trend_score REAL NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    UNIQUE(url)
+);
+CREATE INDEX IF NOT EXISTS idx_news_items_created_at ON news_items(created_at DESC);
+CREATE TABLE IF NOT EXISTS knowledge_entries (
+    id TEXT PRIMARY KEY,
+    entry_type TEXT NOT NULL DEFAULT 'note',
+    title TEXT NOT NULL,
+    content TEXT NOT NULL DEFAULT '',
+    tags_json TEXT NOT NULL DEFAULT '[]',
+    source TEXT NOT NULL DEFAULT '',
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
 """
 
 
@@ -4553,3 +4740,292 @@ async def bundle_intelligence_update(bundle_sku: str, **fields: Any) -> bool:
         await db.execute(f"UPDATE bundles_intelligence SET {', '.join(assignments)}, updated_at = ? WHERE bundle_sku = ?", tuple(params))
         await db.commit()
         return True
+
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Persistent Jobs / Scheduler / Audit / News / Knowledge (Control Center)
+# ════════════════════════════════════════════════════════════════════════════
+
+async def job_create(*, job_id: str, job_type: str, payload: dict[str, Any] | None = None,
+                     status: str = "Queued", max_attempts: int = 3, priority: int = 100,
+                     scheduled_for: str | None = None, created_by: str = "system") -> dict[str, Any]:
+    now = utc_now()
+    payload_json = json.dumps(payload or {})
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """INSERT INTO jobs(id,job_type,status,payload_json,result_json,error_message,attempts,max_attempts,priority,scheduled_for,created_by,created_at,updated_at)
+                   VALUES($1,$2,$3,$4::jsonb,'{}'::jsonb,'',0,$5,$6,$7,$8,NOW(),NOW()) RETURNING *""",
+                job_id, job_type, status, payload_json, max_attempts, priority, scheduled_for, created_by,
+            )
+        return dict(row) if row else {"id": job_id}
+    async with get_connection() as db:
+        await db.execute(
+            """INSERT INTO jobs(id,job_type,status,payload_json,result_json,error_message,attempts,max_attempts,priority,scheduled_for,started_at,finished_at,created_by,created_at,updated_at)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (job_id, job_type, status, payload_json, "{}", "", 0, max_attempts, priority, scheduled_for, None, None, created_by, now, now),
+        )
+        await db.commit()
+    return (await job_get(job_id)) or {"id": job_id}
+
+
+async def job_get(job_id: str) -> dict[str, Any] | None:
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT * FROM jobs WHERE id=$1", job_id)
+        return dict(row) if row else None
+    async with get_connection() as db:
+        cur = await db.execute("SELECT * FROM jobs WHERE id=?", (job_id,))
+        row = await cur.fetchone(); await cur.close()
+        return dict(row) if row else None
+
+
+async def jobs_list(*, status: str | None = None, job_type: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
+    limit = min(max(limit,1),500)
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            q = "SELECT * FROM jobs WHERE 1=1"; params=[]
+            if status: q += f" AND status=${len(params)+1}"; params.append(status)
+            if job_type: q += f" AND job_type=${len(params)+1}"; params.append(job_type)
+            q += f" ORDER BY created_at DESC LIMIT ${len(params)+1}"; params.append(limit)
+            rows = await conn.fetch(q, *params)
+        return [dict(r) for r in rows]
+    async with get_connection() as db:
+        q = "SELECT * FROM jobs WHERE 1=1"; params=[]
+        if status: q += " AND status=?"; params.append(status)
+        if job_type: q += " AND job_type=?"; params.append(job_type)
+        q += " ORDER BY created_at DESC LIMIT ?"; params.append(limit)
+        cur = await db.execute(q, tuple(params)); rows = await cur.fetchall(); await cur.close()
+        return [dict(r) for r in rows]
+
+
+async def job_update(job_id: str, **fields: Any) -> bool:
+    allowed = {"status","payload_json","result_json","error_message","attempts","max_attempts","priority","scheduled_for","started_at","finished_at","updated_at"}
+    updates = {}
+    for k,v in fields.items():
+        if k not in allowed: continue
+        if k in {"payload_json","result_json"} and not isinstance(v,str):
+            updates[k]=json.dumps(v)
+        else:
+            updates[k]=v
+    if not updates: return False
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            sets=[]; params=[]
+            for i,(k,v) in enumerate(updates.items(), start=1):
+                if k in {"payload_json","result_json"}:
+                    sets.append(f"{k}=${i}::jsonb")
+                else:
+                    sets.append(f"{k}=${i}")
+                params.append(v)
+            params.append(job_id)
+            res = await conn.execute(f"UPDATE jobs SET {', '.join(sets)}, updated_at=NOW() WHERE id=${len(params)}", *params)
+        return str(res).endswith("1") or "UPDATE 1" in str(res)
+    async with get_connection() as db:
+        sets=[f"{k}=?" for k in updates]; params=list(updates.values())+[utc_now(), job_id]
+        cur = await db.execute(f"UPDATE jobs SET {', '.join(sets)}, updated_at=? WHERE id=?", tuple(params))
+        await db.commit(); ok = cur.rowcount>0; await cur.close(); return ok
+
+
+async def job_claim_next() -> dict[str, Any] | None:
+    """Claim next queued job (SQLite-safe simple claim; Postgres best-effort)."""
+    now = utc_now()
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """UPDATE jobs SET status='Running', started_at=NOW(), attempts=attempts+1, updated_at=NOW()
+                   WHERE id = (
+                     SELECT id FROM jobs WHERE status IN ('Queued','Retrying') AND (scheduled_for IS NULL OR scheduled_for <= NOW())
+                     ORDER BY priority ASC, created_at ASC LIMIT 1 FOR UPDATE SKIP LOCKED
+                   ) RETURNING *"""
+            )
+        return dict(row) if row else None
+    async with get_connection() as db:
+        await db.execute("BEGIN IMMEDIATE")
+        cur = await db.execute(
+            """SELECT * FROM jobs WHERE status IN ('Queued','Retrying') AND (scheduled_for IS NULL OR scheduled_for <= ?)
+               ORDER BY priority ASC, created_at ASC LIMIT 1""", (now,))
+        row = await cur.fetchone(); await cur.close()
+        if not row:
+            await db.commit(); return None
+        job = dict(row)
+        await db.execute("UPDATE jobs SET status='Running', started_at=?, attempts=attempts+1, updated_at=? WHERE id=? AND status IN ('Queued','Retrying')",
+                         (now, now, job['id']))
+        await db.commit()
+        return await job_get(job['id'])
+
+
+async def scheduled_task_upsert(*, task_id: str, name: str, job_type: str, cron_or_interval: str='interval',
+                                interval_seconds: int=3600, enabled: bool=True, config: dict[str,Any]|None=None,
+                                next_run_at: str|None=None) -> None:
+    now = utc_now(); cfg = json.dumps(config or {})
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO scheduled_tasks(id,name,job_type,cron_or_interval,interval_seconds,enabled,config_json,next_run_at,created_at,updated_at)
+                   VALUES($1,$2,$3,$4,$5,$6,$7::jsonb,$8,NOW(),NOW())
+                   ON CONFLICT(name) DO UPDATE SET job_type=EXCLUDED.job_type, cron_or_interval=EXCLUDED.cron_or_interval,
+                   interval_seconds=EXCLUDED.interval_seconds, enabled=EXCLUDED.enabled, config_json=EXCLUDED.config_json,
+                   next_run_at=COALESCE(EXCLUDED.next_run_at, scheduled_tasks.next_run_at), updated_at=NOW()""",
+                task_id,name,job_type,cron_or_interval,interval_seconds,enabled,cfg,next_run_at)
+        return
+    async with get_connection() as db:
+        await db.execute(
+            """INSERT INTO scheduled_tasks(id,name,job_type,cron_or_interval,interval_seconds,enabled,config_json,last_run_at,next_run_at,created_at,updated_at)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(name) DO UPDATE SET job_type=excluded.job_type, cron_or_interval=excluded.cron_or_interval,
+               interval_seconds=excluded.interval_seconds, enabled=excluded.enabled, config_json=excluded.config_json, next_run_at=COALESCE(excluded.next_run_at, scheduled_tasks.next_run_at), updated_at=excluded.updated_at""",
+            (task_id,name,job_type,cron_or_interval,interval_seconds,1 if enabled else 0,cfg,None,next_run_at,now,now))
+        await db.commit()
+
+
+async def scheduled_tasks_list() -> list[dict[str, Any]]:
+    if uses_postgres():
+        pool = await get_pg_pool(); 
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("SELECT * FROM scheduled_tasks ORDER BY name ASC")
+        return [dict(r) for r in rows]
+    async with get_connection() as db:
+        cur = await db.execute("SELECT * FROM scheduled_tasks ORDER BY name ASC"); rows = await cur.fetchall(); await cur.close()
+        return [dict(r) for r in rows]
+
+
+async def scheduled_task_update(name: str, **fields: Any) -> bool:
+    allowed={"job_type","cron_or_interval","interval_seconds","enabled","config_json","last_run_at","next_run_at"}
+    updates={}
+    for k,v in fields.items():
+        if k not in allowed: continue
+        if k=="config_json" and not isinstance(v,str): updates[k]=json.dumps(v)
+        elif k=="enabled": updates[k]=v if uses_postgres() else (1 if v else 0)
+        else: updates[k]=v
+    if not updates: return False
+    if uses_postgres():
+        pool=await get_pg_pool();
+        async with pool.acquire() as conn:
+            sets=[]; params=[]
+            for i,(k,v) in enumerate(updates.items(),1):
+                sets.append(f"{k}=${i}::jsonb" if k=="config_json" else f"{k}=${i}"); params.append(v)
+            params.append(name)
+            res=await conn.execute(f"UPDATE scheduled_tasks SET {', '.join(sets)}, updated_at=NOW() WHERE name=${len(params)}", *params)
+        return "UPDATE 1" in str(res)
+    async with get_connection() as db:
+        sets=[f"{k}=?" for k in updates]; params=list(updates.values())+[utc_now(), name]
+        cur=await db.execute(f"UPDATE scheduled_tasks SET {', '.join(sets)}, updated_at=? WHERE name=?", tuple(params)); await db.commit(); ok=cur.rowcount>0; await cur.close(); return ok
+
+
+async def audit_event_create(*, actor: str='system', actor_role: str='admin', action: str, resource_type: str='', resource_id: str='', details: dict[str,Any]|None=None, ip_address: str='') -> None:
+    now=utc_now(); det=json.dumps(details or {})
+    if uses_postgres():
+        pool=await get_pg_pool();
+        async with pool.acquire() as conn:
+            await conn.execute("INSERT INTO audit_events(actor,actor_role,action,resource_type,resource_id,details_json,ip_address,created_at) VALUES($1,$2,$3,$4,$5,$6::jsonb,$7,NOW())",
+                               actor,actor_role,action,resource_type,resource_id,det,ip_address)
+        return
+    async with get_connection() as db:
+        await db.execute("INSERT INTO audit_events(actor,actor_role,action,resource_type,resource_id,details_json,ip_address,created_at) VALUES(?,?,?,?,?,?,?,?)",
+                         (actor,actor_role,action,resource_type,resource_id,det,ip_address,now)); await db.commit()
+
+
+async def audit_events_list(limit: int=200) -> list[dict[str, Any]]:
+    limit=min(max(limit,1),1000)
+    if uses_postgres():
+        pool=await get_pg_pool();
+        async with pool.acquire() as conn:
+            rows=await conn.fetch("SELECT * FROM audit_events ORDER BY created_at DESC LIMIT $1", limit)
+        return [dict(r) for r in rows]
+    async with get_connection() as db:
+        cur=await db.execute("SELECT * FROM audit_events ORDER BY created_at DESC LIMIT ?", (limit,)); rows=await cur.fetchall(); await cur.close()
+        return [dict(r) for r in rows]
+
+
+async def news_source_upsert(*, source_id: str, name: str, url: str, category: str='', fetch_method: str='rss', refresh_interval_seconds: int=3600, active: bool=True) -> None:
+    now=utc_now()
+    if uses_postgres():
+        pool=await get_pg_pool();
+        async with pool.acquire() as conn:
+            await conn.execute("""INSERT INTO news_sources(id,name,url,category,fetch_method,refresh_interval_seconds,active,created_at,updated_at)
+                VALUES($1,$2,$3,$4,$5,$6,$7,NOW(),NOW()) ON CONFLICT(id) DO UPDATE SET name=EXCLUDED.name,url=EXCLUDED.url,category=EXCLUDED.category,fetch_method=EXCLUDED.fetch_method,refresh_interval_seconds=EXCLUDED.refresh_interval_seconds,active=EXCLUDED.active,updated_at=NOW()""",
+                source_id,name,url,category,fetch_method,refresh_interval_seconds,active)
+        return
+    async with get_connection() as db:
+        await db.execute("""INSERT INTO news_sources(id,name,url,category,fetch_method,refresh_interval_seconds,active,last_success_at,last_status,last_error,created_at,updated_at)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,url=excluded.url,category=excluded.category,fetch_method=excluded.fetch_method,refresh_interval_seconds=excluded.refresh_interval_seconds,active=excluded.active,updated_at=excluded.updated_at""",
+            (source_id,name,url,category,fetch_method,refresh_interval_seconds,1 if active else 0,None,'never','',now,now)); await db.commit()
+
+
+async def news_sources_list() -> list[dict[str, Any]]:
+    if uses_postgres():
+        pool=await get_pg_pool();
+        async with pool.acquire() as conn: rows=await conn.fetch("SELECT * FROM news_sources ORDER BY name ASC")
+        return [dict(r) for r in rows]
+    async with get_connection() as db:
+        cur=await db.execute("SELECT * FROM news_sources ORDER BY name ASC"); rows=await cur.fetchall(); await cur.close(); return [dict(r) for r in rows]
+
+
+async def news_items_list(limit: int=50) -> list[dict[str, Any]]:
+    limit=min(max(limit,1),200)
+    if uses_postgres():
+        pool=await get_pg_pool();
+        async with pool.acquire() as conn: rows=await conn.fetch("SELECT * FROM news_items ORDER BY created_at DESC LIMIT $1", limit)
+        return [dict(r) for r in rows]
+    async with get_connection() as db:
+        cur=await db.execute("SELECT * FROM news_items ORDER BY created_at DESC LIMIT ?", (limit,)); rows=await cur.fetchall(); await cur.close(); return [dict(r) for r in rows]
+
+
+async def news_item_upsert(*, item_id: str, title: str, url: str='', source_id: str|None=None, source_name: str='', published_at: str|None=None, summary: str='', categories: list[str]|None=None, keywords: list[str]|None=None, relevance_score: float=0.0, trend_score: float=0.0) -> None:
+    now=utc_now(); cats=json.dumps(categories or []); keys=json.dumps(keywords or [])
+    if uses_postgres():
+        pool=await get_pg_pool();
+        async with pool.acquire() as conn:
+            await conn.execute("""INSERT INTO news_items(id,source_id,title,source_name,url,published_at,summary,categories_json,keywords_json,relevance_score,trend_score,created_at)
+                VALUES($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9::jsonb,$10,$11,NOW())
+                ON CONFLICT(url) DO UPDATE SET title=EXCLUDED.title, source_name=EXCLUDED.source_name, summary=EXCLUDED.summary, categories_json=EXCLUDED.categories_json, keywords_json=EXCLUDED.keywords_json, relevance_score=EXCLUDED.relevance_score, trend_score=EXCLUDED.trend_score""",
+                item_id,source_id,title,source_name,url,published_at,summary,cats,keys,relevance_score,trend_score)
+        return
+    async with get_connection() as db:
+        await db.execute("""INSERT INTO news_items(id,source_id,title,source_name,url,published_at,summary,categories_json,keywords_json,relevance_score,trend_score,created_at)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(url) DO UPDATE SET title=excluded.title, source_name=excluded.source_name, summary=excluded.summary, categories_json=excluded.categories_json, keywords_json=excluded.keywords_json, relevance_score=excluded.relevance_score, trend_score=excluded.trend_score""",
+            (item_id,source_id,title,source_name,url,published_at,summary,cats,keys,relevance_score,trend_score,now)); await db.commit()
+
+
+async def knowledge_upsert(*, entry_id: str, entry_type: str='note', title: str, content: str='', tags: list[str]|None=None, source: str='', metadata: dict[str,Any]|None=None) -> dict[str,Any]:
+    now=utc_now(); tags_j=json.dumps(tags or []); meta_j=json.dumps(metadata or {})
+    if uses_postgres():
+        pool=await get_pg_pool();
+        async with pool.acquire() as conn:
+            row=await conn.fetchrow("""INSERT INTO knowledge_entries(id,entry_type,title,content,tags_json,source,metadata_json,created_at,updated_at)
+                VALUES($1,$2,$3,$4,$5::jsonb,$6,$7::jsonb,NOW(),NOW())
+                ON CONFLICT(id) DO UPDATE SET entry_type=EXCLUDED.entry_type,title=EXCLUDED.title,content=EXCLUDED.content,tags_json=EXCLUDED.tags_json,source=EXCLUDED.source,metadata_json=EXCLUDED.metadata_json,updated_at=NOW() RETURNING *""",
+                entry_id,entry_type,title,content,tags_j,source,meta_j)
+        return dict(row) if row else {"id":entry_id}
+    async with get_connection() as db:
+        await db.execute("""INSERT INTO knowledge_entries(id,entry_type,title,content,tags_json,source,metadata_json,created_at,updated_at)
+            VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET entry_type=excluded.entry_type,title=excluded.title,content=excluded.content,tags_json=excluded.tags_json,source=excluded.source,metadata_json=excluded.metadata_json,updated_at=excluded.updated_at""",
+            (entry_id,entry_type,title,content,tags_j,source,meta_j,now,now)); await db.commit()
+    return await knowledge_get(entry_id) or {"id":entry_id}
+
+
+async def knowledge_list(limit: int=100) -> list[dict[str, Any]]:
+    limit=min(max(limit,1),500)
+    if uses_postgres():
+        pool=await get_pg_pool();
+        async with pool.acquire() as conn: rows=await conn.fetch("SELECT * FROM knowledge_entries ORDER BY updated_at DESC LIMIT $1", limit)
+        return [dict(r) for r in rows]
+    async with get_connection() as db:
+        cur=await db.execute("SELECT * FROM knowledge_entries ORDER BY updated_at DESC LIMIT ?", (limit,)); rows=await cur.fetchall(); await cur.close(); return [dict(r) for r in rows]
+
+
+async def knowledge_get(entry_id: str) -> dict[str, Any] | None:
+    if uses_postgres():
+        pool=await get_pg_pool();
+        async with pool.acquire() as conn: row=await conn.fetchrow("SELECT * FROM knowledge_entries WHERE id=$1", entry_id)
+        return dict(row) if row else None
+    async with get_connection() as db:
+        cur=await db.execute("SELECT * FROM knowledge_entries WHERE id=?", (entry_id,)); row=await cur.fetchone(); await cur.close(); return dict(row) if row else None
+

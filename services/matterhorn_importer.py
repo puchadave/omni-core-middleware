@@ -124,3 +124,42 @@ class MatterhornUniversalImporter:
             await write_log("ERROR", "import_failed", f"Matterhorn import failed: {exc}")
             await finish_import_run(run_id, imported=imported, updated=updated, errors=errors, error_message=str(exc))
             return {"imported": imported, "updated": updated, "errors": errors, "status": "failed", "error": str(exc)}
+
+
+    async def preview_products(self, limit: int = 50) -> Dict[str, Any]:
+        """Fetch and normalize sample products without persisting (validation/preview)."""
+        try:
+            products = await self.fetch_via_xml_offer()
+            source = "xml"
+            if not products:
+                products = await self.fetch_via_rest_api()
+                source = "rest"
+            normalized = []
+            errors = 0
+            for p in products[: max(1, min(limit, 200))]:
+                try:
+                    raw_stock = int(p.get("stock", 0) or 0)
+                    buffered_stock = max(0, int(raw_stock * (1 - STOCK_BUFFER_PERCENT)))
+                    normalized.append({
+                        "sku": str(p.get("sku", "")).strip(),
+                        "title": str(p.get("title", "")),
+                        "category": str(p.get("category", "")),
+                        "supplier_price": float(p.get("price", 0) or 0),
+                        "raw_stock": raw_stock,
+                        "buffered_stock": buffered_stock,
+                        "source": source,
+                        "validation": "ok" if str(p.get("sku", "")).strip() and str(p.get("title", "")) else "warning",
+                    })
+                except Exception:
+                    errors += 1
+            return {
+                "status": "ok",
+                "source": source,
+                "total_fetched": len(products),
+                "preview_count": len(normalized),
+                "errors": errors,
+                "items": normalized,
+                "pipeline": ["RAW", "VALIDATION", "NORMALIZATION", "PREVIEW"],
+            }
+        except Exception as exc:
+            return {"status": "error", "error": str(exc), "items": []}
