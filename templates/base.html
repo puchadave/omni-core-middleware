@@ -1,32 +1,63 @@
 <!DOCTYPE html>
-<html lang="de">
+<html lang="de" class="dark">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Omni-Core ERP & BI | Control Center</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
-    <style>
-        .live-dot { animation: pulse 2s infinite; }
-        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
-    </style>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}Omni-Core Control Center{% endblock %}</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>[x-cloak]{display:none!important}</style>
 </head>
-<body class="bg-gray-900 text-gray-100 min-h-screen">
-    <nav class="bg-gray-800 border-b border-gray-700 sticky top-0 z-40">
-        <div class="container mx-auto px-4 py-3 flex items-center justify-between">
-            <a href="/" class="text-xl font-bold text-white">OMNI-CORE <span class="text-indigo-400">ERP & BI</span></a>
-            <div class="flex items-center space-x-4">
-                <a href="/" class="text-gray-300 hover:text-white">Dashboard</a>
-                <a href="/admin/products" class="text-gray-300 hover:text-white">Produkte</a>
-                <a href="/admin/orders" class="text-gray-300 hover:text-white">Bestellungen</a>
-                <a href="/admin/settings" class="text-gray-300 hover:text-white">Einstellungen</a>
-                <a href="/google" class="text-gray-300 hover:text-white">Google Merchant</a>
-                <a href="/omniroute" class="text-gray-300 hover:text-white">OmniRoute</a>
-            </div>
-        </div>
-    </nav>
-    <main class="container mx-auto px-4 py-6">
+<body class="bg-slate-950 text-slate-100 min-h-screen">
+  <div class="flex min-h-screen">
+    <aside class="w-64 bg-slate-900 border-r border-slate-800 p-4 hidden lg:block overflow-y-auto">
+      <a href="/" class="block text-xl font-bold mb-4">OMNI-CORE <span class="text-indigo-400">Control</span></a>
+      <nav class="space-y-1 text-sm">
+        <a href="/" class="block px-3 py-2 rounded hover:bg-slate-800">Overview</a>
+        <a href="/ui/products" class="block px-3 py-2 rounded hover:bg-slate-800">Products</a>
+        <a href="/ui/matterhorn-import" class="block px-3 py-2 rounded hover:bg-slate-800">Matterhorn Import</a>
+        <a href="/ui/inventory" class="block px-3 py-2 rounded hover:bg-slate-800">Inventory</a>
+        <a href="/ui/orders" class="block px-3 py-2 rounded hover:bg-slate-800">Orders</a>
+        <a href="/ui/pricing-center" class="block px-3 py-2 rounded hover:bg-slate-800">Pricing Center</a>
+        <a href="/ui/bundle-studio" class="block px-3 py-2 rounded hover:bg-slate-800">Bundle Studio</a>
+        <a href="/ui/ai-control" class="block px-3 py-2 rounded hover:bg-slate-800">AI Control</a>
+        <a href="/ui/ai-photoshooting" class="block px-3 py-2 rounded hover:bg-slate-800">AI Photoshooting</a>
+        <a href="/ui/model-management" class="block px-3 py-2 rounded hover:bg-slate-800">Model Management</a>
+        <a href="/ui/jobs-automation" class="block px-3 py-2 rounded hover:bg-slate-800">Jobs &amp; Automation</a>
+        <a href="/ui/integrations" class="block px-3 py-2 rounded hover:bg-slate-800">Integrations</a>
+        <a href="/ui/shopware" class="block px-3 py-2 rounded hover:bg-slate-800">Shopware</a>
+        <a href="/ui/marketplaces" class="block px-3 py-2 rounded hover:bg-slate-800">Marketplaces</a>
+        <a href="/ui/competitor-intelligence" class="block px-3 py-2 rounded hover:bg-slate-800">Competitor Intelligence</a>
+        <a href="/ui/trend-intelligence" class="block px-3 py-2 rounded hover:bg-slate-800">Trend Intelligence</a>
+        <a href="/ui/news-events" class="block px-3 py-2 rounded hover:bg-slate-800">News &amp; Events</a>
+        <a href="/ui/knowledge-base" class="block px-3 py-2 rounded hover:bg-slate-800">Knowledge Base</a>
+        <a href="/ui/analytics" class="block px-3 py-2 rounded hover:bg-slate-800">Analytics</a>
+        <a href="/ui/audit-log" class="block px-3 py-2 rounded hover:bg-slate-800">Audit Log</a>
+        <a href="/ui/settings" class="block px-3 py-2 rounded hover:bg-slate-800">Settings</a>
+      </nav>
+      <div class="mt-6 text-xs text-slate-500"><a href="/logout" class="hover:text-slate-300">Logout</a></div>
+    </aside>
+    <div class="flex-1 min-w-0">
+      <header class="lg:hidden bg-slate-900 border-b border-slate-800 p-3 flex justify-between items-center">
+        <a href="/" class="font-bold">OMNI-CORE</a>
+        <a href="/logout" class="text-sm text-slate-400">Logout</a>
+      </header>
+      <main class="p-4 md:p-6">
         {% block content %}{% endblock %}
-    </main>
+      </main>
+    </div>
+  </div>
+  <script>
+    function getCookie(name){const v=`; ${document.cookie}`.split(`; ${name}=`);if(v.length===2)return v.pop().split(';').shift();return '';}
+    const _fetch = window.fetch;
+    window.fetch = function(input, init={}){
+      init = init || {}; const method = (init.method||'GET').toUpperCase();
+      if(['POST','PUT','PATCH','DELETE'].includes(method)){
+        init.headers = new Headers(init.headers||{}); const t=getCookie('csrf_token'); if(t && !init.headers.has('X-CSRF-Token')) init.headers.set('X-CSRF-Token', t);
+      }
+      return _fetch(input, init);
+    };
+  </script>
+  {% block scripts %}{% endblock %}
 </body>
 </html>

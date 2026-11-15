@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}Analytics{% endblock %}
+{% block content %}
+<div class="max-w-7xl mx-auto">
+  <h1 class="text-2xl font-bold mb-2">Analytics</h1>
+  
+<p class="text-slate-400 mb-4">Commerce-, AI- und Integrations-Kennzahlen (nur echte Daten; fehlendes als "Nicht verfügbar").</p>
+<div class="grid md:grid-cols-2 gap-4">
+  <div class="bg-slate-900 border border-slate-800 rounded-lg p-4"><h2 class="font-semibold mb-2">Dashboard/Stats</h2><pre id="s" class="text-xs bg-slate-950 p-3 rounded overflow-auto max-h-72">Lade…</pre></div>
+  <div class="bg-slate-900 border border-slate-800 rounded-lg p-4"><h2 class="font-semibold mb-2">Control Center Overview</h2><pre id="c" class="text-xs bg-slate-950 p-3 rounded overflow-auto max-h-72">Lade…</pre></div>
+</div>
+<script>
+async function load(){try{document.getElementById('s').textContent=JSON.stringify(await (await fetch('/api/stats')).json(),null,2);}catch(e){document.getElementById('s').textContent='Nicht verfügbar';}
+try{document.getElementById('c').textContent=JSON.stringify(await (await fetch('/api/control-center/overview')).json(),null,2);}catch(e){document.getElementById('c').textContent='Nicht verfügbar';}}
+load();
+</script>
+
+</div>
+{% endblock %}

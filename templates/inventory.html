@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}Inventory{% endblock %}
+{% block content %}
+<div class="max-w-7xl mx-auto">
+  <h1 class="text-2xl font-bold mb-2">Inventory</h1>
+  
+<p class="text-slate-400 mb-4">Bestände, Verfügbarkeit, Reservierungen und Sicherheitsbestand-Übersicht.</p>
+<div class="bg-slate-900 border border-slate-800 rounded-lg p-4">
+  <div class="flex gap-2 mb-3"><input id="q" placeholder="SKU/Titel filtern" class="bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm" oninput="render()"><button onclick="load()" class="bg-slate-700 px-3 py-2 rounded text-sm">Aktualisieren</button></div>
+  <div class="overflow-auto"><table class="w-full text-sm"><thead class="text-slate-400"><tr><th class="text-left p-2">SKU</th><th class="text-left p-2">Titel</th><th class="text-left p-2">Status</th><th class="text-left p-2">Stock</th><th class="text-left p-2">Bundle</th></tr></thead><tbody id="rows"></tbody></table></div>
+</div>
+<script>
+let items=[];
+async function load(){try{const r=await fetch('/api/products?limit=500');items=await r.json();render();}catch(e){document.getElementById('rows').innerHTML='<tr><td class="p-2 text-red-400">Fehler beim Laden</td></tr>';}}
+function render(){const q=(document.getElementById('q').value||'').toLowerCase();const f=items.filter(i=>!q||String(i.sku||'').toLowerCase().includes(q)||String(i.title||'').toLowerCase().includes(q));document.getElementById('rows').innerHTML=f.map(i=>`<tr class="border-t border-slate-800"><td class="p-2">${i.sku||''}</td><td class="p-2">${i.title||''}</td><td class="p-2">${i.status||''}</td><td class="p-2">${i.stock??''}</td><td class="p-2">${i.is_bundle?'Ja':'Nein'}</td></tr>`).join('')||'<tr><td class="p-2 text-slate-400">Keine Daten</td></tr>';}
+load();
+</script>
+
+</div>
+{% endblock %}

@@ -32,8 +32,8 @@
         form.addEventListener('submit', async (event) => {
             event.preventDefault();
             const sku = new FormData(form).get('sku');
-            const quality = await fetch('/api/product-quality/' + encodeURIComponent(sku), { headers: { 'X-Internal-API-Key': '' } });
-            const readiness = await fetch('/api/channel-readiness/' + encodeURIComponent(sku), { headers: { 'X-Internal-API-Key': '' } });
+            const quality = await fetch('/api/product-quality/' + encodeURIComponent(sku));
+            const readiness = await fetch('/api/channel-readiness/' + encodeURIComponent(sku));
             result.textContent = JSON.stringify({ quality: await quality.json(), readiness: await readiness.json() }, null, 2);
         });
     </script>

@@ -23,6 +23,8 @@ ASSET_BASE_DIR = Path("media/assets")
 ORIGINAL_DIR = ASSET_BASE_DIR / "original"
 THUMBNAIL_DIR = ASSET_BASE_DIR / "thumbnails"
 
+IMAGE_MIME_TYPES = {"image/jpeg", "image/png", "image/webp", "image/gif", "image/bmp", "image/tiff"}
+
 
 def _ensure_dirs() -> None:
     for directory in (ASSET_BASE_DIR, ORIGINAL_DIR, THUMBNAIL_DIR):
@@ -52,6 +54,31 @@ def _image_dimensions(data: bytes) -> tuple[int | None, int | None]:
             return image.width, image.height
     except Exception:
         return None, None
+
+
+def _generate_thumbnail(data: bytes, asset_id: str, mime_type: str) -> str | None:
+    """Create a JPEG thumbnail for image assets; returns path or None."""
+    if mime_type not in IMAGE_MIME_TYPES:
+        return None
+    try:
+        from io import BytesIO
+
+        _ensure_dirs()
+        with PILImage.open(BytesIO(data)) as image:
+            image = image.convert("RGB")
+            image.thumbnail((512, 512))
+            thumb_path = THUMBNAIL_DIR / f"{asset_id}.jpg"
+            image.save(thumb_path, format="JPEG", quality=85, optimize=True)
+        return str(thumb_path)
+    except Exception as exc:
+        logger.warning("Thumbnail generation failed for %s: %s", asset_id, exc)
+        return None
+
+
+def get_thumbnail_path(asset_id: str) -> str | None:
+    """Return thumbnail path if it exists."""
+    path = THUMBNAIL_DIR / f"{asset_id}.jpg"
+    return str(path) if path.is_file() else None
 
 
 async def create_asset_from_upload(
@@ -93,6 +120,7 @@ async def create_asset_from_upload(
     width, height = _image_dimensions(data) if not is_duplicate else (duplicate.get("width"), duplicate.get("height"))
     mime_type = getattr(upload, "content_type", None) or "application/octet-stream"
     original_filename = getattr(upload, "filename", None) or ""
+    thumbnail_path = _generate_thumbnail(data, asset_id, mime_type)
 
     await asset_create(
         asset_id=asset_id,
@@ -111,6 +139,7 @@ async def create_asset_from_upload(
         campaign_id=campaign_id,
         rights_status=rights_status,
         approval_status=approval_status,
+        thumbnail_path=thumbnail_path,
         created_by=created_by,
     )
     await asset_version_create(
@@ -181,6 +210,8 @@ async def create_asset_version_from_upload(
         change_reason=change_reason,
         created_by=created_by,
     )
+    mime_type = getattr(upload, "content_type", None) or asset.get("mime_type", "application/octet-stream")
+    thumbnail_path = _generate_thumbnail(data, asset_id, mime_type)
     await asset_update(
         asset_id,
         storage_path=storage_path,
@@ -188,7 +219,8 @@ async def create_asset_version_from_upload(
         size_bytes=len(data),
         width=width,
         height=height,
-        mime_type=getattr(upload, "content_type", None) or asset.get("mime_type", "application/octet-stream"),
+        mime_type=mime_type,
+        thumbnail_path=thumbnail_path,
     )
     versions = await asset_version_list(asset_id)
     return versions[-1]

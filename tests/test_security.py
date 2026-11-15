@@ -127,4 +127,5 @@ async def test_require_admin_accepts_valid_admin_session(monkeypatch):
 
     result = await require_admin(_admin_request(token))
 
-    assert result == {"sub": "admin"}
+    assert result["sub"] == "admin"
+    assert result["role"] == "admin"

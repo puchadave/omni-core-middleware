@@ -773,6 +773,7 @@ POSTGRES_SCHEMA: tuple[str, ...] = (
         campaign_id TEXT,
         rights_status TEXT NOT NULL DEFAULT 'unknown' CHECK (rights_status IN ('unknown', 'owned', 'licensed', 'consent_granted', 'restricted')),
         approval_status TEXT NOT NULL DEFAULT 'draft' CHECK (approval_status IN ('draft', 'generating', 'generated', 'quality_check', 'review_required', 'approved', 'rejected', 'published', 'archived')),
+        thumbnail_path TEXT,
         created_by TEXT NOT NULL DEFAULT 'system',
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -1696,6 +1697,7 @@ CREATE TABLE IF NOT EXISTS assets (
     campaign_id TEXT,
     rights_status TEXT NOT NULL DEFAULT 'unknown' CHECK (rights_status IN ('unknown', 'owned', 'licensed', 'consent_granted', 'restricted')),
     approval_status TEXT NOT NULL DEFAULT 'draft' CHECK (approval_status IN ('draft', 'generating', 'generated', 'quality_check', 'review_required', 'approved', 'rejected', 'published', 'archived')),
+    thumbnail_path TEXT,
     created_by TEXT NOT NULL DEFAULT 'system',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
@@ -3007,6 +3009,7 @@ async def asset_create(*, asset_id: str, asset_type: str, storage_path: str,
                        campaign_id: str | None = None,
                        rights_status: str = "unknown",
                        approval_status: str = "draft",
+                       thumbnail_path: str | None = None,
                        created_by: str = "system") -> None:
     """Persist a new asset record."""
     if uses_postgres():
@@ -3016,11 +3019,11 @@ async def asset_create(*, asset_id: str, asset_type: str, storage_path: str,
                 """INSERT INTO assets(id, asset_type, storage_path, original_filename, mime_type,
                    size_bytes, sha256_hash, width, height, duration_seconds, source_type, source_url,
                    product_sku, model_profile_id, campaign_id, rights_status, approval_status,
-                   created_by, created_at, updated_at)
-                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,NOW(),NOW())""",
+                   thumbnail_path, created_by, created_at, updated_at)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,NOW(),NOW())""",
                 asset_id, asset_type, storage_path, original_filename, mime_type, size_bytes,
                 sha256_hash, width, height, duration_seconds, source_type, source_url, product_sku,
-                model_profile_id, campaign_id, rights_status, approval_status, created_by,
+                model_profile_id, campaign_id, rights_status, approval_status, thumbnail_path, created_by,
             )
         return
     now = utc_now()
@@ -3029,11 +3032,11 @@ async def asset_create(*, asset_id: str, asset_type: str, storage_path: str,
             """INSERT INTO assets(id, asset_type, storage_backend, storage_path, original_filename,
                mime_type, size_bytes, sha256_hash, width, height, duration_seconds, source_type,
                source_url, product_sku, model_profile_id, campaign_id, rights_status,
-               approval_status, created_by, created_at, updated_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+               approval_status, thumbnail_path, created_by, created_at, updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (asset_id, asset_type, "local", storage_path, original_filename, mime_type, size_bytes,
              sha256_hash, width, height, duration_seconds, source_type, source_url, product_sku,
-             model_profile_id, campaign_id, rights_status, approval_status, created_by, now, now),
+             model_profile_id, campaign_id, rights_status, approval_status, thumbnail_path, created_by, now, now),
         )
         await db.commit()
 
@@ -3106,7 +3109,7 @@ async def asset_update(asset_id: str, **fields: Any) -> bool:
     allowed = {
         "asset_type", "storage_path", "original_filename", "mime_type", "size_bytes",
         "width", "height", "duration_seconds", "source_type", "source_url", "product_sku",
-        "model_profile_id", "campaign_id", "rights_status", "approval_status",
+        "model_profile_id", "campaign_id", "rights_status", "approval_status", "thumbnail_path",
     }
     updates = {key: value for key, value in fields.items() if key in allowed}
     if not updates:

@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}AI Control{% endblock %}
+{% block content %}
+<div class="max-w-7xl mx-auto">
+  <h1 class="text-2xl font-bold mb-2">AI Control</h1>
+  
+<p class="text-slate-400 mb-4">OmniRoute-Orchestrierung, Provider/Model-Routing, Jobs und Usage (konfigurationsabhängig).</p>
+<div class="grid md:grid-cols-2 gap-4">
+  <div class="bg-slate-900 border border-slate-800 rounded-lg p-4"><h2 class="font-semibold mb-2">System/AI Status</h2><pre id="sys" class="text-xs bg-slate-950 p-3 rounded overflow-auto max-h-72">Lade…</pre></div>
+  <div class="bg-slate-900 border border-slate-800 rounded-lg p-4"><h2 class="font-semibold mb-2">OmniRoute</h2>
+    <div class="space-x-2 mb-2"><a href="/omniroute" class="text-indigo-400 underline">OmniRoute Dashboard</a><a href="/ui/settings" class="text-indigo-400 underline">Settings</a></div>
+    <pre id="or" class="text-xs bg-slate-950 p-3 rounded overflow-auto max-h-64">Lade…</pre>
+  </div>
+</div>
+<script>
+async function load(){try{document.getElementById('sys').textContent=JSON.stringify(await (await fetch('/api/system-health')).json(),null,2);}catch(e){document.getElementById('sys').textContent='Nicht verfügbar';}
+try{const r=await fetch('/api/omniroute/providers');document.getElementById('or').textContent=r.ok?JSON.stringify(await r.json(),null,2):'Nicht konfiguriert / nicht verfügbar';}catch(e){document.getElementById('or').textContent='Nicht konfiguriert';}}
+load();
+</script>
+
+</div>
+{% endblock %}

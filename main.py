@@ -22,7 +22,7 @@ from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator
 
 from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
-from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
@@ -472,29 +472,12 @@ def is_secret_key(key: str) -> bool:
 
 async def require_admin(request: Request) -> dict[str, Any]:
     """Require an authenticated admin session."""
-    token = request.cookies.get("admin_session")
-    if not token:
+    session = _request_session(request)
+    if session is None:
         raise HTTPException(status_code=401, detail="Admin authentication required")
-
-    try:
-        payload_b64, signature = token.split(".", 1)
-        expected_signature = hmac.new(
-            os.getenv("SESSION_SECRET", "omni-core-dev-secret").encode(),
-            payload_b64.encode(),
-            hashlib.sha256,
-        ).hexdigest()
-        if not hmac.compare_digest(signature, expected_signature):
-            raise HTTPException(status_code=401, detail="Invalid admin session")
-
-        payload_json = base64.urlsafe_b64decode(payload_b64 + "==").decode()
-        payload = json.loads(payload_json)
-        if payload.get("sub") != "admin":
-            raise HTTPException(status_code=403, detail="Admin access denied")
-        return {"sub": "admin"}
-    except HTTPException:
-        raise
-    except Exception:
-        raise HTTPException(status_code=401, detail="Invalid admin session")
+    if session.get("sub") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access denied")
+    return {"sub": session.get("sub", "admin"), "role": session.get("role", "admin")}
 
 
 async def configure_omniroute() -> None:
@@ -631,20 +614,113 @@ app = FastAPI(
 )
 
 _INTERNAL_API_KEY_HEADER = "X-Internal-API-Key"
-_INTERNAL_API_EXCLUDED_PATHS = frozenset({"/api/health", "/docs", "/redoc", "/openapi.json"})
+_INTERNAL_API_EXCLUDED_PATHS = frozenset({
+    "/api/health", "/docs", "/redoc", "/openapi.json",
+    "/login", "/logout", "/api/admin/session/login", "/api/admin/session/logout",
+})
+_SESSION_COOKIE = "admin_session"
+_SESSION_TTL_SECONDS = 8 * 60 * 60
+
+
+def _session_secret() -> bytes:
+    return os.getenv("SESSION_SECRET", "omni-core-dev-secret").encode()
+
+
+def _issue_session_token(role: str = "admin") -> str:
+    payload = {"sub": "admin", "role": role, "iat": int(time.time()), "exp": int(time.time()) + _SESSION_TTL_SECONDS}
+    payload_b64 = base64.urlsafe_b64encode(json.dumps(payload, separators=(",", ":")).encode()).rstrip(b"=").decode()
+    signature = hmac.new(_session_secret(), payload_b64.encode(), hashlib.sha256).hexdigest()
+    return f"{payload_b64}.{signature}"
+
+
+def _verify_session_token(token: str | None) -> dict[str, Any] | None:
+    if not token or "." not in token:
+        return None
+    try:
+        payload_b64, signature = token.rsplit(".", 1)
+        expected = hmac.new(_session_secret(), payload_b64.encode(), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(signature, expected):
+            return None
+        payload_json = base64.urlsafe_b64decode(payload_b64 + "==").decode()
+        payload = json.loads(payload_json)
+        if payload.get("sub") != "admin":
+            return None
+        exp = int(payload.get("exp", 0))
+        if exp and exp < int(time.time()):
+            return None
+        if "role" not in payload:
+            payload["role"] = "admin"
+        return payload
+    except Exception:
+        return None
+
+
+def _request_session(request: Request) -> dict[str, Any] | None:
+    return _verify_session_token(request.cookies.get(_SESSION_COOKIE))
+
+
+def _is_state_changing(request: Request) -> bool:
+    return request.method.upper() in {"POST", "PUT", "PATCH", "DELETE"}
 
 
 @app.middleware("http")
 async def internal_api_key_middleware(request: Request, call_next):
-    if request.url.path in _INTERNAL_API_EXCLUDED_PATHS:
+    path = request.url.path
+    if path in _INTERNAL_API_EXCLUDED_PATHS or path.startswith("/static/"):
+        return await call_next(request)
+
+    session = _request_session(request)
+    if session is not None:
+        request.state.session = session
+        # CSRF for browser session state-changing requests: require header token == cookie token
+        if _is_state_changing(request) and path.startswith("/api/"):
+            csrf_cookie = request.cookies.get("csrf_token", "")
+            csrf_header = request.headers.get("X-CSRF-Token", "")
+            if not csrf_cookie or not csrf_header or not hmac.compare_digest(csrf_cookie, csrf_header):
+                return JSONResponse(status_code=403, content={"detail": "CSRF validation failed"})
         return await call_next(request)
 
     provided_api_key = request.headers.get(_INTERNAL_API_KEY_HEADER, "")
     expected_api_key = os.getenv("INTERNAL_API_KEY", "").strip()
-    if not expected_api_key or not hmac.compare_digest(provided_api_key, expected_api_key):
-        return JSONResponse(status_code=401, content={"detail": "Unauthorized"})
+    if expected_api_key and hmac.compare_digest(provided_api_key, expected_api_key):
+        request.state.session = {"sub": "admin", "role": "admin", "auth": "api_key"}
+        return await call_next(request)
 
-    return await call_next(request)
+    if path.startswith("/api/"):
+        return JSONResponse(status_code=401, content={"detail": "Unauthorized"})
+    return RedirectResponse(url=f"/login?next={path}", status_code=303)
+
+
+@app.get("/login", response_class=HTMLResponse)
+async def login_page(request: Request, next: str = Query(default="/")) -> HTMLResponse:
+    if _request_session(request):
+        return RedirectResponse(url=next or "/", status_code=303)
+    return templates.TemplateResponse("login.html", {"request": request, "next_path": next, "error": None})
+
+
+@app.post("/login")
+async def login_submit(request: Request):
+    form = await request.form()
+    api_key = str(form.get("api_key") or "")
+    next_path = str(form.get("next") or "/")
+    expected = os.getenv("INTERNAL_API_KEY", "").strip()
+    if not expected or not hmac.compare_digest(api_key, expected):
+        return templates.TemplateResponse("login.html", {"request": request, "next_path": next_path, "error": "Ungültiger API-Schlüssel"}, status_code=401)
+    token = _issue_session_token(role="admin")
+    csrf_token = hashlib.sha256(f"csrf:{token}".encode()).hexdigest()
+    secure_cookie = os.getenv("SESSION_COOKIE_SECURE", "").lower() in {"1", "true", "yes"}
+    response = RedirectResponse(url=next_path or "/", status_code=303)
+    response.set_cookie(_SESSION_COOKIE, token, httponly=True, samesite="lax", secure=secure_cookie, max_age=_SESSION_TTL_SECONDS)
+    response.set_cookie("csrf_token", csrf_token, httponly=False, samesite="lax", secure=secure_cookie, max_age=_SESSION_TTL_SECONDS)
+    return response
+
+
+@app.get("/logout")
+async def logout_page():
+    response = RedirectResponse(url="/login", status_code=303)
+    response.delete_cookie(_SESSION_COOKIE)
+    response.delete_cookie("csrf_token")
+    return response
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -771,29 +847,37 @@ async def system_health() -> dict[str, Any]:
 @app.post("/api/admin/session/login")
 async def admin_session_login(request: Request) -> JSONResponse:
     """Create an admin session from the configured internal API key."""
-    form = await request.form()
-    api_key = form.get("api_key") if form else None
+    api_key = None
+    try:
+        form = await request.form()
+        api_key = form.get("api_key") if form else None
+    except Exception:
+        form = None
+    if not api_key:
+        try:
+            body = await request.json()
+            if isinstance(body, dict):
+                api_key = body.get("api_key")
+        except Exception:
+            pass
     expected = os.getenv("INTERNAL_API_KEY", "").strip()
     if not expected or not hmac.compare_digest(str(api_key or ""), expected):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
-    payload = {"sub": "admin", "iat": int(time.time())}
-    payload_b64 = base64.urlsafe_b64encode(json.dumps(payload).encode()).rstrip(b"=").decode()
-    signature = hmac.new(
-        os.getenv("SESSION_SECRET", "omni-core-dev-secret").encode(),
-        payload_b64.encode(),
-        hashlib.sha256,
-    ).hexdigest()
-    token = f"{payload_b64}.{signature}"
+    token = _issue_session_token(role="admin")
+    csrf_token = hashlib.sha256(f"csrf:{token}".encode()).hexdigest()
     response = JSONResponse({"status": "ok"})
-    response.set_cookie(
-        "admin_session",
-        token,
-        httponly=True,
-        samesite="lax",
-        secure=False,
-        max_age=3600,
-    )
+    secure_cookie = os.getenv("SESSION_COOKIE_SECURE", "").lower() in {"1", "true", "yes"}
+    response.set_cookie(_SESSION_COOKIE, token, httponly=True, samesite="lax", secure=secure_cookie, max_age=_SESSION_TTL_SECONDS)
+    response.set_cookie("csrf_token", csrf_token, httponly=False, samesite="lax", secure=secure_cookie, max_age=_SESSION_TTL_SECONDS)
+    return response
+
+
+@app.post("/api/admin/session/logout")
+async def admin_session_logout() -> JSONResponse:
+    response = JSONResponse({"status": "ok"})
+    response.delete_cookie(_SESSION_COOKIE)
+    response.delete_cookie("csrf_token")
     return response
 
 
@@ -844,6 +928,46 @@ async def get_asset_record(asset_id: str) -> dict[str, Any]:
     if asset is None:
         raise HTTPException(status_code=404, detail="Asset not found")
     return asset
+
+
+@app.get("/api/assets/{asset_id}/file")
+async def get_asset_file(asset_id: str, version: int | None = Query(default=None, ge=1)) -> FileResponse:
+    """Serve the stored asset file (latest or a specific version)."""
+    asset = await get_asset(asset_id)
+    if asset is None:
+        raise HTTPException(status_code=404, detail="Asset not found")
+
+    storage_path = asset.get("storage_path")
+    media_type = asset.get("mime_type") or "application/octet-stream"
+    filename = asset.get("original_filename") or asset_id
+
+    if version is not None:
+        versions = await list_asset_versions(asset_id)
+        match = next((v for v in versions if int(v.get("version_number", 0)) == version), None)
+        if match is None:
+            raise HTTPException(status_code=404, detail="Asset version not found")
+        storage_path = match.get("storage_path") or storage_path
+
+    if not storage_path or not os.path.isfile(storage_path):
+        raise HTTPException(status_code=404, detail="Asset file not found on storage")
+
+    return FileResponse(path=storage_path, media_type=media_type, filename=filename)
+
+
+@app.get("/api/assets/{asset_id}/thumbnail")
+async def get_asset_thumbnail(asset_id: str) -> FileResponse:
+    """Serve generated thumbnail for an image asset."""
+    from services.asset_manager import get_thumbnail_path
+
+    asset = await get_asset(asset_id)
+    if asset is None:
+        raise HTTPException(status_code=404, detail="Asset not found")
+
+    thumb_path = asset.get("thumbnail_path") or get_thumbnail_path(asset_id)
+    if not thumb_path or not os.path.isfile(thumb_path):
+        raise HTTPException(status_code=404, detail="Thumbnail not available")
+
+    return FileResponse(path=thumb_path, media_type="image/jpeg", filename=f"{asset_id}_thumb.jpg")
 
 
 @app.patch("/api/assets/{asset_id}")
@@ -2929,3 +3053,194 @@ async def control_center_system() -> dict[str, Any]:
     if runtime.control_center is None:
         raise HTTPException(status_code=503, detail="Control center not initialized")
     return await runtime.control_center.get_system_intelligence()
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# WebUI routes (Control Center navigation) and supporting APIs
+# ════════════════════════════════════════════════════════════════════════════
+
+@app.get("/ui/products", response_class=HTMLResponse)
+async def ui_products(request: Request):
+    return templates.TemplateResponse("ui_products.html", {"request": request})
+
+@app.get("/ui/matterhorn-import", response_class=HTMLResponse)
+async def ui_matterhorn_import(request: Request):
+    return templates.TemplateResponse("matterhorn_import.html", {"request": request})
+
+@app.get("/ui/inventory", response_class=HTMLResponse)
+async def ui_inventory(request: Request):
+    return templates.TemplateResponse("inventory.html", {"request": request})
+
+@app.get("/ui/orders", response_class=HTMLResponse)
+async def ui_orders(request: Request):
+    return templates.TemplateResponse("ui_orders.html", {"request": request})
+
+@app.get("/ui/pricing-center", response_class=HTMLResponse)
+async def ui_pricing_center(request: Request):
+    return templates.TemplateResponse("pricing_center.html", {"request": request})
+
+@app.get("/ui/bundle-studio", response_class=HTMLResponse)
+async def ui_bundle_studio(request: Request):
+    return templates.TemplateResponse("bundle_studio.html", {"request": request})
+
+@app.get("/ui/ai-control", response_class=HTMLResponse)
+async def ui_ai_control(request: Request):
+    return templates.TemplateResponse("ai_control.html", {"request": request})
+
+@app.get("/ui/ai-photoshooting", response_class=HTMLResponse)
+async def ui_ai_photoshooting(request: Request):
+    return templates.TemplateResponse("ai_photoshooting.html", {"request": request})
+
+@app.get("/ui/model-management", response_class=HTMLResponse)
+async def ui_model_management(request: Request):
+    return templates.TemplateResponse("model_management.html", {"request": request})
+
+@app.get("/ui/jobs-automation", response_class=HTMLResponse)
+async def ui_jobs_automation(request: Request):
+    return templates.TemplateResponse("jobs_automation.html", {"request": request})
+
+@app.get("/ui/integrations", response_class=HTMLResponse)
+async def ui_integrations(request: Request):
+    return templates.TemplateResponse("integrations.html", {"request": request})
+
+@app.get("/ui/shopware", response_class=HTMLResponse)
+async def ui_shopware(request: Request):
+    return templates.TemplateResponse("shopware.html", {"request": request})
+
+@app.get("/ui/marketplaces", response_class=HTMLResponse)
+async def ui_marketplaces(request: Request):
+    return templates.TemplateResponse("marketplaces.html", {"request": request})
+
+@app.get("/ui/competitor-intelligence", response_class=HTMLResponse)
+async def ui_competitor_intelligence(request: Request):
+    return templates.TemplateResponse("competitor_intelligence.html", {"request": request})
+
+@app.get("/ui/trend-intelligence", response_class=HTMLResponse)
+async def ui_trend_intelligence(request: Request):
+    return templates.TemplateResponse("trend_intelligence.html", {"request": request})
+
+@app.get("/ui/news-events", response_class=HTMLResponse)
+async def ui_news_events(request: Request):
+    return templates.TemplateResponse("news_events.html", {"request": request})
+
+@app.get("/ui/knowledge-base", response_class=HTMLResponse)
+async def ui_knowledge_base(request: Request):
+    return templates.TemplateResponse("knowledge_base.html", {"request": request})
+
+@app.get("/ui/analytics", response_class=HTMLResponse)
+async def ui_analytics(request: Request):
+    return templates.TemplateResponse("analytics.html", {"request": request})
+
+@app.get("/ui/audit-log", response_class=HTMLResponse)
+async def ui_audit_log(request: Request):
+    return templates.TemplateResponse("audit_log.html", {"request": request})
+
+@app.get("/ui/settings", response_class=HTMLResponse)
+async def ui_settings(request: Request):
+    return templates.TemplateResponse("ui_settings.html", {"request": request})
+
+# Aliases / legacy routes
+@app.get("/sales_marketing_tower", response_class=HTMLResponse)
+async def sales_marketing_tower_page(request: Request):
+    return templates.TemplateResponse("sales_marketing_tower.html", {"request": request})
+
+@app.get("/photoshoot", response_class=HTMLResponse)
+async def photoshoot_page(request: Request):
+    return templates.TemplateResponse("photoshoot.html", {"request": request})
+
+# --- Supporting APIs ---
+
+@app.get("/api/integrations/status")
+async def integrations_status() -> dict[str, Any]:
+    """Aggregate integration configuration and health status (no secrets)."""
+    status = {
+        "database": "postgresql" if DATABASE_URL else "sqlite-wal",
+        "omniroute": {
+            "configured": runtime.omniroute is not None,
+            "healthy": runtime.omniroute_healthy,
+            "latency_ms": runtime.omniroute_latency_ms,
+        },
+        "matterhorn": {
+            "configured": bool(await get_setting("matterhorn_api_token")),
+        },
+        "shopware": {
+            "connections": len(getattr(runtime, "shopware_connections", {}) or {}),
+        },
+        "google_merchant": {
+            "configured": len(getattr(runtime, "google_merchant_clients", {}) or {}) > 0,
+        },
+    }
+    try:
+        status["health"] = await health_check()
+    except Exception as exc:
+        status["health_error"] = str(exc)
+    return status
+
+@app.get("/api/jobs")
+async def list_jobs_api(limit: int = Query(default=100, ge=1, le=500)) -> dict[str, Any]:
+    """Return job/operation overview from available persistent sources."""
+    jobs = {"items": [], "counts": {}}
+    try:
+        runs = await recent_import_runs(min(limit, 50))
+        for r in runs:
+            jobs["items"].append({
+                "id": f"import:{r.get('id')}",
+                "type": "matterhorn_import",
+                "status": {"running": "Running", "success": "Completed", "failed": "Failed"}.get(r.get("status"), r.get("status")),
+                "started_at": r.get("started_at"),
+                "finished_at": r.get("finished_at"),
+                "details": r,
+            })
+    except Exception as e:
+        jobs["import_runs_error"] = str(e)
+    # queue runtime info
+    jobs["runtime_queue_size"] = runtime.jobs.qsize()
+    jobs["uptime_seconds"] = runtime.uptime_seconds
+    return jobs
+
+@app.get("/api/scheduler/config")
+async def scheduler_config() -> dict[str, Any]:
+    """Return scheduler/automation configuration and defaults."""
+    return {
+        "persistent_scheduler": "in-app-asyncio",
+        "automations": [
+            {"name": "Trend analysis", "type": "interval", "interval_seconds": 7*24*60*60, "enabled": runtime.omniroute is not None, "configurable": True},
+            {"name": "Fulfillment worker", "type": "queue", "enabled": True, "configurable": False},
+        ],
+        "defaults": [
+            "Matterhorn Import",
+            "Lagerbestandssynchronisierung",
+            "Preisberechnung",
+            "Trendanalyse",
+            "Wettbewerberanalyse",
+            "Bundle Generation",
+        ],
+        "note": "Frequenzen über Settings/Umgebung konfigurierbar; persistente DB-Scheduler-Erweiterung vorgesehen."
+    }
+
+@app.get("/api/audit-log")
+async def audit_log(limit: int = Query(default=200, ge=1, le=1000)) -> dict[str, Any]:
+    """Return audit-relevant events from system logs (and available audit sources)."""
+    items = []
+    try:
+        logs = await recent_logs(limit)
+        for l in logs:
+            items.append({"source": "system_logs", **l})
+    except Exception as e:
+        items.append({"source": "error", "error": str(e)})
+    return {"items": items, "count": len(items)}
+
+@app.get("/api/news")
+async def news_feed(limit: int = Query(default=50, ge=1, le=200)) -> dict[str, Any]:
+    """News & events feed (requires configured sources/providers)."""
+    return {"items": [], "status": "NOT_CONFIGURED", "message": "Keine News-Quellen konfiguriert. Quellenverwaltung über Settings/Integrationen ergänzen."}
+
+@app.get("/api/knowledge")
+async def knowledge_base(limit: int = Query(default=50, ge=1, le=200)) -> dict[str, Any]:
+    """Knowledge base entries (derived/configured)."""
+    return {"items": [], "status": "NOT_CONFIGURED", "message": "Knowledge-Base noch nicht befüllt/konfiguriert."}
+
+@app.get("/api/control-center/dashboard")
+async def control_center_dashboard_alias():
+    return await control_center_overview()
+

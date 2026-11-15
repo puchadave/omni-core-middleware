@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}Model Management{% endblock %}
+{% block content %}
+<div class="max-w-7xl mx-auto">
+  <h1 class="text-2xl font-bold mb-2">Model Management</h1>
+  
+<p class="text-slate-400 mb-4">Model-Identitäten, Referenzbilder, Rechte/Freigaben und Konsistenzprofile.</p>
+<div class="mb-4 flex gap-2"><a href="/admin/models" class="bg-slate-700 px-3 py-2 rounded text-sm">Model Identity Manager öffnen</a></div>
+<div class="bg-slate-900 border border-slate-800 rounded-lg p-4"><pre id="data" class="text-xs bg-slate-950 p-3 rounded overflow-auto max-h-[70vh]">Lade…</pre></div>
+<script>
+async function load(){try{const r=await fetch('/api/model-profiles?limit=100');document.getElementById('data').textContent=JSON.stringify(await r.json(),null,2);}catch(e){document.getElementById('data').textContent='Nicht verfügbar';}}
+load();
+</script>
+
+</div>
+{% endblock %}

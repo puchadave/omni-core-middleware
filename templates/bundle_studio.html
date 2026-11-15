@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}Bundle Studio{% endblock %}
+{% block content %}
+<div class="max-w-7xl mx-auto">
+  <h1 class="text-2xl font-bold mb-2">Bundle Studio</h1>
+  
+<p class="text-slate-400 mb-4">Bundle-Generierung, Bewertung, Review und Freigabe-Workflow.</p>
+<div class="flex gap-2 mb-4">
+  <button onclick="generate()" class="bg-indigo-600 hover:bg-indigo-500 px-4 py-2 rounded">Bundles generieren</button>
+  <a href="/admin/bundle-intelligence" class="bg-slate-700 hover:bg-slate-600 px-4 py-2 rounded">Bundle Intelligence öffnen</a>
+</div>
+<div class="grid md:grid-cols-2 gap-4">
+  <div class="bg-slate-900 border border-slate-800 rounded-lg p-4"><h2 class="font-semibold mb-2">Bundles (Basis)</h2><pre id="bundles" class="text-xs bg-slate-950 p-3 rounded overflow-auto max-h-80">Lade…</pre></div>
+  <div class="bg-slate-900 border border-slate-800 rounded-lg p-4"><h2 class="font-semibold mb-2">Bundle Intelligence</h2><pre id="bi" class="text-xs bg-slate-950 p-3 rounded overflow-auto max-h-80">Lade…</pre></div>
+</div>
+<script>
+async function load(){try{document.getElementById('bundles').textContent=JSON.stringify(await (await fetch('/api/bundles')).json(),null,2);}catch(e){document.getElementById('bundles').textContent='Nicht verfügbar';}
+try{document.getElementById('bi').textContent=JSON.stringify(await (await fetch('/api/bundles/intelligence')).json(),null,2);}catch(e){document.getElementById('bi').textContent='Nicht verfügbar';}}
+async function generate(){try{const r=await fetch('/api/bundles/intelligence/generate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({count:10})});alert('Generierung: '+r.status);load();}catch(e){alert(e.message);}}
+load();
+</script>
+
+</div>
+{% endblock %}
