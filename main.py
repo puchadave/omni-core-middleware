@@ -50,6 +50,7 @@ from database import (
 )
 from services.asset_manager import create_asset_from_upload, get_asset, list_assets, update_asset, create_asset_version_from_upload, list_asset_versions
 from services.creative_studio import create_project, list_projects, get_project, update_project, create_job, list_jobs, get_job, update_job, generate_image_for_job, list_outputs, create_video_project, list_video_projects, create_video_scene, list_video_scenes, create_campaign, list_campaigns as list_creative_campaigns, get_campaign, update_campaign
+from services.bundle_intelligence import generate_bundles, list_bundles_intelligence, get_bundle_intelligence, update_bundle_intelligence
 from services.product_intelligence import evaluate_product_quality, evaluate_channel_readiness, get_product_quality, get_channel_readiness
 from services.video_studio import generate_storyboard
 from services.product_fidelity import evaluate_output_fidelity
@@ -300,6 +301,14 @@ class VideoSceneCreate(BaseModel):
     generated_asset_id: str | None = None
     duration_seconds: float | None = Field(default=None, ge=0)
     status: str = "draft"
+
+
+class BundleGenerationRequest(BaseModel):
+    """Validated bundle generation request."""
+
+    max_bundles: int = Field(default=10, ge=1, le=50)
+    min_size: int = Field(default=3, ge=2, le=8)
+    max_size: int = Field(default=6, ge=2, le=8)
 
 
 class CampaignCreate(BaseModel):
@@ -706,6 +715,12 @@ async def creative_studio_page(request: Request) -> HTMLResponse:
 async def product_intelligence_page(request: Request) -> HTMLResponse:
     """Render product intelligence."""
     return templates.TemplateResponse("product_intelligence.html", {"request": request})
+
+
+@app.get("/admin/bundle-intelligence", response_class=HTMLResponse)
+async def bundle_intelligence_page(request: Request) -> HTMLResponse:
+    """Render bundle intelligence."""
+    return templates.TemplateResponse("bundle_intelligence.html", {"request": request, "bundles": await list_bundles_intelligence(limit=100)})
 
 
 @app.get("/admin/video-studio", response_class=HTMLResponse)
@@ -1494,6 +1509,48 @@ async def get_channel_readiness_record(sku: str, channel: str) -> dict[str, Any]
             raise HTTPException(status_code=404, detail="Channel readiness not found")
         return record
     raise HTTPException(status_code=404, detail="Channel readiness not found")
+
+
+@app.get("/api/bundles/intelligence")
+async def list_bundle_intelligence_records(limit: int = Query(default=100, ge=1, le=500)) -> list[dict[str, Any]]:
+    """List generated bundle intelligence records."""
+    return await list_bundles_intelligence(limit=limit)
+
+
+@app.post("/api/bundles/intelligence/generate")
+async def generate_bundle_intelligence_records(payload: BundleGenerationRequest) -> list[dict[str, Any]]:
+    """Generate bundles through the existing bundle and pricing services."""
+    try:
+        return await generate_bundles(
+            max_bundles=payload.max_bundles,
+            min_size=payload.min_size,
+            max_size=payload.max_size,
+            runtime=runtime,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/bundles/intelligence/{bundle_sku}")
+async def get_bundle_intelligence_record(bundle_sku: str) -> dict[str, Any]:
+    """Return one bundle intelligence record."""
+    record = await get_bundle_intelligence(bundle_sku)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Bundle intelligence record not found")
+    return record
+
+
+@app.patch("/api/bundles/intelligence/{bundle_sku}")
+async def update_bundle_intelligence_record(bundle_sku: str, payload: dict[str, Any]) -> dict[str, str]:
+    """Update bundle intelligence status or metadata."""
+    allowed = {"approval_status", "style", "target_audience", "season", "image_concept", "generated_description"}
+    updates = {key: value for key, value in payload.items() if key in allowed and value is not None}
+    if not updates:
+        raise HTTPException(status_code=400, detail="No supported fields provided")
+    updated = await update_bundle_intelligence(bundle_sku, **updates)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Bundle intelligence record not found")
+    return {"status": "updated"}
 
 
 @app.get("/api/stats")

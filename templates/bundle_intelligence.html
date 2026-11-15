@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="de">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Omni-Core Bundle Intelligence</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="min-h-screen bg-slate-950 text-slate-100">
+    <header class="border-b border-slate-800 bg-slate-900">
+        <div class="mx-auto max-w-7xl px-4 py-4 flex items-center justify-between">
+            <div>
+                <h1 class="text-2xl font-bold">Bundle Intelligence</h1>
+                <p class="text-sm text-slate-400">Automatische Outfit- und Bundle-Zusammenstellung</p>
+            </div>
+            <a class="text-indigo-400 hover:text-indigo-300" href="/admin">Zurück zum Control Center</a>
+        </div>
+    </header>
+    <main class="mx-auto max-w-7xl px-4 py-8 space-y-8">
+        <section class="rounded-xl border border-slate-800 bg-slate-900 p-6">
+            <h2 class="text-lg font-semibold">Bundles generieren</h2>
+            <form id="generate-form" class="mt-4 grid gap-4 md:grid-cols-3">
+                <label class="block">
+                    <span class="text-sm text-slate-300">Maximale Bundles</span>
+                    <input class="mt-1 block w-full rounded border border-slate-700 bg-slate-950 p-2" type="number" name="max_bundles" value="10" min="1" max="50">
+                </label>
+                <label class="block">
+                    <span class="text-sm text-slate-300">Mindestgröße</span>
+                    <input class="mt-1 block w-full rounded border border-slate-700 bg-slate-950 p-2" type="number" name="min_size" value="3" min="2" max="8">
+                </label>
+                <label class="block">
+                    <span class="text-sm text-slate-300">Maximalgröße</span>
+                    <input class="mt-1 block w-full rounded border border-slate-700 bg-slate-950 p-2" type="number" name="max_size" value="6" min="2" max="8">
+                </label>
+                <div class="md:col-span-3">
+                    <button class="rounded bg-indigo-600 px-4 py-2 font-semibold hover:bg-indigo-500" type="submit">Generieren</button>
+                </div>
+            </form>
+            <p id="generate-message" class="mt-3 text-sm text-slate-400"></p>
+        </section>
+
+        <section class="rounded-xl border border-slate-800 bg-slate-900 p-6">
+            <h2 class="text-lg font-semibold">Bundles</h2>
+            <div class="mt-4 overflow-x-auto">
+                <table class="min-w-full text-sm">
+                    <thead class="text-slate-400">
+                        <tr>
+                            <th class="px-3 py-2 text-left">Bundle</th>
+                            <th class="px-3 py-2 text-left">Stil</th>
+                            <th class="px-3 py-2 text-left">Qualität</th>
+                            <th class="px-3 py-2 text-left">EK</th>
+                            <th class="px-3 py-2 text-left">VK-Vorschlag</th>
+                            <th class="px-3 py-2 text-left">Marge</th>
+                            <th class="px-3 py-2 text-left">Status</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for bundle in bundles %}
+                        <tr class="border-t border-slate-800">
+                            <td class="px-3 py-2 font-mono text-xs">{{ bundle.bundle_sku }}</td>
+                            <td class="px-3 py-2">{{ bundle.style }}</td>
+                            <td class="px-3 py-2">{{ bundle.quality_score }}</td>
+                            <td class="px-3 py-2">{{ bundle.total_supplier_price }}</td>
+                            <td class="px-3 py-2">{{ bundle.suggested_price }}</td>
+                            <td class="px-3 py-2">{{ bundle.estimated_margin }}</td>
+                            <td class="px-3 py-2">{{ bundle.approval_status }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </section>
+    </main>
+    <script>
+        const form = document.getElementById('generate-form');
+        const message = document.getElementById('generate-message');
+        form.addEventListener('submit', async (event) => {
+            event.preventDefault();
+            const formData = new FormData(form);
+            const payload = {
+                max_bundles: Number(formData.get('max_bundles')),
+                min_size: Number(formData.get('min_size')),
+                max_size: Number(formData.get('max_size')),
+            };
+            const response = await fetch('/api/bundles/intelligence/generate', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload),
+            });
+            if (!response.ok) {
+                message.textContent = 'Bundle-Generierung fehlgeschlagen: ' + await response.text();
+                message.className = 'mt-3 text-sm text-red-400';
+                return;
+            }
+            message.textContent = 'Bundles generiert.';
+            message.className = 'mt-3 text-sm text-emerald-400';
+            window.location.reload();
+        });
+    </script>
+</body>
+</html>

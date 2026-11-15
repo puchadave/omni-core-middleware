@@ -1044,6 +1044,35 @@ POSTGRES_SCHEMA: tuple[str, ...] = (
     )
     """,
     "CREATE INDEX IF NOT EXISTS idx_campaigns_creative_project_id ON campaigns(creative_project_id)",
+    """
+    CREATE TABLE IF NOT EXISTS bundles_intelligence (
+        bundle_sku TEXT PRIMARY KEY REFERENCES products(sku) ON DELETE CASCADE,
+        style TEXT NOT NULL DEFAULT '',
+        target_audience TEXT NOT NULL DEFAULT '',
+        season TEXT NOT NULL DEFAULT '',
+        total_supplier_price NUMERIC(12,2) NOT NULL DEFAULT 0,
+        suggested_price NUMERIC(12,2) NOT NULL DEFAULT 0,
+        estimated_margin NUMERIC(5,4) NOT NULL DEFAULT 0,
+        quality_score NUMERIC(5,2) NOT NULL DEFAULT 0,
+        approval_status TEXT NOT NULL DEFAULT 'review_required' CHECK (approval_status IN ('draft', 'review_required', 'approved', 'rejected', 'published', 'archived')),
+        image_concept TEXT NOT NULL DEFAULT '',
+        model_profile_id TEXT REFERENCES model_profiles(id) ON DELETE SET NULL,
+        generated_description TEXT NOT NULL DEFAULT '',
+        created_by TEXT NOT NULL DEFAULT 'system',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS bundles_intelligence_products (
+        bundle_sku TEXT NOT NULL REFERENCES products(sku) ON DELETE CASCADE,
+        product_sku TEXT NOT NULL REFERENCES products(sku) ON DELETE CASCADE,
+        position INTEGER NOT NULL DEFAULT 0,
+        reason TEXT NOT NULL DEFAULT '',
+        PRIMARY KEY (bundle_sku, product_sku)
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_bundles_intelligence_products_bundle_sku ON bundles_intelligence_products(bundle_sku)",
 )
 
 SQLITE_SCHEMA = """
@@ -1903,6 +1932,31 @@ CREATE TABLE IF NOT EXISTS campaigns (
     updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_campaigns_creative_project_id ON campaigns(creative_project_id);
+CREATE TABLE IF NOT EXISTS bundles_intelligence (
+    bundle_sku TEXT PRIMARY KEY REFERENCES products(sku) ON DELETE CASCADE,
+    style TEXT NOT NULL DEFAULT '',
+    target_audience TEXT NOT NULL DEFAULT '',
+    season TEXT NOT NULL DEFAULT '',
+    total_supplier_price REAL NOT NULL DEFAULT 0,
+    suggested_price REAL NOT NULL DEFAULT 0,
+    estimated_margin REAL NOT NULL DEFAULT 0,
+    quality_score REAL NOT NULL DEFAULT 0,
+    approval_status TEXT NOT NULL DEFAULT 'review_required' CHECK (approval_status IN ('draft', 'review_required', 'approved', 'rejected', 'published', 'archived')),
+    image_concept TEXT NOT NULL DEFAULT '',
+    model_profile_id TEXT REFERENCES model_profiles(id) ON DELETE SET NULL,
+    generated_description TEXT NOT NULL DEFAULT '',
+    created_by TEXT NOT NULL DEFAULT 'system',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS bundles_intelligence_products (
+    bundle_sku TEXT NOT NULL REFERENCES products(sku) ON DELETE CASCADE,
+    product_sku TEXT NOT NULL REFERENCES products(sku) ON DELETE CASCADE,
+    position INTEGER NOT NULL DEFAULT 0,
+    reason TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (bundle_sku, product_sku)
+);
+CREATE INDEX IF NOT EXISTS idx_bundles_intelligence_products_bundle_sku ON bundles_intelligence_products(bundle_sku);
 """
 
 
@@ -4360,3 +4414,139 @@ async def channel_readiness_list(product_sku: str) -> list[dict[str, Any]]:
         rows = await cursor.fetchall()
         await cursor.close()
         return [dict(row) for row in rows]
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Bundle Intelligence
+# ════════════════════════════════════════════════════════════════════════════
+
+async def bundle_intelligence_upsert(*, bundle_sku: str, style: str, target_audience: str,
+                                     season: str, total_supplier_price: float,
+                                     suggested_price: float, estimated_margin: float,
+                                     quality_score: float, approval_status: str,
+                                     image_concept: str, model_profile_id: str | None,
+                                     generated_description: str, created_by: str) -> None:
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO bundles_intelligence(bundle_sku, style, target_audience, season, total_supplier_price, suggested_price, estimated_margin, quality_score, approval_status, image_concept, model_profile_id, generated_description, created_by, created_at, updated_at)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,NOW(),NOW())
+                   ON CONFLICT(bundle_sku) DO UPDATE SET
+                     style=EXCLUDED.style, target_audience=EXCLUDED.target_audience, season=EXCLUDED.season,
+                     total_supplier_price=EXCLUDED.total_supplier_price, suggested_price=EXCLUDED.suggested_price,
+                     estimated_margin=EXCLUDED.estimated_margin, quality_score=EXCLUDED.quality_score,
+                     approval_status=EXCLUDED.approval_status, image_concept=EXCLUDED.image_concept,
+                     model_profile_id=EXCLUDED.model_profile_id, generated_description=EXCLUDED.generated_description,
+                     created_by=EXCLUDED.created_by, updated_at=NOW()""",
+                bundle_sku, style, target_audience, season, total_supplier_price, suggested_price, estimated_margin, quality_score, approval_status, image_concept, model_profile_id, generated_description, created_by,
+            )
+        return
+    now = utc_now()
+    async with get_connection() as db:
+        await db.execute(
+            """INSERT INTO bundles_intelligence(bundle_sku, style, target_audience, season, total_supplier_price, suggested_price, estimated_margin, quality_score, approval_status, image_concept, model_profile_id, generated_description, created_by, created_at, updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(bundle_sku) DO UPDATE SET
+                 style=excluded.style, target_audience=excluded.target_audience, season=excluded.season,
+                 total_supplier_price=excluded.total_supplier_price, suggested_price=excluded.suggested_price,
+                 estimated_margin=excluded.estimated_margin, quality_score=excluded.quality_score,
+                 approval_status=excluded.approval_status, image_concept=excluded.image_concept,
+                 model_profile_id=excluded.model_profile_id, generated_description=excluded.generated_description,
+                 created_by=excluded.created_by, updated_at=excluded.updated_at""",
+            (bundle_sku, style, target_audience, season, total_supplier_price, suggested_price, estimated_margin, quality_score, approval_status, image_concept, model_profile_id, generated_description, created_by, now, now),
+        )
+        await db.commit()
+
+
+async def bundle_intelligence_replace_products(bundle_sku: str, products: list[tuple[str, int, str]]) -> None:
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            await conn.execute("DELETE FROM bundles_intelligence_products WHERE bundle_sku = $1", bundle_sku)
+            for product_sku, position, reason in products:
+                await conn.execute(
+                    "INSERT INTO bundles_intelligence_products(bundle_sku, product_sku, position, reason) VALUES ($1,$2,$3,$4)",
+                    bundle_sku, product_sku, position, reason,
+                )
+        return
+    async with get_connection() as db:
+        await db.execute("DELETE FROM bundles_intelligence_products WHERE bundle_sku = ?", (bundle_sku,))
+        for product_sku, position, reason in products:
+            await db.execute(
+                "INSERT INTO bundles_intelligence_products(bundle_sku, product_sku, position, reason) VALUES (?,?,?,?)",
+                (bundle_sku, product_sku, position, reason),
+            )
+        await db.commit()
+
+
+async def bundle_intelligence_list(limit: int = 100) -> list[dict[str, Any]]:
+    safe_limit = min(max(limit, 1), 500)
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("SELECT * FROM bundles_intelligence ORDER BY created_at DESC, bundle_sku ASC LIMIT $1", safe_limit)
+        return [dict(row) for row in rows]
+    async with get_connection() as db:
+        cursor = await db.execute("SELECT * FROM bundles_intelligence ORDER BY created_at DESC, bundle_sku ASC LIMIT ?", (safe_limit,))
+        rows = await cursor.fetchall()
+        await cursor.close()
+        return [dict(row) for row in rows]
+
+
+async def bundle_intelligence_get(bundle_sku: str) -> dict[str, Any] | None:
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT * FROM bundles_intelligence WHERE bundle_sku = $1", bundle_sku)
+        return dict(row) if row else None
+    async with get_connection() as db:
+        cursor = await db.execute("SELECT * FROM bundles_intelligence WHERE bundle_sku = ?", (bundle_sku,))
+        row = await cursor.fetchone()
+        await cursor.close()
+        return dict(row) if row else None
+
+
+async def bundle_intelligence_products(bundle_sku: str) -> list[dict[str, Any]]:
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("SELECT * FROM bundles_intelligence_products WHERE bundle_sku = $1 ORDER BY position ASC, product_sku ASC", bundle_sku)
+        return [dict(row) for row in rows]
+    async with get_connection() as db:
+        cursor = await db.execute("SELECT * FROM bundles_intelligence_products WHERE bundle_sku = ? ORDER BY position ASC, product_sku ASC", (bundle_sku,))
+        rows = await cursor.fetchall()
+        await cursor.close()
+        return [dict(row) for row in rows]
+
+
+async def bundle_intelligence_update(bundle_sku: str, **fields: Any) -> bool:
+    allowed = {"style", "target_audience", "season", "total_supplier_price", "suggested_price", "estimated_margin", "quality_score", "approval_status", "image_concept", "model_profile_id", "generated_description", "created_by"}
+    updates = {key: value for key, value in fields.items() if key in allowed and value is not None}
+    if not updates:
+        return False
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT bundle_sku FROM bundles_intelligence WHERE bundle_sku = $1", bundle_sku)
+            if not row:
+                return False
+            assignments = []
+            params = []
+            for index, (key, value) in enumerate(updates.items(), start=1):
+                assignments.append(f"{key} = ${index}")
+                params.append(value)
+            params.append(bundle_sku)
+            await conn.execute(f"UPDATE bundles_intelligence SET {', '.join(assignments)}, updated_at = NOW() WHERE bundle_sku = ${len(params)}", *params)
+        return True
+    async with get_connection() as db:
+        cursor = await db.execute("SELECT bundle_sku FROM bundles_intelligence WHERE bundle_sku = ?", (bundle_sku,))
+        row = await cursor.fetchone()
+        await cursor.close()
+        if not row:
+            return False
+        assignments = [f"{key} = ?" for key in updates]
+        params = list(updates.values()) + [utc_now(), bundle_sku]
+        await db.execute(f"UPDATE bundles_intelligence SET {', '.join(assignments)}, updated_at = ? WHERE bundle_sku = ?", tuple(params))
+        await db.commit()
+        return True
