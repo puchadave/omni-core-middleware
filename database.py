@@ -916,6 +916,104 @@ POSTGRES_SCHEMA: tuple[str, ...] = (
     """,
     "CREATE INDEX IF NOT EXISTS idx_agent_approvals_run_id ON agent_approvals(run_id)",
     "CREATE INDEX IF NOT EXISTS idx_agent_approvals_status ON agent_approvals(approval_status)",
+    """
+    CREATE TABLE IF NOT EXISTS creative_projects (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        project_type TEXT NOT NULL CHECK (project_type IN ('photoshoot', 'campaign', 'social_content', 'video')),
+        status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'generating', 'generated', 'quality_check', 'review_required', 'approved', 'rejected', 'published', 'archived', 'failed')),
+        product_sku TEXT REFERENCES products(sku) ON DELETE SET NULL,
+        bundle_sku TEXT REFERENCES products(sku) ON DELETE SET NULL,
+        model_profile_id TEXT REFERENCES model_profiles(id) ON DELETE SET NULL,
+        created_by TEXT NOT NULL DEFAULT 'system',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_creative_projects_product_sku ON creative_projects(product_sku)",
+    "CREATE INDEX IF NOT EXISTS idx_creative_projects_status ON creative_projects(status)",
+    """
+    CREATE TABLE IF NOT EXISTS creative_jobs (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL REFERENCES creative_projects(id) ON DELETE CASCADE,
+        job_type TEXT NOT NULL CHECK (job_type IN ('image_generation', 'prompt_generation', 'quality_check', 'video_storyboard')),
+        status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'generating', 'generated', 'quality_check', 'review_required', 'approved', 'rejected', 'published', 'archived', 'failed')),
+        agent_run_id TEXT REFERENCES agent_runs(id) ON DELETE SET NULL,
+        provider_id TEXT REFERENCES ai_providers(id) ON DELETE SET NULL,
+        model_id TEXT REFERENCES ai_models(id) ON DELETE SET NULL,
+        prompt_version TEXT NOT NULL DEFAULT '',
+        request_payload_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+        response_payload_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+        progress_percent INTEGER NOT NULL DEFAULT 0 CHECK (progress_percent >= 0 AND progress_percent <= 100),
+        cost_usd NUMERIC(10,6),
+        error_message TEXT NOT NULL DEFAULT '',
+        started_at TIMESTAMPTZ,
+        completed_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_creative_jobs_project_id ON creative_jobs(project_id)",
+    "CREATE INDEX IF NOT EXISTS idx_creative_jobs_status ON creative_jobs(status)",
+    """
+    CREATE TABLE IF NOT EXISTS creative_outputs (
+        id TEXT PRIMARY KEY,
+        job_id TEXT NOT NULL REFERENCES creative_jobs(id) ON DELETE CASCADE,
+        asset_id TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+        output_type TEXT NOT NULL CHECK (output_type IN ('image', 'video', 'text', 'audio')),
+        quality_score NUMERIC(5,2),
+        fidelity_score NUMERIC(5,2),
+        model_consistency_score NUMERIC(5,2),
+        technical_score NUMERIC(5,2),
+        approval_status TEXT NOT NULL DEFAULT 'review_required' CHECK (approval_status IN ('draft', 'generating', 'generated', 'quality_check', 'review_required', 'approved', 'rejected', 'published', 'archived')),
+        rejection_reason TEXT NOT NULL DEFAULT '',
+        provenance_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_creative_outputs_job_id ON creative_outputs(job_id)",
+    "CREATE INDEX IF NOT EXISTS idx_creative_outputs_asset_id ON creative_outputs(asset_id)",
+    """
+    CREATE TABLE IF NOT EXISTS video_projects (
+        id TEXT PRIMARY KEY,
+        creative_project_id TEXT NOT NULL REFERENCES creative_projects(id) ON DELETE CASCADE,
+        format TEXT NOT NULL CHECK (format IN ('9:16', '16:9', '1:1', '4:5')),
+        target_channel TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'generating', 'generated', 'quality_check', 'review_required', 'approved', 'rejected', 'published', 'archived', 'failed')),
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_video_projects_creative_project_id ON video_projects(creative_project_id)",
+    """
+    CREATE TABLE IF NOT EXISTS video_scenes (
+        id TEXT PRIMARY KEY,
+        video_project_id TEXT NOT NULL REFERENCES video_projects(id) ON DELETE CASCADE,
+        scene_order INTEGER NOT NULL CHECK (scene_order >= 0),
+        scene_type TEXT NOT NULL,
+        prompt_text TEXT NOT NULL DEFAULT '',
+        source_asset_id TEXT REFERENCES assets(id) ON DELETE SET NULL,
+        generated_asset_id TEXT REFERENCES assets(id) ON DELETE SET NULL,
+        duration_seconds NUMERIC(10,3),
+        status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'generating', 'generated', 'quality_check', 'review_required', 'approved', 'rejected', 'published', 'archived', 'failed')),
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_video_scenes_video_project_id ON video_scenes(video_project_id)",
+    """
+    CREATE TABLE IF NOT EXISTS campaigns (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'generating', 'generated', 'quality_check', 'review_required', 'approved', 'rejected', 'published', 'archived', 'failed')),
+        target_audience TEXT NOT NULL DEFAULT '',
+        creative_project_id TEXT REFERENCES creative_projects(id) ON DELETE SET NULL,
+        created_by TEXT NOT NULL DEFAULT 'system',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_campaigns_creative_project_id ON campaigns(creative_project_id)",
 )
 
 SQLITE_SCHEMA = """
@@ -1663,6 +1761,92 @@ CREATE TABLE IF NOT EXISTS agent_approvals (
 );
 CREATE INDEX IF NOT EXISTS idx_agent_approvals_run_id ON agent_approvals(run_id);
 CREATE INDEX IF NOT EXISTS idx_agent_approvals_status ON agent_approvals(approval_status);
+CREATE TABLE IF NOT EXISTS creative_projects (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    project_type TEXT NOT NULL CHECK (project_type IN ('photoshoot', 'campaign', 'social_content', 'video')),
+    status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'generating', 'generated', 'quality_check', 'review_required', 'approved', 'rejected', 'published', 'archived', 'failed')),
+    product_sku TEXT REFERENCES products(sku) ON DELETE SET NULL,
+    bundle_sku TEXT REFERENCES products(sku) ON DELETE SET NULL,
+    model_profile_id TEXT REFERENCES model_profiles(id) ON DELETE SET NULL,
+    created_by TEXT NOT NULL DEFAULT 'system',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_creative_projects_product_sku ON creative_projects(product_sku);
+CREATE INDEX IF NOT EXISTS idx_creative_projects_status ON creative_projects(status);
+CREATE TABLE IF NOT EXISTS creative_jobs (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES creative_projects(id) ON DELETE CASCADE,
+    job_type TEXT NOT NULL CHECK (job_type IN ('image_generation', 'prompt_generation', 'quality_check', 'video_storyboard')),
+    status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'generating', 'generated', 'quality_check', 'review_required', 'approved', 'rejected', 'published', 'archived', 'failed')),
+    agent_run_id TEXT REFERENCES agent_runs(id) ON DELETE SET NULL,
+    provider_id TEXT REFERENCES ai_providers(id) ON DELETE SET NULL,
+    model_id TEXT REFERENCES ai_models(id) ON DELETE SET NULL,
+    prompt_version TEXT NOT NULL DEFAULT '',
+    request_payload_json TEXT NOT NULL DEFAULT '{}',
+    response_payload_json TEXT NOT NULL DEFAULT '{}',
+    progress_percent INTEGER NOT NULL DEFAULT 0 CHECK (progress_percent >= 0 AND progress_percent <= 100),
+    cost_usd REAL,
+    error_message TEXT NOT NULL DEFAULT '',
+    started_at TEXT,
+    completed_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_creative_jobs_project_id ON creative_jobs(project_id);
+CREATE INDEX IF NOT EXISTS idx_creative_jobs_status ON creative_jobs(status);
+CREATE TABLE IF NOT EXISTS creative_outputs (
+    id TEXT PRIMARY KEY,
+    job_id TEXT NOT NULL REFERENCES creative_jobs(id) ON DELETE CASCADE,
+    asset_id TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+    output_type TEXT NOT NULL CHECK (output_type IN ('image', 'video', 'text', 'audio')),
+    quality_score REAL,
+    fidelity_score REAL,
+    model_consistency_score REAL,
+    technical_score REAL,
+    approval_status TEXT NOT NULL DEFAULT 'review_required' CHECK (approval_status IN ('draft', 'generating', 'generated', 'quality_check', 'review_required', 'approved', 'rejected', 'published', 'archived')),
+    rejection_reason TEXT NOT NULL DEFAULT '',
+    provenance_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_creative_outputs_job_id ON creative_outputs(job_id);
+CREATE INDEX IF NOT EXISTS idx_creative_outputs_asset_id ON creative_outputs(asset_id);
+CREATE TABLE IF NOT EXISTS video_projects (
+    id TEXT PRIMARY KEY,
+    creative_project_id TEXT NOT NULL REFERENCES creative_projects(id) ON DELETE CASCADE,
+    format TEXT NOT NULL CHECK (format IN ('9:16', '16:9', '1:1', '4:5')),
+    target_channel TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'generating', 'generated', 'quality_check', 'review_required', 'approved', 'rejected', 'published', 'archived', 'failed')),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_video_projects_creative_project_id ON video_projects(creative_project_id);
+CREATE TABLE IF NOT EXISTS video_scenes (
+    id TEXT PRIMARY KEY,
+    video_project_id TEXT NOT NULL REFERENCES video_projects(id) ON DELETE CASCADE,
+    scene_order INTEGER NOT NULL CHECK (scene_order >= 0),
+    scene_type TEXT NOT NULL,
+    prompt_text TEXT NOT NULL DEFAULT '',
+    source_asset_id TEXT REFERENCES assets(id) ON DELETE SET NULL,
+    generated_asset_id TEXT REFERENCES assets(id) ON DELETE SET NULL,
+    duration_seconds REAL,
+    status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'generating', 'generated', 'quality_check', 'review_required', 'approved', 'rejected', 'published', 'archived', 'failed')),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_video_scenes_video_project_id ON video_scenes(video_project_id);
+CREATE TABLE IF NOT EXISTS campaigns (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'generating', 'generated', 'quality_check', 'review_required', 'approved', 'rejected', 'published', 'archived', 'failed')),
+    target_audience TEXT NOT NULL DEFAULT '',
+    creative_project_id TEXT REFERENCES creative_projects(id) ON DELETE SET NULL,
+    created_by TEXT NOT NULL DEFAULT 'system',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_campaigns_creative_project_id ON campaigns(creative_project_id);
 """
 
 
@@ -3498,3 +3682,456 @@ async def agent_approval_review(approval_id: str, *, approved: bool, reviewed_by
         return changed
 
 
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Creative Studio
+# ════════════════════════════════════════════════════════════════════════════
+
+async def creative_project_create(*, project_id: str, name: str, project_type: str,
+                                  status: str = "draft", product_sku: str | None = None,
+                                  bundle_sku: str | None = None,
+                                  model_profile_id: str | None = None,
+                                  created_by: str = "system") -> None:
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO creative_projects(id, name, project_type, status, product_sku, bundle_sku, model_profile_id, created_by, created_at, updated_at)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NOW(),NOW())""",
+                project_id, name, project_type, status, product_sku, bundle_sku, model_profile_id, created_by,
+            )
+        return
+    now = utc_now()
+    async with get_connection() as db:
+        await db.execute(
+            """INSERT INTO creative_projects(id, name, project_type, status, product_sku, bundle_sku, model_profile_id, created_by, created_at, updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+            (project_id, name, project_type, status, product_sku, bundle_sku, model_profile_id, created_by, now, now),
+        )
+        await db.commit()
+
+
+async def creative_project_get(project_id: str) -> dict[str, Any] | None:
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT * FROM creative_projects WHERE id = $1", project_id)
+        return dict(row) if row else None
+    async with get_connection() as db:
+        cursor = await db.execute("SELECT * FROM creative_projects WHERE id = ?", (project_id,))
+        row = await cursor.fetchone()
+        await cursor.close()
+        return dict(row) if row else None
+
+
+async def creative_project_list(*, project_type: str | None = None, status: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
+    safe_limit = min(max(limit, 1), 500)
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            query = "SELECT * FROM creative_projects WHERE 1=1"
+            params: list[Any] = []
+            if project_type:
+                query += f" AND project_type = ${len(params) + 1}"
+                params.append(project_type)
+            if status:
+                query += f" AND status = ${len(params) + 1}"
+                params.append(status)
+            query += f" ORDER BY created_at DESC LIMIT ${len(params) + 1}"
+            params.append(safe_limit)
+            rows = await conn.fetch(query, *params)
+        return [dict(row) for row in rows]
+    async with get_connection() as db:
+        query = "SELECT * FROM creative_projects WHERE 1=1"
+        params = []
+        if project_type:
+            query += " AND project_type = ?"
+            params.append(project_type)
+        if status:
+            query += " AND status = ?"
+            params.append(status)
+        query += " ORDER BY created_at DESC LIMIT ?"
+        params.append(safe_limit)
+        cursor = await db.execute(query, tuple(params))
+        rows = await cursor.fetchall()
+        await cursor.close()
+        return [dict(row) for row in rows]
+
+
+async def creative_project_update(project_id: str, **fields: Any) -> bool:
+    allowed = {"name", "project_type", "status", "product_sku", "bundle_sku", "model_profile_id", "created_by"}
+    updates = {key: value for key, value in fields.items() if key in allowed and value is not None}
+    if not updates:
+        return False
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT id FROM creative_projects WHERE id = $1", project_id)
+            if not row:
+                return False
+            assignments = []
+            params = []
+            for index, (key, value) in enumerate(updates.items(), start=1):
+                assignments.append(f"{key} = ${index}")
+                params.append(value)
+            params.append(project_id)
+            await conn.execute(f"UPDATE creative_projects SET {', '.join(assignments)}, updated_at = NOW() WHERE id = ${len(params)}", *params)
+        return True
+    async with get_connection() as db:
+        cursor = await db.execute("SELECT id FROM creative_projects WHERE id = ?", (project_id,))
+        row = await cursor.fetchone()
+        await cursor.close()
+        if not row:
+            return False
+        assignments = [f"{key} = ?" for key in updates]
+        params = list(updates.values()) + [utc_now(), project_id]
+        await db.execute(f"UPDATE creative_projects SET {', '.join(assignments)}, updated_at = ? WHERE id = ?", tuple(params))
+        await db.commit()
+        return True
+
+
+async def creative_job_create(*, job_id: str, project_id: str, job_type: str, status: str = "draft",
+                              agent_run_id: str | None = None, provider_id: str | None = None,
+                              model_id: str | None = None, prompt_version: str = "",
+                              request_payload: dict[str, Any] | None = None,
+                              response_payload: dict[str, Any] | None = None,
+                              progress_percent: int = 0, cost_usd: float | None = None,
+                              error_message: str = "") -> None:
+    import json as _json
+    request_json = _json.dumps(request_payload or {})
+    response_json = _json.dumps(response_payload or {})
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO creative_jobs(id, project_id, job_type, status, agent_run_id, provider_id, model_id, prompt_version, request_payload_json, response_payload_json, progress_percent, cost_usd, error_message, created_at, updated_at)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10::jsonb,$11,$12,$13,NOW(),NOW())""",
+                job_id, project_id, job_type, status, agent_run_id, provider_id, model_id, prompt_version, request_json, response_json, progress_percent, cost_usd, error_message,
+            )
+        return
+    now = utc_now()
+    async with get_connection() as db:
+        await db.execute(
+            """INSERT INTO creative_jobs(id, project_id, job_type, status, agent_run_id, provider_id, model_id, prompt_version, request_payload_json, response_payload_json, progress_percent, cost_usd, error_message, created_at, updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (job_id, project_id, job_type, status, agent_run_id, provider_id, model_id, prompt_version, request_json, response_json, progress_percent, cost_usd, error_message, now, now),
+        )
+        await db.commit()
+
+
+async def creative_job_get(job_id: str) -> dict[str, Any] | None:
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT * FROM creative_jobs WHERE id = $1", job_id)
+        return dict(row) if row else None
+    async with get_connection() as db:
+        cursor = await db.execute("SELECT * FROM creative_jobs WHERE id = ?", (job_id,))
+        row = await cursor.fetchone()
+        await cursor.close()
+        return dict(row) if row else None
+
+
+async def creative_job_list(project_id: str | None = None, status: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
+    safe_limit = min(max(limit, 1), 500)
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            query = "SELECT * FROM creative_jobs WHERE 1=1"
+            params: list[Any] = []
+            if project_id:
+                query += f" AND project_id = ${len(params) + 1}"
+                params.append(project_id)
+            if status:
+                query += f" AND status = ${len(params) + 1}"
+                params.append(status)
+            query += f" ORDER BY created_at DESC LIMIT ${len(params) + 1}"
+            params.append(safe_limit)
+            rows = await conn.fetch(query, *params)
+        return [dict(row) for row in rows]
+    async with get_connection() as db:
+        query = "SELECT * FROM creative_jobs WHERE 1=1"
+        params = []
+        if project_id:
+            query += " AND project_id = ?"
+            params.append(project_id)
+        if status:
+            query += " AND status = ?"
+            params.append(status)
+        query += " ORDER BY created_at DESC LIMIT ?"
+        params.append(safe_limit)
+        cursor = await db.execute(query, tuple(params))
+        rows = await cursor.fetchall()
+        await cursor.close()
+        return [dict(row) for row in rows]
+
+
+async def creative_job_update(job_id: str, **fields: Any) -> bool:
+    import json as _json
+    allowed = {"project_id", "job_type", "status", "agent_run_id", "provider_id", "model_id", "prompt_version", "request_payload", "response_payload", "progress_percent", "cost_usd", "error_message", "started_at", "completed_at"}
+    column_map = {"request_payload": "request_payload_json", "response_payload": "response_payload_json"}
+    updates = {}
+    for key, value in fields.items():
+        if key not in allowed or value is None:
+            continue
+        column = column_map.get(key, key)
+        if key in {"request_payload", "response_payload"}:
+            updates[column] = _json.dumps(value)
+        else:
+            updates[column] = value
+    if not updates:
+        return False
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT id FROM creative_jobs WHERE id = $1", job_id)
+            if not row:
+                return False
+            assignments = []
+            params = []
+            for index, (column, value) in enumerate(updates.items(), start=1):
+                cast = "::jsonb" if column.endswith("_json") else ""
+                assignments.append(f"{column} = ${index}{cast}")
+                params.append(value)
+            params.append(job_id)
+            await conn.execute(f"UPDATE creative_jobs SET {', '.join(assignments)}, updated_at = NOW() WHERE id = ${len(params)}", *params)
+        return True
+    async with get_connection() as db:
+        cursor = await db.execute("SELECT id FROM creative_jobs WHERE id = ?", (job_id,))
+        row = await cursor.fetchone()
+        await cursor.close()
+        if not row:
+            return False
+        assignments = [f"{column} = ?" for column in updates]
+        params = list(updates.values()) + [utc_now(), job_id]
+        await db.execute(f"UPDATE creative_jobs SET {', '.join(assignments)}, updated_at = ? WHERE id = ?", tuple(params))
+        await db.commit()
+        return True
+
+
+async def creative_output_create(*, output_id: str, job_id: str, asset_id: str, output_type: str,
+                                 quality_score: float | None = None,
+                                 fidelity_score: float | None = None,
+                                 model_consistency_score: float | None = None,
+                                 technical_score: float | None = None,
+                                 approval_status: str = "review_required",
+                                 rejection_reason: str = "",
+                                 provenance: dict[str, Any] | None = None) -> None:
+    import json as _json
+    provenance_json = _json.dumps(provenance or {})
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO creative_outputs(id, job_id, asset_id, output_type, quality_score, fidelity_score, model_consistency_score, technical_score, approval_status, rejection_reason, provenance_json, created_at)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,NOW())""",
+                output_id, job_id, asset_id, output_type, quality_score, fidelity_score, model_consistency_score, technical_score, approval_status, rejection_reason, provenance_json,
+            )
+        return
+    async with get_connection() as db:
+        await db.execute(
+            """INSERT INTO creative_outputs(id, job_id, asset_id, output_type, quality_score, fidelity_score, model_consistency_score, technical_score, approval_status, rejection_reason, provenance_json, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (output_id, job_id, asset_id, output_type, quality_score, fidelity_score, model_consistency_score, technical_score, approval_status, rejection_reason, provenance_json, utc_now()),
+        )
+        await db.commit()
+
+
+async def creative_output_list(job_id: str | None = None, asset_id: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
+    safe_limit = min(max(limit, 1), 500)
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            query = "SELECT * FROM creative_outputs WHERE 1=1"
+            params: list[Any] = []
+            if job_id:
+                query += f" AND job_id = ${len(params) + 1}"
+                params.append(job_id)
+            if asset_id:
+                query += f" AND asset_id = ${len(params) + 1}"
+                params.append(asset_id)
+            query += f" ORDER BY created_at DESC LIMIT ${len(params) + 1}"
+            params.append(safe_limit)
+            rows = await conn.fetch(query, *params)
+        return [dict(row) for row in rows]
+    async with get_connection() as db:
+        query = "SELECT * FROM creative_outputs WHERE 1=1"
+        params = []
+        if job_id:
+            query += " AND job_id = ?"
+            params.append(job_id)
+        if asset_id:
+            query += " AND asset_id = ?"
+            params.append(asset_id)
+        query += " ORDER BY created_at DESC LIMIT ?"
+        params.append(safe_limit)
+        cursor = await db.execute(query, tuple(params))
+        rows = await cursor.fetchall()
+        await cursor.close()
+        return [dict(row) for row in rows]
+
+
+async def video_project_create(*, video_project_id: str, creative_project_id: str, format: str,
+                               target_channel: str = "", status: str = "draft") -> None:
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO video_projects(id, creative_project_id, format, target_channel, status, created_at, updated_at)
+                   VALUES ($1,$2,$3,$4,$5,NOW(),NOW())""",
+                video_project_id, creative_project_id, format, target_channel, status,
+            )
+        return
+    now = utc_now()
+    async with get_connection() as db:
+        await db.execute(
+            """INSERT INTO video_projects(id, creative_project_id, format, target_channel, status, created_at, updated_at)
+               VALUES (?,?,?,?,?,?,?)""",
+            (video_project_id, creative_project_id, format, target_channel, status, now, now),
+        )
+        await db.commit()
+
+
+async def video_project_list(creative_project_id: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
+    safe_limit = min(max(limit, 1), 500)
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            if creative_project_id:
+                rows = await conn.fetch("SELECT * FROM video_projects WHERE creative_project_id = $1 ORDER BY created_at DESC LIMIT $2", creative_project_id, safe_limit)
+            else:
+                rows = await conn.fetch("SELECT * FROM video_projects ORDER BY created_at DESC LIMIT $1", safe_limit)
+        return [dict(row) for row in rows]
+    async with get_connection() as db:
+        if creative_project_id:
+            cursor = await db.execute("SELECT * FROM video_projects WHERE creative_project_id = ? ORDER BY created_at DESC LIMIT ?", (creative_project_id, safe_limit))
+        else:
+            cursor = await db.execute("SELECT * FROM video_projects ORDER BY created_at DESC LIMIT ?", (safe_limit,))
+        rows = await cursor.fetchall()
+        await cursor.close()
+        return [dict(row) for row in rows]
+
+
+async def video_scene_create(*, scene_id: str, video_project_id: str, scene_order: int,
+                             scene_type: str, prompt_text: str = "",
+                             source_asset_id: str | None = None,
+                             generated_asset_id: str | None = None,
+                             duration_seconds: float | None = None, status: str = "draft") -> None:
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO video_scenes(id, video_project_id, scene_order, scene_type, prompt_text, source_asset_id, generated_asset_id, duration_seconds, status, created_at, updated_at)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NOW(),NOW())""",
+                scene_id, video_project_id, scene_order, scene_type, prompt_text, source_asset_id, generated_asset_id, duration_seconds, status,
+            )
+        return
+    now = utc_now()
+    async with get_connection() as db:
+        await db.execute(
+            """INSERT INTO video_scenes(id, video_project_id, scene_order, scene_type, prompt_text, source_asset_id, generated_asset_id, duration_seconds, status, created_at, updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+            (scene_id, video_project_id, scene_order, scene_type, prompt_text, source_asset_id, generated_asset_id, duration_seconds, status, now, now),
+        )
+        await db.commit()
+
+
+async def video_scene_list(video_project_id: str) -> list[dict[str, Any]]:
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("SELECT * FROM video_scenes WHERE video_project_id = $1 ORDER BY scene_order ASC, created_at ASC", video_project_id)
+        return [dict(row) for row in rows]
+    async with get_connection() as db:
+        cursor = await db.execute("SELECT * FROM video_scenes WHERE video_project_id = ? ORDER BY scene_order ASC, created_at ASC", (video_project_id,))
+        rows = await cursor.fetchall()
+        await cursor.close()
+        return [dict(row) for row in rows]
+
+
+async def campaign_create(*, campaign_id: str, name: str, status: str = "draft",
+                         target_audience: str = "", creative_project_id: str | None = None,
+                         created_by: str = "system") -> None:
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO campaigns(id, name, status, target_audience, creative_project_id, created_by, created_at, updated_at)
+                   VALUES ($1,$2,$3,$4,$5,$6,NOW(),NOW())""",
+                campaign_id, name, status, target_audience, creative_project_id, created_by,
+            )
+        return
+    now = utc_now()
+    async with get_connection() as db:
+        await db.execute(
+            """INSERT INTO campaigns(id, name, status, target_audience, creative_project_id, created_by, created_at, updated_at)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (campaign_id, name, status, target_audience, creative_project_id, created_by, now, now),
+        )
+        await db.commit()
+
+
+async def campaign_list(*, status: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
+    safe_limit = min(max(limit, 1), 500)
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            if status:
+                rows = await conn.fetch("SELECT * FROM campaigns WHERE status = $1 ORDER BY created_at DESC LIMIT $2", status, safe_limit)
+            else:
+                rows = await conn.fetch("SELECT * FROM campaigns ORDER BY created_at DESC LIMIT $1", safe_limit)
+        return [dict(row) for row in rows]
+    async with get_connection() as db:
+        if status:
+            cursor = await db.execute("SELECT * FROM campaigns WHERE status = ? ORDER BY created_at DESC LIMIT ?", (status, safe_limit))
+        else:
+            cursor = await db.execute("SELECT * FROM campaigns ORDER BY created_at DESC LIMIT ?", (safe_limit,))
+        rows = await cursor.fetchall()
+        await cursor.close()
+        return [dict(row) for row in rows]
+
+
+async def campaign_get(campaign_id: str) -> dict[str, Any] | None:
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT * FROM campaigns WHERE id = $1", campaign_id)
+        return dict(row) if row else None
+    async with get_connection() as db:
+        cursor = await db.execute("SELECT * FROM campaigns WHERE id = ?", (campaign_id,))
+        row = await cursor.fetchone()
+        await cursor.close()
+        return dict(row) if row else None
+
+
+async def campaign_update(campaign_id: str, **fields: Any) -> bool:
+    allowed = {"name", "status", "target_audience", "creative_project_id", "created_by"}
+    updates = {key: value for key, value in fields.items() if key in allowed and value is not None}
+    if not updates:
+        return False
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT id FROM campaigns WHERE id = $1", campaign_id)
+            if not row:
+                return False
+            assignments = []
+            params = []
+            for index, (key, value) in enumerate(updates.items(), start=1):
+                assignments.append(f"{key} = ${index}")
+                params.append(value)
+            params.append(campaign_id)
+            await conn.execute(f"UPDATE campaigns SET {', '.join(assignments)}, updated_at = NOW() WHERE id = ${len(params)}", *params)
+        return True
+    async with get_connection() as db:
+        cursor = await db.execute("SELECT id FROM campaigns WHERE id = ?", (campaign_id,))
+        row = await cursor.fetchone()
+        await cursor.close()
+        if not row:
+            return False
+        assignments = [f"{key} = ?" for key in updates]
+        params = list(updates.values()) + [utc_now(), campaign_id]
+        await db.execute(f"UPDATE campaigns SET {', '.join(assignments)}, updated_at = ? WHERE id = ?", tuple(params))
+        await db.commit()
+        return True

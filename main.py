@@ -49,6 +49,7 @@ from database import (
     write_log,
 )
 from services.asset_manager import create_asset_from_upload, get_asset, list_assets, update_asset, create_asset_version_from_upload, list_asset_versions
+from services.creative_studio import create_project, list_projects, get_project, update_project, create_job, list_jobs, get_job, update_job, generate_image_for_job, list_outputs, create_video_project, list_video_projects, create_video_scene, list_video_scenes, create_campaign, list_campaigns as list_creative_campaigns, get_campaign, update_campaign
 from services.agent_manager import (
     create_agent_profile, list_agent_profiles, get_agent_profile, update_agent_profile,
     create_conversation, list_conversations, get_conversation,
@@ -188,6 +189,118 @@ class ModelPermissionCreate(BaseModel):
     granted: bool = False
     scope: dict[str, Any] = Field(default_factory=dict)
     valid_until: str | None = None
+
+
+class CreativeProjectCreate(BaseModel):
+    """Validated creative project input."""
+
+    name: str = Field(min_length=1, max_length=256)
+    project_type: str
+    status: str = "draft"
+    product_sku: str | None = None
+    bundle_sku: str | None = None
+    model_profile_id: str | None = None
+    created_by: str = Field(default="system", max_length=128)
+
+
+class CreativeProjectUpdate(BaseModel):
+    """Validated partial creative project update."""
+
+    name: str | None = Field(default=None, min_length=1, max_length=256)
+    project_type: str | None = None
+    status: str | None = None
+    product_sku: str | None = None
+    bundle_sku: str | None = None
+    model_profile_id: str | None = None
+    created_by: str | None = Field(default=None, max_length=128)
+
+
+class CreativeJobCreate(BaseModel):
+    """Validated creative job input."""
+
+    project_id: str = Field(min_length=1, max_length=128)
+    job_type: str
+    status: str = "draft"
+    agent_run_id: str | None = None
+    provider_id: str | None = None
+    model_id: str | None = None
+    prompt_version: str = Field(default="", max_length=128)
+    request_payload: dict[str, Any] = Field(default_factory=dict)
+    response_payload: dict[str, Any] = Field(default_factory=dict)
+    progress_percent: int = Field(default=0, ge=0, le=100)
+    cost_usd: float | None = Field(default=None, ge=0)
+    error_message: str = Field(default="", max_length=4000)
+
+
+class CreativeJobUpdate(BaseModel):
+    """Validated partial creative job update."""
+
+    project_id: str | None = None
+    job_type: str | None = None
+    status: str | None = None
+    agent_run_id: str | None = None
+    provider_id: str | None = None
+    model_id: str | None = None
+    prompt_version: str | None = Field(default=None, max_length=128)
+    request_payload: dict[str, Any] | None = None
+    response_payload: dict[str, Any] | None = None
+    progress_percent: int | None = Field(default=None, ge=0, le=100)
+    cost_usd: float | None = Field(default=None, ge=0)
+    error_message: str | None = Field(default=None, max_length=4000)
+    started_at: str | None = None
+    completed_at: str | None = None
+
+
+class CreativeImageGeneration(BaseModel):
+    """Validated image generation request."""
+
+    prompt: str = Field(min_length=1, max_length=20000)
+    model_reference: str | None = None
+    product_reference: str | None = None
+    width: int = Field(default=1024, ge=64, le=4096)
+    height: int = Field(default=1024, ge=64, le=4096)
+
+
+class VideoProjectCreate(BaseModel):
+    """Validated video project input."""
+
+    creative_project_id: str = Field(min_length=1, max_length=128)
+    format: str
+    target_channel: str = Field(default="", max_length=128)
+    status: str = "draft"
+
+
+class VideoSceneCreate(BaseModel):
+    """Validated video scene input."""
+
+    video_project_id: str = Field(min_length=1, max_length=128)
+    scene_order: int = Field(ge=0)
+    scene_type: str = Field(min_length=1, max_length=128)
+    prompt_text: str = Field(default="", max_length=20000)
+    source_asset_id: str | None = None
+    generated_asset_id: str | None = None
+    duration_seconds: float | None = Field(default=None, ge=0)
+    status: str = "draft"
+
+
+class CampaignCreate(BaseModel):
+    """Validated campaign input."""
+
+    name: str = Field(min_length=1, max_length=256)
+    status: str = "draft"
+    target_audience: str = Field(default="", max_length=4000)
+    creative_project_id: str | None = None
+    created_by: str = Field(default="system", max_length=128)
+
+
+class CampaignUpdate(BaseModel):
+    """Validated partial campaign update."""
+
+    name: str | None = Field(default=None, min_length=1, max_length=256)
+    status: str | None = None
+    target_audience: str | None = Field(default=None, max_length=4000)
+    creative_project_id: str | None = None
+    created_by: str | None = Field(default=None, max_length=128)
 
 
 class AgentProfileCreate(BaseModel):
@@ -563,6 +676,12 @@ async def model_manager_page(request: Request) -> HTMLResponse:
 async def agent_manager_page(request: Request) -> HTMLResponse:
     """Render agent management."""
     return templates.TemplateResponse("agent_manager.html", {"request": request, "profiles": await list_agent_profiles(limit=100), "tools": registry.list_tools()})
+
+@app.get("/admin/creative", response_class=HTMLResponse)
+async def creative_studio_page(request: Request) -> HTMLResponse:
+    """Render the AI Creative Studio."""
+    return templates.TemplateResponse("creative_studio.html", {"request": request, "projects": await list_projects(limit=100), "jobs": await list_jobs(limit=100), "outputs": await list_outputs(limit=100), "campaigns": await list_creative_campaigns(limit=100)})
+
 
 @app.get("/api/health")
 async def health_check() -> dict[str, Any]:
@@ -1038,6 +1157,232 @@ async def select_agent_omniroute_model(payload: OmniRouteSelectionRequest) -> di
     if result is None:
         raise HTTPException(status_code=404, detail="No suitable OmniRoute model found")
     return result
+
+
+@app.get("/api/creative/projects")
+async def list_creative_project_records(project_type: str | None = Query(default=None),
+                                       status: str | None = Query(default=None),
+                                       limit: int = Query(default=100, ge=1, le=500)) -> list[dict[str, Any]]:
+    """List creative projects."""
+    return await list_projects(project_type=project_type, status=status, limit=limit)
+
+
+@app.post("/api/creative/projects", status_code=201)
+async def create_creative_project_record(payload: CreativeProjectCreate) -> dict[str, Any]:
+    """Create a creative project."""
+    try:
+        return await create_project(
+            name=payload.name,
+            project_type=payload.project_type,
+            status=payload.status,
+            product_sku=payload.product_sku,
+            bundle_sku=payload.bundle_sku,
+            model_profile_id=payload.model_profile_id,
+            created_by=payload.created_by,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/creative/projects/{project_id}")
+async def get_creative_project_record(project_id: str) -> dict[str, Any]:
+    """Return one creative project."""
+    project = await get_project(project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Creative project not found")
+    return project
+
+
+@app.patch("/api/creative/projects/{project_id}")
+async def update_creative_project_record(project_id: str, payload: CreativeProjectUpdate) -> dict[str, Any]:
+    """Update a creative project."""
+    project = await get_project(project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Creative project not found")
+    updates = {key: value for key, value in payload.model_dump().items() if value is not None}
+    if updates:
+        await update_project(project_id, **updates)
+    updated = await get_project(project_id)
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Creative project not found")
+    return updated
+
+
+@app.get("/api/creative/jobs")
+async def list_creative_job_records(project_id: str | None = Query(default=None),
+                                    status: str | None = Query(default=None),
+                                    limit: int = Query(default=100, ge=1, le=500)) -> list[dict[str, Any]]:
+    """List creative jobs."""
+    return await list_jobs(project_id=project_id, status=status, limit=limit)
+
+
+@app.post("/api/creative/jobs", status_code=201)
+async def create_creative_job_record(payload: CreativeJobCreate) -> dict[str, Any]:
+    """Create a creative job."""
+    project = await get_project(payload.project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Creative project not found")
+    try:
+        return await create_job(
+            project_id=payload.project_id,
+            job_type=payload.job_type,
+            status=payload.status,
+            agent_run_id=payload.agent_run_id,
+            provider_id=payload.provider_id,
+            model_id=payload.model_id,
+            prompt_version=payload.prompt_version,
+            request_payload=payload.request_payload,
+            response_payload=payload.response_payload,
+            progress_percent=payload.progress_percent,
+            cost_usd=payload.cost_usd,
+            error_message=payload.error_message,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/creative/jobs/{job_id}")
+async def get_creative_job_record(job_id: str) -> dict[str, Any]:
+    """Return one creative job."""
+    job = await get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Creative job not found")
+    return job
+
+
+@app.patch("/api/creative/jobs/{job_id}")
+async def update_creative_job_record(job_id: str, payload: CreativeJobUpdate) -> dict[str, Any]:
+    """Update a creative job."""
+    job = await get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Creative job not found")
+    updates = {key: value for key, value in payload.model_dump().items() if value is not None}
+    if updates:
+        await update_job(job_id, **updates)
+    updated = await get_job(job_id)
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Creative job not found")
+    return updated
+
+
+@app.post("/api/creative/jobs/{job_id}/generate-image")
+async def generate_creative_image(job_id: str, payload: CreativeImageGeneration) -> dict[str, Any]:
+    """Generate an image for a creative job."""
+    job = await get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Creative job not found")
+    if job.get("job_type") != "image_generation":
+        raise HTTPException(status_code=400, detail="Job is not an image generation job")
+    try:
+        return await generate_image_for_job(
+            job_id,
+            prompt=payload.prompt,
+            model_reference=payload.model_reference,
+            product_reference=payload.product_reference,
+            width=payload.width,
+            height=payload.height,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/creative/outputs")
+async def list_creative_output_records(job_id: str | None = Query(default=None),
+                                       asset_id: str | None = Query(default=None),
+                                       limit: int = Query(default=100, ge=1, le=500)) -> list[dict[str, Any]]:
+    """List creative outputs."""
+    return await list_outputs(job_id=job_id, asset_id=asset_id, limit=limit)
+
+
+@app.get("/api/creative/video-projects")
+async def list_creative_video_project_records(creative_project_id: str | None = Query(default=None),
+                                             limit: int = Query(default=100, ge=1, le=500)) -> list[dict[str, Any]]:
+    """List video projects."""
+    return await list_video_projects(creative_project_id=creative_project_id, limit=limit)
+
+
+@app.post("/api/creative/video-projects", status_code=201)
+async def create_creative_video_project_record(payload: VideoProjectCreate) -> dict[str, Any]:
+    """Create a video project."""
+    project = await get_project(payload.creative_project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Creative project not found")
+    try:
+        return await create_video_project(
+            creative_project_id=payload.creative_project_id,
+            format=payload.format,
+            target_channel=payload.target_channel,
+            status=payload.status,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/creative/video-projects/{video_project_id}/scenes")
+async def list_creative_video_scene_records(video_project_id: str) -> list[dict[str, Any]]:
+    """List scenes for a video project."""
+    return await list_video_scenes(video_project_id)
+
+
+@app.post("/api/creative/video-projects/{video_project_id}/scenes", status_code=201)
+async def create_creative_video_scene_record(video_project_id: str, payload: VideoSceneCreate) -> dict[str, Any]:
+    """Create a video scene."""
+    if payload.video_project_id != video_project_id:
+        raise HTTPException(status_code=400, detail="Video project ID mismatch")
+    try:
+        return await create_video_scene(
+            video_project_id=video_project_id,
+            scene_order=payload.scene_order,
+            scene_type=payload.scene_type,
+            prompt_text=payload.prompt_text,
+            source_asset_id=payload.source_asset_id,
+            generated_asset_id=payload.generated_asset_id,
+            duration_seconds=payload.duration_seconds,
+            status=payload.status,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/creative/campaigns")
+async def list_creative_campaign_records(status: str | None = Query(default=None),
+                                        limit: int = Query(default=100, ge=1, le=500)) -> list[dict[str, Any]]:
+    """List campaigns."""
+    return await list_creative_campaigns(status=status, limit=limit)
+
+
+@app.post("/api/creative/campaigns", status_code=201)
+async def create_creative_campaign_record(payload: CampaignCreate) -> dict[str, Any]:
+    """Create a campaign."""
+    if payload.creative_project_id is not None and await get_project(payload.creative_project_id) is None:
+        raise HTTPException(status_code=404, detail="Creative project not found")
+    try:
+        return await create_campaign(
+            name=payload.name,
+            status=payload.status,
+            target_audience=payload.target_audience,
+            creative_project_id=payload.creative_project_id,
+            created_by=payload.created_by,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.patch("/api/creative/campaigns/{campaign_id}")
+async def update_creative_campaign_record(campaign_id: str, payload: CampaignUpdate) -> dict[str, Any]:
+    """Update a campaign."""
+    campaign = await get_campaign(campaign_id)
+    if campaign is None:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    if payload.creative_project_id is not None and await get_project(payload.creative_project_id) is None:
+        raise HTTPException(status_code=404, detail="Creative project not found")
+    updates = {key: value for key, value in payload.model_dump().items() if value is not None}
+    if updates:
+        await update_campaign(campaign_id, **updates)
+    updated = await get_campaign(campaign_id)
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    return updated
 
 
 @app.get("/api/stats")
