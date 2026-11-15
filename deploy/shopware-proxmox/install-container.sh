@@ -113,7 +113,18 @@ start_container() {
   local ctid; ctid="$(yaml_get "$CONFIG_FILE" container.ctid 210)"
   if [[ "$DRY_RUN" == "true" ]]; then log_info "[dry-run] would start CT $ctid"; return 0; fi
   if ! pct status "$ctid" 2>/dev/null | grep -q running; then
-    pct start "$ctid" >/dev/null
+    local out
+    if ! out=$(pct start "$ctid" 2>&1); then
+      log_warn "pct start failed: $out"
+      if echo "$out" | grep -qi "Failed to spawn\|sync_wait"; then
+        log_warn "Retrying start without features (nesting/keyctl) compatibility fallback..."
+        pct set "$ctid" --features "" >/dev/null 2>&1 || true
+        out=$(pct start "$ctid" 2>&1) || { log_error "$out"; die "Container $ctid failed to start. Check storage supports rootdir, unprivileged userns/AppArmor, and run 'pct start $ctid' manually." 22; }
+      else
+        log_error "$out"
+        die "Container $ctid failed to start" 22
+      fi
+    fi
   fi
   log_info "Waiting for container networking..."
   local i

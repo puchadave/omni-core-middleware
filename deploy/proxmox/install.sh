@@ -227,19 +227,35 @@ main() {
 
     # Container starten
     log_info "Starte Container..."
-    pct start "$ct_id" 2>/dev/null || log_warn "Start des Containers schlug teilweise fehl"
+    local start_out=""
+    if ! start_out=$(pct start "$ct_id" 2>&1); then
+        log_warn "Start fehlgeschlagen: $start_out"
+        if echo "$start_out" | grep -qi "Failed to spawn\|sync_wait"; then
+            log_warn "Versuche Start ohne experimentelle Features (nesting)..."
+            pct set "$ct_id" --features "" >/dev/null 2>&1 || true
+            start_out=$(pct start "$ct_id" 2>&1) || {
+                log_err "Container konnte nicht gestartet werden (CTID $ct_id)."
+                log_err "$start_out"
+                log_err "Hinweise: Storage '$storage' muss 'rootdir' unterstützen (z.B. local-lvm/local-zfs), AppArmor/UserNS prüfen, 'pct start $ct_id' manuell ausführen."
+                exit 1
+            }
+        else
+            log_err "Container konnte nicht gestartet werden (CTID $ct_id): $start_out"
+            exit 1
+        fi
+    fi
 
     # Warte auf Laufbereitschaft
     local wait_count=0
     while [ "$wait_count" -lt 30 ]; do
-        local status=$(pct status "$ct_id" 2>/dev/null | grep -o 'status: [a-z]*' | head -1 | awk '{print $2}')
-        if [ "$status" = "running" ] || [ "$status" = "running" ]; then
+        local cstatus
+        cstatus=$(pct status "$ct_id" 2>/dev/null | awk '{print $2}')
+        if [ "$cstatus" = "running" ]; then
             break
         fi
         sleep 1
         wait_count=$((wait_count + 1))
     done
-
     log_info "Container status: $(pct status "$ct_id" 2>/dev/null || echo "unknown")"
 
     # --- Projekt herunterladen und konfigurieren ---
