@@ -21,6 +21,8 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
+import httpx
+
 from .canonical_product_mapping import CanonicalProduct, merge_product_keep_supplier_ids
 from .matterhorn_rest_client import MatterhornAPIClient
 from .feed_manager import parse_feed, FORMAT_XML, FORMAT_XML_V2, FORMAT_XML_EAN
@@ -287,23 +289,40 @@ class InventorySyncService:
         return products
 
     async def _fetch_via_xml_feed(self) -> list[dict[str, Any]]:
-        """Fetch products via XML feed fallback."""
+        """Fetch and parse products via the Matterhorn XML feed fallback."""
+        xml_url = "https://matterhorn-moda.de/?str=xmloffer"
         try:
-            # Use the feed manager to parse the standard Matterhorn XML feed
-            from .feed_manager import parse_feed
+            client = getattr(self.api_client, "client", None)
+            if client is not None:
+                response = await client.get(xml_url, timeout=30.0)
+            else:
+                async with httpx.AsyncClient(timeout=30.0) as http_client:
+                    response = await http_client.get(xml_url)
+            response.raise_for_status()
+            content = response.text
 
-            # The standard Matterhorn XML feed URL
-            xml_url = "https://matterhorn-moda.de/?str=xmloffer"
+            try:
+                from .feed_manager import parse_feed
 
-            # We need to get the content - in practice this would be
-            # downloaded via the API client's HTTP client
-            # For now, we'll use a placeholder approach
-            # TODO: Implement actual XML feed download
+                parsed = parse_feed(content, source_url=xml_url)
+                if isinstance(parsed, tuple):
+                    products = parsed[0]
+                elif isinstance(parsed, dict):
+                    products = parsed.get("products") or parsed.get("items") or []
+                else:
+                    products = parsed or []
+                if products:
+                    return list(products)
+            except Exception:
+                logger.debug("feed_manager.parse_feed unavailable/failed; using XML parser fallback", exc_info=True)
 
-            # For now, return empty list - the caller should handle
-            # the case where both API and feed fail
-            logger.warning("XML feed fallback not fully implemented")
-            return []
+            from .feed_manager import parse_xml_standard, parse_xml_v2
+
+            products = parse_xml_standard(content)
+            if not products:
+                products = parse_xml_v2(content)
+            logger.info("Fetched %d products from XML feed fallback", len(products))
+            return products
 
         except Exception as exc:
             logger.error("XML feed fallback failed: %s", exc)

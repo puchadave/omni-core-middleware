@@ -172,20 +172,35 @@ class FulfillmentService:
     async def _get_sku_stock(self, sku: str) -> int:
         """Fetch current stock for a given SKU from the database.
 
-        This is a placeholder implementation.  In production this would
-        query the ``products`` table via aiosqlite.  For now it returns 0
-        to simulate "out of stock" behaviour, which will cause the
-        inventory check in ``process_order`` to reject the order.
+        Uses the shared database layer when available (PostgreSQL/SQLite WAL),
+        with a direct SQLite fallback for standalone use.
 
         :param sku: Product SKU to look up.
-        :return: Integer stock count.
+        :return: Integer stock count (0 if unknown/unavailable).
         """
-        # TODO: Replace with real aiosqlite query against products table
-        # Example:
-        # async with aiosqlite.connect("middleware.db") as db:
-        #     async with db.execute(
-        #         "SELECT stock FROM products WHERE sku = ?", (sku,)
-        #     ) as cur:
-        #         row = await cur.fetchone()
-        #         return row[0] if row else 0
-        return 0
+        if not sku:
+            return 0
+        try:
+            from database import fetch_product  # type: ignore
+
+            item = await fetch_product(sku)
+            if item:
+                return int(item.get("stock") or 0)
+        except Exception:
+            logger.debug("Shared DB lookup failed for sku=%s; trying SQLite fallback", sku, exc_info=True)
+
+        try:
+            import os
+            import sqlite3
+
+            db_path = os.environ.get("DATABASE_PATH", "middleware.db")
+            conn = sqlite3.connect(db_path)
+            try:
+                cur = conn.execute("SELECT stock FROM products WHERE sku = ?", (sku,))
+                row = cur.fetchone()
+                return int(row[0]) if row and row[0] is not None else 0
+            finally:
+                conn.close()
+        except Exception:
+            logger.exception("Failed to fetch stock for sku=%s", sku)
+            return 0
