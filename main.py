@@ -49,6 +49,13 @@ from database import (
     write_log,
 )
 from services.asset_manager import create_asset_from_upload, get_asset, list_assets, update_asset, create_asset_version_from_upload, list_asset_versions
+from services.agent_manager import (
+    create_agent_profile, list_agent_profiles, get_agent_profile, update_agent_profile,
+    create_conversation, list_conversations, get_conversation,
+    create_run, get_run, update_run, list_runs, list_tool_calls,
+    create_approval, list_approvals, review_approval, execute_tool, select_omniroute_model,
+    registry,
+)
 from services.fulfillment import FulfillmentService
 from services.model_identity import create_profile, list_profiles, get_profile, update_profile, add_reference, list_references, set_permission, list_permissions, generation_allowed
 from services.inventory_guard import InventoryGuard
@@ -181,6 +188,92 @@ class ModelPermissionCreate(BaseModel):
     granted: bool = False
     scope: dict[str, Any] = Field(default_factory=dict)
     valid_until: str | None = None
+
+
+class AgentProfileCreate(BaseModel):
+    """Validated agent profile input."""
+
+    name: str = Field(min_length=1, max_length=128)
+    description: str = Field(default="", max_length=4000)
+    allowed_tools: list[str] = Field(default_factory=list)
+    model_id: str | None = None
+    system_prompt: str = Field(default="", max_length=20000)
+    budget_usd: float = Field(default=0, ge=0)
+    time_limit_seconds: int = Field(default=300, ge=1, le=86400)
+    active: bool = True
+
+
+class AgentProfileUpdate(BaseModel):
+    """Validated partial agent profile update."""
+
+    name: str | None = Field(default=None, min_length=1, max_length=128)
+    description: str | None = Field(default=None, max_length=4000)
+    allowed_tools: list[str] | None = None
+    model_id: str | None = None
+    system_prompt: str | None = Field(default=None, max_length=20000)
+    budget_usd: float | None = Field(default=None, ge=0)
+    time_limit_seconds: int | None = Field(default=None, ge=1, le=86400)
+    active: bool | None = None
+
+
+class AgentConversationCreate(BaseModel):
+    """Validated agent conversation input."""
+
+    agent_profile_id: str = Field(min_length=1, max_length=128)
+    user_actor: str = Field(default="system", min_length=1, max_length=128)
+    status: str = "active"
+
+
+class AgentRunCreate(BaseModel):
+    """Validated agent run input."""
+
+    conversation_id: str = Field(min_length=1, max_length=128)
+    agent_profile_id: str = Field(min_length=1, max_length=128)
+    status: str = "running"
+    input_data: dict[str, Any] = Field(default_factory=dict)
+
+
+class AgentRunUpdate(BaseModel):
+    """Validated partial agent run update."""
+
+    status: str | None = None
+    output_data: dict[str, Any] | None = None
+    error_message: str | None = None
+
+
+class AgentToolExecution(BaseModel):
+    """Validated agent tool execution input."""
+
+    tool_name: str = Field(min_length=1, max_length=128)
+    tool_input: dict[str, Any] = Field(default_factory=dict)
+
+
+class AgentApprovalCreate(BaseModel):
+    """Validated agent approval input."""
+
+    run_id: str = Field(min_length=1, max_length=128)
+    target_type: str = Field(min_length=1, max_length=128)
+    target_id: str = Field(min_length=1, max_length=128)
+    reason: str = Field(default="", max_length=4000)
+
+
+class AgentApprovalReview(BaseModel):
+    """Validated agent approval review input."""
+
+    approved: bool
+    reviewed_by: str = Field(default="system", min_length=1, max_length=128)
+    reason: str = Field(default="", max_length=4000)
+
+
+class OmniRouteSelectionRequest(BaseModel):
+    """Validated OmniRoute model selection input."""
+
+    workflow_name: str = Field(min_length=1, max_length=128)
+    required_capability: str | None = None
+    max_cost: float | None = Field(default=None, ge=0)
+    input_tokens: int = Field(default=0, ge=0)
+    output_tokens: int = Field(default=0, ge=0)
+    image_count: int = Field(default=0, ge=0)
 
 
 class AppRuntime:
@@ -466,6 +559,11 @@ async def model_manager_page(request: Request) -> HTMLResponse:
     return templates.TemplateResponse("model_manager.html", {"request": request, "profiles": await list_profiles(limit=100)})
 
 
+@app.get("/admin/agents", response_class=HTMLResponse)
+async def agent_manager_page(request: Request) -> HTMLResponse:
+    """Render agent management."""
+    return templates.TemplateResponse("agent_manager.html", {"request": request, "profiles": await list_agent_profiles(limit=100), "tools": registry.list_tools()})
+
 @app.get("/api/health")
 async def health_check() -> dict[str, Any]:
     """Readiness and dependency health endpoint."""
@@ -742,6 +840,204 @@ async def check_model_generation(profile_id: str, permission_type: str = Query(d
     """Check whether a model profile may be used for generation."""
     allowed, reason = await generation_allowed(profile_id, permission_type)
     return {"allowed": allowed, "reason": reason}
+
+
+@app.get("/api/agent-tools")
+async def list_agent_tools() -> list[dict[str, Any]]:
+    """List registered agent tools and their schemas."""
+    return registry.list_tools()
+
+
+@app.get("/api/agent-profiles")
+async def list_agent_profile_records(active_only: bool = Query(default=False),
+                                    limit: int = Query(default=100, ge=1, le=500)) -> list[dict[str, Any]]:
+    """List agent profiles."""
+    return await list_agent_profiles(active_only=active_only, limit=limit)
+
+
+@app.post("/api/agent-profiles", status_code=201)
+async def create_agent_profile_record(payload: AgentProfileCreate) -> dict[str, Any]:
+    """Create an agent profile."""
+    try:
+        return await create_agent_profile(
+            name=payload.name,
+            description=payload.description,
+            allowed_tools=payload.allowed_tools,
+            model_id=payload.model_id,
+            system_prompt=payload.system_prompt,
+            budget_usd=payload.budget_usd,
+            time_limit_seconds=payload.time_limit_seconds,
+            active=payload.active,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/agent-profiles/{profile_id}")
+async def get_agent_profile_record(profile_id: str) -> dict[str, Any]:
+    """Return one agent profile."""
+    profile = await get_agent_profile(profile_id)
+    if profile is None:
+        raise HTTPException(status_code=404, detail="Agent profile not found")
+    return profile
+
+
+@app.patch("/api/agent-profiles/{profile_id}")
+async def update_agent_profile_record(profile_id: str, payload: AgentProfileUpdate) -> dict[str, Any]:
+    """Update an agent profile."""
+    profile = await get_agent_profile(profile_id)
+    if profile is None:
+        raise HTTPException(status_code=404, detail="Agent profile not found")
+    updates = {key: value for key, value in payload.model_dump().items() if value is not None}
+    if updates:
+        try:
+            await update_agent_profile(profile_id, **updates)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    updated = await get_agent_profile(profile_id)
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Agent profile not found")
+    return updated
+
+
+@app.get("/api/agent-conversations")
+async def list_agent_conversation_records(agent_profile_id: str | None = Query(default=None),
+                                         limit: int = Query(default=100, ge=1, le=500)) -> list[dict[str, Any]]:
+    """List agent conversations."""
+    return await list_conversations(agent_profile_id=agent_profile_id, limit=limit)
+
+
+@app.post("/api/agent-conversations", status_code=201)
+async def create_agent_conversation_record(payload: AgentConversationCreate) -> dict[str, Any]:
+    """Create an agent conversation."""
+    profile = await get_agent_profile(payload.agent_profile_id)
+    if profile is None:
+        raise HTTPException(status_code=404, detail="Agent profile not found")
+    try:
+        return await create_conversation(
+            agent_profile_id=payload.agent_profile_id,
+            user_actor=payload.user_actor,
+            status=payload.status,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/agent-runs")
+async def list_agent_run_records(conversation_id: str | None = Query(default=None),
+                                limit: int = Query(default=100, ge=1, le=500)) -> list[dict[str, Any]]:
+    """List agent runs."""
+    return await list_runs(conversation_id=conversation_id, limit=limit)
+
+
+@app.post("/api/agent-runs", status_code=201)
+async def create_agent_run_record(payload: AgentRunCreate) -> dict[str, Any]:
+    """Create an agent run."""
+    conversation = await get_conversation(payload.conversation_id)
+    if conversation is None:
+        raise HTTPException(status_code=404, detail="Agent conversation not found")
+    profile = await get_agent_profile(payload.agent_profile_id)
+    if profile is None:
+        raise HTTPException(status_code=404, detail="Agent profile not found")
+    if conversation["agent_profile_id"] != payload.agent_profile_id:
+        raise HTTPException(status_code=400, detail="Conversation and profile do not match")
+    try:
+        return await create_run(
+            conversation_id=payload.conversation_id,
+            agent_profile_id=payload.agent_profile_id,
+            status=payload.status,
+            input_data=payload.input_data,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/agent-runs/{run_id}")
+async def get_agent_run_record(run_id: str) -> dict[str, Any]:
+    """Return one agent run."""
+    run = await get_run(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Agent run not found")
+    return run
+
+
+@app.patch("/api/agent-runs/{run_id}")
+async def update_agent_run_record(run_id: str, payload: AgentRunUpdate) -> dict[str, Any]:
+    """Update an agent run."""
+    run = await get_run(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Agent run not found")
+    updates = {key: value for key, value in payload.model_dump().items() if value is not None}
+    if updates:
+        await update_run(run_id, **updates)
+    updated = await get_run(run_id)
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Agent run not found")
+    return updated
+
+
+@app.post("/api/agent-runs/{run_id}/tools")
+async def execute_agent_tool(run_id: str, payload: AgentToolExecution) -> dict[str, Any]:
+    """Execute one registered agent tool."""
+    try:
+        return await execute_tool(run_id, payload.tool_name, payload.tool_input)
+    except (ValueError, PermissionError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/agent-runs/{run_id}/tool-calls")
+async def list_agent_tool_call_records(run_id: str) -> list[dict[str, Any]]:
+    """Return tool calls for one agent run."""
+    run = await get_run(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Agent run not found")
+    return await list_tool_calls(run_id)
+
+
+@app.get("/api/agent-approvals")
+async def list_agent_approval_records(run_id: str | None = Query(default=None),
+                                     status: str | None = Query(default=None),
+                                     limit: int = Query(default=100, ge=1, le=500)) -> list[dict[str, Any]]:
+    """List agent approvals."""
+    return await list_approvals(run_id=run_id, status=status, limit=limit)
+
+
+@app.post("/api/agent-approvals", status_code=201)
+async def create_agent_approval_record(payload: AgentApprovalCreate) -> dict[str, Any]:
+    """Create an agent approval request."""
+    run = await get_run(payload.run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Agent run not found")
+    try:
+        return await create_approval(payload.run_id, payload.target_type, payload.target_id, payload.reason)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.patch("/api/agent-approvals/{approval_id}")
+async def review_agent_approval_record(approval_id: str, payload: AgentApprovalReview) -> dict[str, str]:
+    """Review an agent approval request."""
+    reviewed = await review_approval(approval_id, approved=payload.approved, reviewed_by=payload.reviewed_by, reason=payload.reason)
+    if not reviewed:
+        raise HTTPException(status_code=404, detail="Agent approval not found")
+    return {"status": "approved" if payload.approved else "rejected"}
+
+
+@app.post("/api/agent-omniroute/select")
+async def select_agent_omniroute_model(payload: OmniRouteSelectionRequest) -> dict[str, Any]:
+    """Select an OmniRoute model using existing routing and cost components."""
+    result = select_omniroute_model(
+        runtime,
+        workflow_name=payload.workflow_name,
+        required_capability=payload.required_capability,
+        max_cost=payload.max_cost,
+        input_tokens=payload.input_tokens,
+        output_tokens=payload.output_tokens,
+        image_count=payload.image_count,
+    )
+    if result is None:
+        raise HTTPException(status_code=404, detail="No suitable OmniRoute model found")
+    return result
 
 
 @app.get("/api/stats")

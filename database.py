@@ -845,6 +845,77 @@ POSTGRES_SCHEMA: tuple[str, ...] = (
     )
     """,
     "CREATE INDEX IF NOT EXISTS idx_model_permissions_profile_id ON model_permissions(model_profile_id)",
+    """
+    CREATE TABLE IF NOT EXISTS agent_profiles (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        description TEXT NOT NULL DEFAULT '',
+        allowed_tools_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+        model_id TEXT REFERENCES ai_models(id) ON DELETE SET NULL,
+        system_prompt TEXT NOT NULL DEFAULT '',
+        budget_usd NUMERIC(12,4) NOT NULL DEFAULT 0,
+        time_limit_seconds INTEGER NOT NULL DEFAULT 300,
+        is_active BOOLEAN NOT NULL DEFAULT TRUE,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_agent_profiles_is_active ON agent_profiles(is_active)",
+    """
+    CREATE TABLE IF NOT EXISTS agent_conversations (
+        id TEXT PRIMARY KEY,
+        agent_profile_id TEXT NOT NULL REFERENCES agent_profiles(id) ON DELETE CASCADE,
+        user_actor TEXT NOT NULL DEFAULT 'system',
+        status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'paused', 'completed', 'failed')),
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_agent_conversations_profile_id ON agent_conversations(agent_profile_id)",
+    """
+    CREATE TABLE IF NOT EXISTS agent_runs (
+        id TEXT PRIMARY KEY,
+        conversation_id TEXT NOT NULL REFERENCES agent_conversations(id) ON DELETE CASCADE,
+        agent_profile_id TEXT NOT NULL REFERENCES agent_profiles(id) ON DELETE CASCADE,
+        status TEXT NOT NULL CHECK (status IN ('running', 'completed', 'failed', 'paused', 'cancelled')),
+        input_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+        output_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+        started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        completed_at TIMESTAMPTZ,
+        error_message TEXT NOT NULL DEFAULT ''
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_agent_runs_conversation_id ON agent_runs(conversation_id)",
+    "CREATE INDEX IF NOT EXISTS idx_agent_runs_status ON agent_runs(status)",
+    """
+    CREATE TABLE IF NOT EXISTS agent_tool_calls (
+        id TEXT PRIMARY KEY,
+        run_id TEXT NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE,
+        tool_name TEXT NOT NULL,
+        input_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+        output_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+        status TEXT NOT NULL CHECK (status IN ('success', 'error', 'rejected')),
+        error_message TEXT NOT NULL DEFAULT '',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_agent_tool_calls_run_id ON agent_tool_calls(run_id)",
+    "CREATE INDEX IF NOT EXISTS idx_agent_tool_calls_tool_name ON agent_tool_calls(tool_name)",
+    """
+    CREATE TABLE IF NOT EXISTS agent_approvals (
+        id TEXT PRIMARY KEY,
+        run_id TEXT NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE,
+        target_type TEXT NOT NULL,
+        target_id TEXT NOT NULL,
+        approval_status TEXT NOT NULL CHECK (approval_status IN ('pending', 'approved', 'rejected')),
+        reason TEXT NOT NULL DEFAULT '',
+        reviewed_by TEXT NOT NULL DEFAULT '',
+        reviewed_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_agent_approvals_run_id ON agent_approvals(run_id)",
+    "CREATE INDEX IF NOT EXISTS idx_agent_approvals_status ON agent_approvals(approval_status)",
 )
 
 SQLITE_SCHEMA = """
@@ -1531,6 +1602,67 @@ CREATE TABLE IF NOT EXISTS model_permissions (
     UNIQUE(model_profile_id, permission_type)
 );
 CREATE INDEX IF NOT EXISTS idx_model_permissions_profile_id ON model_permissions(model_profile_id);
+CREATE TABLE IF NOT EXISTS agent_profiles (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    allowed_tools_json TEXT NOT NULL DEFAULT '[]',
+    model_id TEXT,
+    system_prompt TEXT NOT NULL DEFAULT '',
+    budget_usd REAL NOT NULL DEFAULT 0,
+    time_limit_seconds INTEGER NOT NULL DEFAULT 300,
+    is_active INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_agent_profiles_is_active ON agent_profiles(is_active);
+CREATE TABLE IF NOT EXISTS agent_conversations (
+    id TEXT PRIMARY KEY,
+    agent_profile_id TEXT NOT NULL REFERENCES agent_profiles(id) ON DELETE CASCADE,
+    user_actor TEXT NOT NULL DEFAULT 'system',
+    status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'paused', 'completed', 'failed')),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_agent_conversations_profile_id ON agent_conversations(agent_profile_id);
+CREATE TABLE IF NOT EXISTS agent_runs (
+    id TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL REFERENCES agent_conversations(id) ON DELETE CASCADE,
+    agent_profile_id TEXT NOT NULL REFERENCES agent_profiles(id) ON DELETE CASCADE,
+    status TEXT NOT NULL CHECK (status IN ('running', 'completed', 'failed', 'paused', 'cancelled')),
+    input_json TEXT NOT NULL DEFAULT '{}',
+    output_json TEXT NOT NULL DEFAULT '{}',
+    started_at TEXT NOT NULL,
+    completed_at TEXT,
+    error_message TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_agent_runs_conversation_id ON agent_runs(conversation_id);
+CREATE INDEX IF NOT EXISTS idx_agent_runs_status ON agent_runs(status);
+CREATE TABLE IF NOT EXISTS agent_tool_calls (
+    id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE,
+    tool_name TEXT NOT NULL,
+    input_json TEXT NOT NULL DEFAULT '{}',
+    output_json TEXT NOT NULL DEFAULT '{}',
+    status TEXT NOT NULL CHECK (status IN ('success', 'error', 'rejected')),
+    error_message TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_agent_tool_calls_run_id ON agent_tool_calls(run_id);
+CREATE INDEX IF NOT EXISTS idx_agent_tool_calls_tool_name ON agent_tool_calls(tool_name);
+CREATE TABLE IF NOT EXISTS agent_approvals (
+    id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE,
+    target_type TEXT NOT NULL,
+    target_id TEXT NOT NULL,
+    approval_status TEXT NOT NULL CHECK (approval_status IN ('pending', 'approved', 'rejected')),
+    reason TEXT NOT NULL DEFAULT '',
+    reviewed_by TEXT NOT NULL DEFAULT '',
+    reviewed_at TEXT,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_agent_approvals_run_id ON agent_approvals(run_id);
+CREATE INDEX IF NOT EXISTS idx_agent_approvals_status ON agent_approvals(approval_status);
 """
 
 
@@ -2997,3 +3129,372 @@ async def model_permission_list(model_profile_id: str) -> list[dict[str, Any]]:
         rows = await cursor.fetchall()
         await cursor.close()
         return [dict(row) for row in rows]
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Agent Management
+# ════════════════════════════════════════════════════════════════════════════
+
+async def agent_profile_create(*, profile_id: str, name: str, description: str = "",
+                              allowed_tools: list[str] | None = None,
+                              model_id: str | None = None, system_prompt: str = "",
+                              budget_usd: float = 0, time_limit_seconds: int = 300,
+                              active: bool = True) -> None:
+    tools = allowed_tools or []
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO agent_profiles(id, name, description, allowed_tools_json, model_id,
+                   system_prompt, budget_usd, time_limit_seconds, is_active, created_at, updated_at)
+                   VALUES ($1,$2,$3,$4::jsonb,$5,$6,$7,$8,$9,NOW(),NOW())""",
+                profile_id, name, description, __import__("json").dumps(tools), model_id,
+                system_prompt, budget_usd, time_limit_seconds, active,
+            )
+        return
+    now = utc_now()
+    import json as _json
+    async with get_connection() as db:
+        await db.execute(
+            """INSERT INTO agent_profiles(id, name, description, allowed_tools_json, model_id,
+               system_prompt, budget_usd, time_limit_seconds, is_active, created_at, updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+            (profile_id, name, description, _json.dumps(tools), model_id, system_prompt,
+             budget_usd, time_limit_seconds, int(active), now, now),
+        )
+        await db.commit()
+
+
+async def agent_profile_list(*, active_only: bool = False, limit: int = 100) -> list[dict[str, Any]]:
+    safe_limit = min(max(limit, 1), 500)
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            if active_only:
+                rows = await conn.fetch("SELECT * FROM agent_profiles WHERE is_active = TRUE ORDER BY name ASC, id ASC LIMIT $1", safe_limit)
+            else:
+                rows = await conn.fetch("SELECT * FROM agent_profiles ORDER BY name ASC, id ASC LIMIT $1", safe_limit)
+        return [dict(row) for row in rows]
+    async with get_connection() as db:
+        if active_only:
+            cursor = await db.execute("SELECT * FROM agent_profiles WHERE is_active = 1 ORDER BY name ASC, id ASC LIMIT ?", (safe_limit,))
+        else:
+            cursor = await db.execute("SELECT * FROM agent_profiles ORDER BY name ASC, id ASC LIMIT ?", (safe_limit,))
+        rows = await cursor.fetchall()
+        await cursor.close()
+        return [dict(row) for row in rows]
+
+
+async def agent_profile_get(profile_id: str) -> dict[str, Any] | None:
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT * FROM agent_profiles WHERE id = $1", profile_id)
+        return dict(row) if row else None
+    async with get_connection() as db:
+        cursor = await db.execute("SELECT * FROM agent_profiles WHERE id = ?", (profile_id,))
+        row = await cursor.fetchone()
+        await cursor.close()
+        return dict(row) if row else None
+
+
+async def agent_profile_update(profile_id: str, **fields: Any) -> bool:
+    import json as _json
+    allowed = {"name", "description", "allowed_tools", "model_id", "system_prompt", "budget_usd", "time_limit_seconds", "active"}
+    column_map = {"allowed_tools": "allowed_tools_json"}
+    updates = {}
+    for key, value in fields.items():
+        if key not in allowed or value is None:
+            continue
+        column = column_map.get(key, key)
+        if key == "allowed_tools":
+            updates[column] = _json.dumps(value)
+        elif key == "active":
+            updates[column] = bool(value)
+        else:
+            updates[column] = value
+    if not updates:
+        return False
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            assignments = []
+            params: list[Any] = []
+            for index, (column, value) in enumerate(updates.items(), start=1):
+                cast = "::jsonb" if column.endswith("_json") else ""
+                assignments.append(f"{column} = ${index}{cast}")
+                params.append(value)
+            params.append(profile_id)
+            result = await conn.execute(
+                f"UPDATE agent_profiles SET {', '.join(assignments)}, updated_at = NOW() WHERE id = ${len(params)}",
+                *params,
+            )
+        return result.endswith("1")
+    async with get_connection() as db:
+        assignments = [f"{column} = ?" for column in updates]
+        params = list(updates.values()) + [utc_now(), profile_id]
+        cursor = await db.execute(
+            f"UPDATE agent_profiles SET {', '.join(assignments)}, updated_at = ? WHERE id = ?",
+            tuple(params),
+        )
+        await db.commit()
+        changed = cursor.rowcount > 0
+        await cursor.close()
+        return changed
+
+
+async def agent_conversation_create(*, conversation_id: str, agent_profile_id: str,
+                                    user_actor: str = "system", status: str = "active") -> None:
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO agent_conversations(id, agent_profile_id, user_actor, status, created_at, updated_at)
+                   VALUES ($1,$2,$3,$4,NOW(),NOW())""",
+                conversation_id, agent_profile_id, user_actor, status,
+            )
+        return
+    now = utc_now()
+    async with get_connection() as db:
+        await db.execute(
+            """INSERT INTO agent_conversations(id, agent_profile_id, user_actor, status, created_at, updated_at)
+               VALUES (?,?,?,?,?,?)""",
+            (conversation_id, agent_profile_id, user_actor, status, now, now),
+        )
+        await db.commit()
+
+
+async def agent_conversation_list(agent_profile_id: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
+    safe_limit = min(max(limit, 1), 500)
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            if agent_profile_id:
+                rows = await conn.fetch("SELECT * FROM agent_conversations WHERE agent_profile_id = $1 ORDER BY created_at DESC LIMIT $2", agent_profile_id, safe_limit)
+            else:
+                rows = await conn.fetch("SELECT * FROM agent_conversations ORDER BY created_at DESC LIMIT $1", safe_limit)
+        return [dict(row) for row in rows]
+    async with get_connection() as db:
+        if agent_profile_id:
+            cursor = await db.execute("SELECT * FROM agent_conversations WHERE agent_profile_id = ? ORDER BY created_at DESC LIMIT ?", (agent_profile_id, safe_limit))
+        else:
+            cursor = await db.execute("SELECT * FROM agent_conversations ORDER BY created_at DESC LIMIT ?", (safe_limit,))
+        rows = await cursor.fetchall()
+        await cursor.close()
+        return [dict(row) for row in rows]
+
+
+async def agent_conversation_get(conversation_id: str) -> dict[str, Any] | None:
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT * FROM agent_conversations WHERE id = $1", conversation_id)
+        return dict(row) if row else None
+    async with get_connection() as db:
+        cursor = await db.execute("SELECT * FROM agent_conversations WHERE id = ?", (conversation_id,))
+        row = await cursor.fetchone()
+        await cursor.close()
+        return dict(row) if row else None
+
+
+async def agent_run_create(*, run_id: str, conversation_id: str, agent_profile_id: str,
+                           status: str = "running", input_data: dict[str, Any] | None = None) -> None:
+    import json as _json
+    payload = _json.dumps(input_data or {})
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO agent_runs(id, conversation_id, agent_profile_id, status, input_json, started_at)
+                   VALUES ($1,$2,$3,$4,$5::jsonb,NOW())""",
+                run_id, conversation_id, agent_profile_id, status, payload,
+            )
+        return
+    async with get_connection() as db:
+        await db.execute(
+            """INSERT INTO agent_runs(id, conversation_id, agent_profile_id, status, input_json, started_at)
+               VALUES (?,?,?,?,?,?)""",
+            (run_id, conversation_id, agent_profile_id, status, payload, utc_now()),
+        )
+        await db.commit()
+
+
+async def agent_run_get(run_id: str) -> dict[str, Any] | None:
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT * FROM agent_runs WHERE id = $1", run_id)
+        return dict(row) if row else None
+    async with get_connection() as db:
+        cursor = await db.execute("SELECT * FROM agent_runs WHERE id = ?", (run_id,))
+        row = await cursor.fetchone()
+        await cursor.close()
+        return dict(row) if row else None
+
+
+async def agent_run_update(run_id: str, *, status: str | None = None,
+                           output_data: dict[str, Any] | None = None,
+                           error_message: str | None = None) -> bool:
+    import json as _json
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT id FROM agent_runs WHERE id = $1", run_id)
+            if not row:
+                return False
+            if status is not None:
+                await conn.execute("UPDATE agent_runs SET status = $1, completed_at = CASE WHEN $1 IN ('completed','failed','cancelled') THEN NOW() ELSE completed_at END WHERE id = $2", status, run_id)
+            if output_data is not None:
+                await conn.execute("UPDATE agent_runs SET output_json = $1::jsonb WHERE id = $2", _json.dumps(output_data), run_id)
+            if error_message is not None:
+                await conn.execute("UPDATE agent_runs SET error_message = $1 WHERE id = $2", error_message, run_id)
+        return True
+    async with get_connection() as db:
+        cursor = await db.execute("SELECT id FROM agent_runs WHERE id = ?", (run_id,))
+        row = await cursor.fetchone()
+        await cursor.close()
+        if not row:
+            return False
+        if status is not None:
+            await db.execute("UPDATE agent_runs SET status = ?, completed_at = CASE WHEN ? IN ('completed','failed','cancelled') THEN ? ELSE completed_at END WHERE id = ?", (status, status, utc_now(), run_id))
+        if output_data is not None:
+            await db.execute("UPDATE agent_runs SET output_json = ? WHERE id = ?", (_json.dumps(output_data), run_id))
+        if error_message is not None:
+            await db.execute("UPDATE agent_runs SET error_message = ? WHERE id = ?", (error_message, run_id))
+        await db.commit()
+        return True
+
+
+async def agent_run_list(conversation_id: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
+    safe_limit = min(max(limit, 1), 500)
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            if conversation_id:
+                rows = await conn.fetch("SELECT * FROM agent_runs WHERE conversation_id = $1 ORDER BY started_at DESC LIMIT $2", conversation_id, safe_limit)
+            else:
+                rows = await conn.fetch("SELECT * FROM agent_runs ORDER BY started_at DESC LIMIT $1", safe_limit)
+        return [dict(row) for row in rows]
+    async with get_connection() as db:
+        if conversation_id:
+            cursor = await db.execute("SELECT * FROM agent_runs WHERE conversation_id = ? ORDER BY started_at DESC LIMIT ?", (conversation_id, safe_limit))
+        else:
+            cursor = await db.execute("SELECT * FROM agent_runs ORDER BY started_at DESC LIMIT ?", (safe_limit,))
+        rows = await cursor.fetchall()
+        await cursor.close()
+        return [dict(row) for row in rows]
+
+
+async def agent_tool_call_create(*, call_id: str, run_id: str, tool_name: str,
+                                 input_data: dict[str, Any] | None = None,
+                                 output_data: dict[str, Any] | None = None,
+                                 status: str = "success", error_message: str = "") -> None:
+    import json as _json
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO agent_tool_calls(id, run_id, tool_name, input_json, output_json, status, error_message, created_at)
+                   VALUES ($1,$2,$3,$4::jsonb,$5::jsonb,$6,$7,NOW())""",
+                call_id, run_id, tool_name, _json.dumps(input_data or {}), _json.dumps(output_data or {}), status, error_message,
+            )
+        return
+    async with get_connection() as db:
+        await db.execute(
+            """INSERT INTO agent_tool_calls(id, run_id, tool_name, input_json, output_json, status, error_message, created_at)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (call_id, run_id, tool_name, _json.dumps(input_data or {}), _json.dumps(output_data or {}), status, error_message, utc_now()),
+        )
+        await db.commit()
+
+
+async def agent_tool_call_list(run_id: str) -> list[dict[str, Any]]:
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("SELECT * FROM agent_tool_calls WHERE run_id = $1 ORDER BY created_at ASC", run_id)
+        return [dict(row) for row in rows]
+    async with get_connection() as db:
+        cursor = await db.execute("SELECT * FROM agent_tool_calls WHERE run_id = ? ORDER BY created_at ASC", (run_id,))
+        rows = await cursor.fetchall()
+        await cursor.close()
+        return [dict(row) for row in rows]
+
+
+async def agent_approval_create(*, approval_id: str, run_id: str, target_type: str,
+                                target_id: str, reason: str = "") -> None:
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO agent_approvals(id, run_id, target_type, target_id, approval_status, reason, created_at)
+                   VALUES ($1,$2,$3,$4,'pending',$5,NOW())""",
+                approval_id, run_id, target_type, target_id, reason,
+            )
+        return
+    async with get_connection() as db:
+        await db.execute(
+            """INSERT INTO agent_approvals(id, run_id, target_type, target_id, approval_status, reason, created_at)
+               VALUES (?,?,?,?,?,?,?)""",
+            (approval_id, run_id, target_type, target_id, "pending", reason, utc_now()),
+        )
+        await db.commit()
+
+
+async def agent_approval_list(run_id: str | None = None, status: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
+    safe_limit = min(max(limit, 1), 500)
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            query = "SELECT * FROM agent_approvals WHERE 1=1"
+            params: list[Any] = []
+            if run_id:
+                query += f" AND run_id = ${len(params) + 1}"
+                params.append(run_id)
+            if status:
+                query += f" AND approval_status = ${len(params) + 1}"
+                params.append(status)
+            query += f" ORDER BY created_at DESC LIMIT ${len(params) + 1}"
+            params.append(safe_limit)
+            rows = await conn.fetch(query, *params)
+        return [dict(row) for row in rows]
+    async with get_connection() as db:
+        query = "SELECT * FROM agent_approvals WHERE 1=1"
+        params: list[Any] = []
+        if run_id:
+            query += " AND run_id = ?"
+            params.append(run_id)
+        if status:
+            query += " AND approval_status = ?"
+            params.append(status)
+        query += " ORDER BY created_at DESC LIMIT ?"
+        params.append(safe_limit)
+        cursor = await db.execute(query, tuple(params))
+        rows = await cursor.fetchall()
+        await cursor.close()
+        return [dict(row) for row in rows]
+
+
+async def agent_approval_review(approval_id: str, *, approved: bool, reviewed_by: str = "system", reason: str = "") -> bool:
+    status = "approved" if approved else "rejected"
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            result = await conn.execute(
+                """UPDATE agent_approvals SET approval_status = $1, reviewed_by = $2, reviewed_at = NOW(), reason = CASE WHEN $3 = '' THEN reason ELSE $3 END
+                   WHERE id = $4""",
+                status, reviewed_by, reason, approval_id,
+            )
+        return result.endswith("1")
+    async with get_connection() as db:
+        cursor = await db.execute(
+            """UPDATE agent_approvals SET approval_status = ?, reviewed_by = ?, reviewed_at = ?, reason = CASE WHEN ? = '' THEN reason ELSE ? END
+               WHERE id = ?""",
+            (status, reviewed_by, utc_now(), reason, reason, approval_id),
+        )
+        await db.commit()
+        changed = cursor.rowcount > 0
+        await cursor.close()
+        return changed
+
+
