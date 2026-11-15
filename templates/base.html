@@ -131,9 +131,14 @@
       </div>
       <button type="button" onclick="toggleAIAgent()" class="text-slate-400 hover:text-white text-2xl leading-none" aria-label="Schließen">×</button>
     </div>
-    <div class="px-4 pt-3 border-b border-slate-800/60 pb-3">
-      <div class="text-xs text-slate-400 mb-2">Schnellbefehle für diese Seite</div>
+    <div class="px-4 pt-3 border-b border-slate-800/60 pb-3 space-y-2">
+      <div class="flex items-center justify-between gap-2"><div class="text-xs text-slate-400">Schnellbefehle für diese Seite</div><div class="text-[11px] text-slate-500">Menü: Set-Bildung & AI-Training</div></div>
       <div id="ai-agent-chips" class="flex flex-wrap gap-2"></div>
+      <div class="flex flex-wrap gap-2 pt-1 border-t border-slate-800/60">
+        <button type="button" class="chip !border-indigo-700/60" onclick="aiSendPreset('Erstelle ein Set/Bundle manuell aus folgenden SKUs: ... (Titel: ...)')">Manuelles Set bilden</button>
+        <button type="button" class="chip !border-indigo-700/60" onclick="aiSendPreset('Speichere AI-Training/Feedback: Kontext ..., Korrektur/Bewertung ...')">AI-Training/Feedback</button>
+        <button type="button" class="chip !border-indigo-700/60" onclick="aiSendPreset('Erzeuge automatische Bundle-Vorschläge und erstelle sie nach Bestätigung')">Auto-Bundles</button>
+      </div>
     </div>
     <div id="ai-agent-messages" class="flex-1 overflow-y-auto p-4 space-y-3 text-sm">
       <div class="bg-slate-900 border border-slate-800 rounded-lg p-3">
@@ -189,9 +194,10 @@
       if(p==='/ui/matterhorn-import') return ['Prüfe den Matterhorn-Importstatus','Zeige letzte Importfehler','Ist die Feed-Adresse konfiguriert?'];
       if(p==='/ui/marketplaces' || p==='/ui/connectors' || p==='/ui/integrations' || p==='/ui/shopware') return ['Shopware-Sync prüfen','Welche Anbindungen sind nicht konfiguriert?','Zeige den Integrationsstatus'];
       if(p==='/ui/settings') return ['Welche Einstellungen fehlen noch?','Prüfe die OmniRoute-Konfiguration','Zeige den Integrationsstatus'];
+      if(p==='/ui/bundle-studio') return ['Erstelle automatische Bundle-Vorschläge','Erstelle ein neues Set/Bundle manuell (bitte SKUs nennen)','Automatische Artikelauswahl pro Marktplatz (max. 2000) mit Nischenanalyse','KI-Feedback/Training erfassen'];
       if(p==='/ui/news-events') return ['Fasse aktuelle Szenen-Signale zusammen','Gibt es neue Trends in den gespeicherten Daten?'];
       if(p==='/ui/ai-control' || p==='/ui/ai-photoshooting' || p==='/ui/content-studio') return ['Welche KI-Modelle sind verfügbar?','Prüfe die KI-Konfiguration'];
-      return ['Gib mir eine Systemübersicht','Gibt es aktuelle Fehler oder Warnungen?','Welche Aufgaben sind offen?'];
+      return ['Gib mir eine Systemübersicht','Set/Bundel manuell bilden (SKUs angeben)','Automatische Bundles vorschlagen','KI-Feedback/Training speichern','Gibt es aktuelle Fehler oder Warnungen?'];
     }
     function renderAIAgentChips(){const box=document.getElementById('ai-agent-chips'); if(!box) return; box.innerHTML=aiChipsForPath().map(t=>`<button type="button" class="chip" onclick="aiSendPreset(${JSON.stringify(t)})">${aiAgentEsc(t)}</button>`).join('');}
     async function aiSendPreset(text){const input=document.getElementById('ai-agent-input'); input.value=text; document.getElementById('ai-agent-form').dispatchEvent(new Event('submit',{cancelable:true,bubbles:true}));}

@@ -137,6 +137,70 @@ TOOL_DEFINITIONS = [
             "project_id": {"type": "string"}
         }, "required": ["action"], "additionalProperties": False}
     }},
+    {"type": "function", "function": {
+        "name": "start_catalog_enrichment",
+        "description": "Startet asynchrone KI-Katalog-Optimierung (SEO/Texte/Attribute) für Matterhorn-Produkte ohne/mit fehlenden Beschreibungen. Generierung nur über konfigurierte OmniRoute-Combos. Erfordert Bestätigung.",
+        "parameters": {"type": "object", "properties": {
+            "only_missing": {"type": "boolean", "description": "Nur Produkte mit fehlenden Texten/SEO optimieren (Standard true)."},
+            "limit": {"type": "integer", "description": "Max. Produkte (1-1000)."},
+            "generate_images": {"type": "boolean", "description": "Bildgenerierung planen (nur wenn Provider-Fähigkeit verifiziert)."},
+            "generate_videos": {"type": "boolean", "description": "Video-Planung (nur wenn Provider-Fähigkeit verifiziert)."},
+            "concurrency": {"type": "integer", "description": "Parallele Worker (1-10)."}
+        }, "required": [], "additionalProperties": False}
+    }},
+    {"type": "function", "function": {
+        "name": "ai_usage_report",
+        "description": "Liest KI-Kosten/Telemetrie/Latenzwerte (heute/gesamt), Budgetstatus und letzte Requests. Read-only.",
+        "parameters": {"type": "object", "properties": {
+            "scope": {"type": "string", "enum": ["summary", "today", "recent"]},
+            "limit": {"type": "integer"}
+        }, "required": ["scope"], "additionalProperties": False}
+    }},
+    {"type": "function", "function": {
+        "name": "set_strict_privacy_mode",
+        "description": "Aktiviert/deaktiviert strikten lokalen Privacy-Modus (PII/CRM/Bestellungen -> omni-local-gdpr, keine Cloud-Leaks). Erfordert Bestätigung.",
+        "parameters": {"type": "object", "properties": {
+            "enabled": {"type": "boolean"}
+        }, "required": ["enabled"], "additionalProperties": False}
+    }},
+
+    {"type": "function", "function": {
+        "name": "manual_bundle_builder",
+        "description": "Erstellt/aktualisiert ein Produkt-Set/Bundle manuell aus angegebenen Komponenten-SKUs (manuelle Set-Bildung). Erfordert Bestätigung.",
+        "parameters": {"type": "object", "properties": {
+            "bundle_sku": {"type": "string"},
+            "title": {"type": "string"},
+            "component_skus": {"type": "array", "items": {"type": "string"}}
+        }, "required": ["bundle_sku", "title", "component_skus"], "additionalProperties": False}
+    }},
+    {"type": "function", "function": {
+        "name": "auto_bundle_generation",
+        "description": "Erzeugt automatische Bundle-Vorschläge oder erstellt Bundles aus datenbasierten Signalen (Kategorien, Bestand, Nachfrage-Heuristiken). Erfordert Bestätigung.",
+        "parameters": {"type": "object", "properties": {
+            "max_bundles": {"type": "integer"},
+            "create": {"type": "boolean"}
+        }, "required": [], "additionalProperties": False}
+    }},
+    {"type": "function", "function": {
+        "name": "generate_marketplace_assortment_plan",
+        "description": "Erstellt automatische AI-Artikelauswahl pro Marktplatz (max. 2000) inkl. datenbasierter Nischenanalyse (Trends/Nachfrage/Bestand; interne News-Signale). Erfordert Bestätigung.",
+        "parameters": {"type": "object", "properties": {
+            "marketplace": {"type": "string"},
+            "max_items": {"type": "integer"},
+            "use_ai_niche": {"type": "boolean"}
+        }, "required": ["marketplace"], "additionalProperties": False}
+    }},
+    {"type": "function", "function": {
+        "name": "submit_ai_training_feedback",
+        "description": "Speichert AI-Training/Feedback (Korrekturen, Bewertungen, Beispiele) zur Verbesserung von Prompts/Qualität. Keine Modellgewichte werden verändert. Erfordert Bestätigung.",
+        "parameters": {"type": "object", "properties": {
+            "context_type": {"type": "string"},
+            "feedback_text": {"type": "string"},
+            "rating": {"type": "integer"},
+            "input_data": {"type": "object"},
+            "output_data": {"type": "object"}
+        }, "required": ["feedback_text"], "additionalProperties": False}
+    }},
 ]
 
 PROTECTED_RULE_KEYS = {
@@ -250,6 +314,92 @@ async def execute_tool_call(name: str, args: dict[str, Any], *, actor: str, prom
     """Execute/prepare a tool call. Read-only -> immediate result; writes -> pending action."""
     if name == "system_diagnostics":
         return {"readOnly": True, "result": await _diagnostics(args)}
+    if name == "ai_usage_report":
+        from database import ai_usage_summary, ai_usage_logs_list, ai_budget_spend_today_month, get_setting
+        scope = (args or {}).get("scope", "summary")
+        if scope == "recent":
+            limit = min(max(int((args or {}).get("limit") or 20), 1), 100)
+            logs = await ai_usage_logs_list(limit=limit)
+            return {"readOnly": True, "result": {"scope": "recent", "items": logs, "count": len(logs)}}
+        summary = await ai_usage_summary()
+        spend = await ai_budget_spend_today_month()
+        summary["spend"] = spend
+        summary["budgets"] = {
+            "daily_usd": await get_setting("ai_budget_daily_usd"),
+            "monthly_usd": await get_setting("ai_budget_monthly_usd"),
+            "strict_privacy_mode": await get_setting("ai_strict_privacy_mode"),
+        }
+        return {"readOnly": True, "result": {"scope": scope, "summary": summary}}
+
+    if name == "start_catalog_enrichment":
+        payload = {
+            "only_missing": bool((args or {}).get("only_missing", True)),
+            "limit": min(max(int((args or {}).get("limit") or 200), 1), 1000),
+            "generate_images": bool((args or {}).get("generate_images", False)),
+            "generate_videos": bool((args or {}).get("generate_videos", False)),
+            "concurrency": min(max(int((args or {}).get("concurrency") or 5), 1), 10),
+        }
+        diff = {"action": "start_catalog_enrichment", **payload}
+        summary = f"KI-Katalog-Optimierung starten (nur fehlend={payload['only_missing']}, limit={payload['limit']}, parallel={payload['concurrency']})"
+        action = await agent_action_create({
+            "actor": actor, "prompt": prompt, "tool_name": "start_catalog_enrichment", "args_json": payload,
+            "preview_json": {"summary": summary, "diff": diff, "conversation_id": conversation_id},
+            "status": "pending_confirmation", "requires_confirmation": True,
+        })
+        return {"readOnly": False, "requiresConfirmation": True, "pendingAction": {"action_id": action["id"], "tool_name": "start_catalog_enrichment", "summary": summary, "diff": diff}}
+    if name == "set_strict_privacy_mode":
+        enabled = bool((args or {}).get("enabled", True))
+        diff = {"key": "ai_strict_privacy_mode", "from": await get_setting("ai_strict_privacy_mode"), "to": "1" if enabled else "0"}
+        summary = ("Strikten lokalen Privacy-Modus AKTIVIEREN" if enabled else "Strikten lokalen Privacy-Modus DEAKTIVIEREN") + " (PII/CRM -> omni-local-gdpr, kein Cloud-Fallback)."
+        action = await agent_action_create({
+            "actor": actor, "prompt": prompt, "tool_name": "set_strict_privacy_mode", "args_json": {"enabled": enabled},
+            "preview_json": {"summary": summary, "diff": diff, "conversation_id": conversation_id},
+            "status": "pending_confirmation", "requires_confirmation": True,
+        })
+        return {"readOnly": False, "requiresConfirmation": True, "pendingAction": {"action_id": action["id"], "tool_name": "set_strict_privacy_mode", "summary": summary, "diff": diff}}
+    if name == "manual_bundle_builder":
+        bundle_sku = str((args or {}).get("bundle_sku") or "").strip()
+        title = str((args or {}).get("title") or "").strip()
+        comps = [str(x).strip() for x in ((args or {}).get("component_skus") or []) if str(x).strip()]
+        if not bundle_sku or not title or len(comps) < 2:
+            raise ValueError("bundle_sku, title und mindestens 2 component_skus erforderlich.")
+        diff = {"bundle_sku": bundle_sku, "title": title, "component_skus": comps}
+        summary = f"Manuelles Set/Bundle speichern: {bundle_sku} ({len(comps)} Komponenten)"
+        action = await agent_action_create({"actor": actor, "prompt": prompt, "tool_name": name, "args_json": {"bundle_sku": bundle_sku, "title": title, "component_skus": comps}, "preview_json": {"summary": summary, "diff": diff, "conversation_id": conversation_id}, "status": "pending_confirmation", "requires_confirmation": True})
+        return {"readOnly": False, "requiresConfirmation": True, "pendingAction": {"action_id": action["id"], "tool_name": name, "summary": summary, "diff": diff}}
+
+    if name == "auto_bundle_generation":
+        max_bundles = min(max(int((args or {}).get("max_bundles") or 10), 1), 50)
+        create = bool((args or {}).get("create", False))
+        diff = {"max_bundles": max_bundles, "create": create}
+        summary = ("Automatische Bundles erstellen" if create else "Automatische Bundle-Vorschläge erzeugen") + f" (max {max_bundles})"
+        action = await agent_action_create({"actor": actor, "prompt": prompt, "tool_name": name, "args_json": {"max_bundles": max_bundles, "create": create}, "preview_json": {"summary": summary, "diff": diff, "conversation_id": conversation_id}, "status": "pending_confirmation", "requires_confirmation": True})
+        return {"readOnly": False, "requiresConfirmation": True, "pendingAction": {"action_id": action["id"], "tool_name": name, "summary": summary, "diff": diff}}
+
+    if name == "generate_marketplace_assortment_plan":
+        marketplace = str((args or {}).get("marketplace") or "shopware").strip().lower()
+        max_items = min(max(int((args or {}).get("max_items") or 2000), 1), 2000)
+        use_ai_niche = bool((args or {}).get("use_ai_niche", True))
+        diff = {"marketplace": marketplace, "max_items": max_items, "use_ai_niche": use_ai_niche}
+        summary = f"Artikelauswahl/Sortiment für Marktplatz '{marketplace}' erzeugen (max {max_items}, Nischenanalyse)"
+        action = await agent_action_create({"actor": actor, "prompt": prompt, "tool_name": name, "args_json": {"marketplace": marketplace, "max_items": max_items, "use_ai_niche": use_ai_niche}, "preview_json": {"summary": summary, "diff": diff, "conversation_id": conversation_id}, "status": "pending_confirmation", "requires_confirmation": True})
+        return {"readOnly": False, "requiresConfirmation": True, "pendingAction": {"action_id": action["id"], "tool_name": name, "summary": summary, "diff": diff}}
+
+    if name == "submit_ai_training_feedback":
+        feedback_text = str((args or {}).get("feedback_text") or "").strip()
+        if not feedback_text:
+            raise ValueError("feedback_text erforderlich.")
+        payload = {
+            "context_type": str((args or {}).get("context_type") or "general"),
+            "feedback_text": feedback_text[:8000],
+            "rating": (int((args or {}).get("rating")) if (args or {}).get("rating") is not None else None),
+            "input_data": (args or {}).get("input_data") or {},
+            "output_data": (args or {}).get("output_data") or {},
+        }
+        diff = {"context_type": payload["context_type"], "rating": payload["rating"], "feedback_preview": payload["feedback_text"][:300]}
+        summary = "AI-Training/Feedback speichern (Korrektur/Beispiel)"
+        action = await agent_action_create({"actor": actor, "prompt": prompt, "tool_name": name, "args_json": payload, "preview_json": {"summary": summary, "diff": diff, "conversation_id": conversation_id}, "status": "pending_confirmation", "requires_confirmation": True})
+        return {"readOnly": False, "requiresConfirmation": True, "pendingAction": {"action_id": action["id"], "tool_name": name, "summary": summary, "diff": diff}}
 
     if name == "manage_channel_config":
         payload = ChannelConfigInput.model_validate(args).model_dump()
@@ -277,6 +427,41 @@ async def execute_tool_call(name: str, args: dict[str, Any], *, actor: str, prom
         diff = {k: v for k, v in payload.items() if v}
         action = await agent_action_create({"actor": actor, "prompt": prompt, "tool_name": name, "args_json": payload, "preview_json": {"summary": f"CRM/Kalender-Aktion: {payload['action']}", "diff": diff, "conversation_id": conversation_id}, "status": "pending_confirmation", "requires_confirmation": True})
         return {"readOnly": False, "requiresConfirmation": True, "pendingAction": {"action_id": action["id"], "tool_name": name, "summary": f"CRM/Kalender-Aktion: {payload['action']}", "diff": diff}}
+
+    if name == "configure_omniroute_gateway":
+        url = str((args or {}).get("omniroute_url") or "").strip()
+        api_key = str((args or {}).get("omniroute_api_key") or "").strip()
+        model = str((args or {}).get("default_llm_model") or "").strip()
+        if not url and not api_key and not model:
+            raise ValueError("Mindestens omniroute_url, omniroute_api_key oder default_llm_model angeben.")
+        changes = {}
+        if url: changes["omniroute_url"] = url
+        if api_key: changes["omniroute_api_key"] = _masked(api_key)
+        if model: changes["default_llm_model"] = model
+        diff = {"changes": changes, "note": "Verbindet OmniRoute-Gateway; bestehende Auto-Kombo/Modell-Standards bleiben erhalten, sofern nicht überschrieben."}
+        summary = "OmniRoute-Verbindung konfigurieren (" + ", ".join(changes.keys()) + ")"
+        payload = {"omniroute_url": url, "omniroute_api_key": api_key, "default_llm_model": model}
+        action = await agent_action_create({"actor": actor, "prompt": prompt, "tool_name": name, "args_json": payload, "preview_json": {"summary": summary, "diff": diff, "conversation_id": conversation_id}, "status": "pending_confirmation", "requires_confirmation": True})
+        return {"readOnly": False, "requiresConfirmation": True, "pendingAction": {"action_id": action["id"], "tool_name": name, "summary": summary, "diff": diff}}
+
+    if name == "configure_omniroute_gateway":
+        url = str((args or {}).get("omniroute_url") or "").strip()
+        api_key = str((args or {}).get("omniroute_api_key") or "").strip()
+        model = str((args or {}).get("default_llm_model") or "").strip()
+        if not url and not api_key and not model:
+            raise ValueError("Mindestens omniroute_url, omniroute_api_key oder default_llm_model angeben.")
+        changes = {}
+        if url:
+            changes["omniroute_url"] = url
+        if api_key:
+            changes["omniroute_api_key"] = _masked(api_key)
+        if model:
+            changes["default_llm_model"] = model
+        diff = {"changes": changes, "note": "OmniRoute-Verbindung setzen; Auto-Kombo-Defaults (omnicore-*/auto/*) bleiben erhalten, sofern nicht überschrieben."}
+        summary = "OmniRoute-Verbindung konfigurieren (" + ", ".join(changes.keys()) + ")"
+        payload = {"omniroute_url": url, "omniroute_api_key": api_key, "default_llm_model": model}
+        action = await agent_action_create({"actor": actor, "prompt": prompt, "tool_name": name, "args_json": payload, "preview_json": {"summary": summary, "diff": diff, "conversation_id": conversation_id}, "status": "pending_confirmation", "requires_confirmation": True})
+        return {"readOnly": False, "requiresConfirmation": True, "pendingAction": {"action_id": action["id"], "tool_name": name, "summary": summary, "diff": diff}}
 
     if name == "multimodal_creative":
         payload = CreativeToolInput.model_validate(args)
@@ -330,6 +515,43 @@ async def execute_confirmed(action_id: str, *, actor: str, runtime: Any = None) 
                 result = {"status": "created", "appointment": appt}
             else:
                 result = {"status": "draft_prepared", "channel_action": "not_executed", "note": "Message draft recorded; external send adapters must execute explicitly when configured.", "draft": {k: payload.get(k) for k in ("customer_reference", "body", "title")}}
+        elif tool_name == "manual_bundle_builder":
+            from services.bundle_engine import build_manual_bundle
+            result = await build_manual_bundle(str(args.get("bundle_sku") or ""), str(args.get("title") or ""), list(args.get("component_skus") or []))
+        elif tool_name == "auto_bundle_generation":
+            from services.bundle_engine import auto_generate_bundles
+            result = await auto_generate_bundles(max_bundles=int(args.get("max_bundles") or 10), create=bool(args.get("create", False)), actor=actor)
+        elif tool_name == "generate_marketplace_assortment_plan":
+            from services.assortment_engine import generate_marketplace_assortment
+            result = await generate_marketplace_assortment(str(args.get("marketplace") or "shopware"), max_items=int(args.get("max_items") or 2000), use_ai_niche=bool(args.get("use_ai_niche", True)))
+            # slim items in action result
+            if isinstance(result.get("items"), list):
+                result = {**result, "items_preview": result["items"][:30], "items_count": len(result["items"])}
+                result.pop("items", None)
+        elif tool_name == "submit_ai_training_feedback":
+            from database import ai_training_feedback_create
+            fb = await ai_training_feedback_create(source="copilot", context_type=str(args.get("context_type") or "general"), input_data=args.get("input_data") or {}, output_data=args.get("output_data") or {}, feedback_text=str(args.get("feedback_text") or ""), rating=(int(args.get("rating")) if args.get("rating") is not None else None), metadata={"conversation_id": None}, created_by=actor)
+            result = {"status": "saved", "feedback_id": fb.get("id"), "note": "Feedback gespeichert (kein automatisches Modell-Fine-Tuning)."}
+
+        elif tool_name == "configure_omniroute_gateway":
+            p = args or {}
+            applied = []
+            url = str(p.get("omniroute_url") or "").strip()
+            api_key = str(p.get("omniroute_api_key") or "").strip()
+            model = str(p.get("default_llm_model") or "").strip()
+            if url:
+                await set_setting("omniroute_url", url, is_secret=False); applied.append("omniroute_url")
+            if api_key:
+                await set_setting("omniroute_api_key", api_key, is_secret=True); applied.append("omniroute_api_key")
+            if model:
+                await set_setting("default_llm_model", model, is_secret=False); applied.append("default_llm_model")
+            reconfigured = False
+            try:
+                from main import configure_omniroute
+                await configure_omniroute(); reconfigured = True
+            except Exception:
+                reconfigured = False
+            result = {"status": "configured", "applied": applied, "reconfigured": reconfigured, "note": "OmniRoute-Verbindung gespeichert. Auto-Kombo/Modell-Defaults bleiben aktiv."}
         elif tool_name == "multimodal_creative":
             payload = CreativeToolInput.model_validate(args)
             from services.creative_foundation import ModelIdentityManager, CreativeJobService
@@ -389,11 +611,13 @@ async def chat_with_agent(message: str, conversation_id: str | None, *, actor: s
     if not base_url:
         raise RuntimeError("OmniRoute ist nicht konfiguriert (omniroute_url/omni_route_base_url fehlt).")
     client = OmniRouteClient(base_url, api_key or "")
-    model = await get_setting("omniroute_agent_model") or "gemini-2.5-flash"
+    model = await get_setting("omniroute_agent_model") or await get_setting("default_llm_model") or "auto"
     system = (
         "Du bist der sichere Omni-Core Admin & Business Copilot (Control Agent) inkl. Multimodal Creative Engine. "
         "Nutze ausschließlich die bereitgestellten Tools. Lies Daten zuerst, bevor du Änderungen oder Generierungen vorbereitest. "
         "Schreibende/generierende Tools erzeugen IMMER eine Bestätigungsvorschau (requiresConfirmation) und führen nichts direkt aus. "
+        "Für die OmniRoute-/KI-Gateway-Verbindung nutze 'configure_omniroute_gateway' (URL und/oder API-Key) und bereite die Änderung zur Bestätigung vor; gib niemals Schlüssel/Secrets im Klartext aus. "
+        "Empfohlene Standards sind bereits vorkonfiguriert (auto/smart, omnicore-Combos für Copilot/Content/Coding/Fast/Vision/Fotoshooting inkl. Modell-Identitäten wie Luna/Raven/Nyx). "
         "Führe keine Generation aus und behaupte keine Ergebnisse, wenn Provider/Model/Capabilities nicht konfiguriert sind. "
         "Die Fulfillment-Sperre für unbezahlte Bestellungen ist unveränderbar: payment_status != 'paid' => fulfillment blocked. "
         "Keine Shell-, SQL-, Datei-, Netzwerk- oder beliebige Code-Ausführung. Keine Geheimnisse im Chat ausgeben. "

@@ -30,6 +30,10 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Resp
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field, field_validator
 
+from app.services.ai_orchestrator import get_ai_orchestrator
+from app.services.enrichment_pipeline import start_catalog_enrichment
+from app.services.crm_triage import triage_and_draft
+
 from database import (
     DATABASE_URL,
     FulfillmentBlockedError,
@@ -44,6 +48,7 @@ from database import (
     list_bundles,
     list_orders,
     list_products,
+    count_products,
     list_settings,
     recent_import_runs,
     job_create,
@@ -82,6 +87,14 @@ from database import (
     reserve_order_stock,
     set_setting,
     update_order_status,
+    assortment_plan_list,
+    assortment_plan_get,
+    ai_training_feedback_list,
+    ai_usage_logs_list,
+    ai_usage_summary,
+    batch_job_list,
+    batch_job_get,
+    ai_budget_spend_today_month,
     upsert_product,
     upsert_product_aggregate,
     delete_product,
@@ -148,8 +161,13 @@ RBAC_RULES: list[tuple[str, tuple[str, ...], str]] = [
     ("GET", ("/api/matterhorn/", "/api/import/matterhorn", "/api/import-runs", "/ui/matterhorn-import"), "matterhorn.read"),
     ("POST", ("/api/shopware/",), "shopware.configure"),
     ("GET", ("/api/shopware/", "/api/stats/shopware", "/ui/shopware"), "shopware.read"),
-    ("POST", ("/api/omniroute/", "/api/ai/"), "ai.configure"),
-    ("GET", ("/api/omniroute/", "/ui/ai-control", "/omniroute"), "ai.configure"),
+    ("POST", ("/api/omniroute/apply-config", "/api/omniroute/benchmark", "/api/omniroute/combos/sync", "/api/ai/usage/budgets", "/api/omniroute/models", "/api/omniroute/providers", "/api/omniroute/providers/health", "/api/omniroute/routing/policies", "/api/omniroute/routing/rules", "/api/omniroute/routing/select", "/api/ai/trend-analysis"), "ai.configure"),
+    ("GET", ("/api/omniroute/discover", "/api/omniroute/health", "/api/omniroute/usage", "/api/omniroute/gateway/models", "/api/omniroute/providers", "/api/omniroute/models", "/api/omniroute/stats", "/api/omniroute/config", "/api/omniroute/endpoints", "/api/omniroute/cost/calculate", "/api/omniroute/routing/policies", "/api/omniroute/routing/rules", "/api/ai/usage/summary", "/api/ai/usage/logs", "/api/ai/usage/budgets", "/api/ai-control/test-connection", "/ui/ai-control", "/omniroute"), "ai.configure"),
+    ("POST", ("/api/ai/enrichment/start", "/api/crm/triage", "/api/assortments/generate", "/api/assortments/generate-all", "/api/scene-intelligence/import-seed", "/api/scene-intelligence/import-run", "/api/photoshoot/shopware-model/plan", "/api/automation/product-photos/initial", "/api/automation/product-photos/refresh-4w", "/api/automation/product-texts/refresh-14d"), "ai.generate"),
+    ("GET", ("/api/ai/enrichment/jobs", "/api/assortments", "/api/products/marketplace-content"), "ai.generate"),
+    ("POST", ("/api/products/marketplace-content",), "products.write"),
+    ("GET", ("/api/ai/training-feedback",), "ai.configure"),
+    ("POST", ("/api/ai/training-feedback",), "ai.configure"),
     ("POST", ("/api/ai-agent/",), "ai.configure"),
     ("GET", ("/api/ai-agent/",), "ai.configure"),
     ("GET", ("/api/creative/", "/api/photoshoot/", "/ui/ai-photoshooting", "/ui/content-studio"), "ai.generate"),
@@ -489,6 +507,9 @@ class AppRuntime:
         # Internal communication & control center
         self.event_bus: EventBus | None = None
         self.control_center: GlobalControlCenter | None = None
+        # AI orchestration & batch pipelines
+        self.ai_orchestrator = get_ai_orchestrator()
+        self.ai_batch_tasks: dict[str, Any] = {}
 
     @property
     def uptime_seconds(self) -> int:
@@ -604,6 +625,18 @@ async def execute_persistent_job(job: dict[str, Any]) -> dict[str, Any]:
     if jtype == "fulfillment":
         await _handle_fulfillment_job(payload if "order_id" in payload else job)
         return {"status": "dispatched_or_processed"}
+    if jtype == "scene_news_import":
+        from services.scene_news_importer import import_all_scene_news
+        return await import_all_scene_news(seed_first=bool(payload.get("seed_first", True)), max_sources=int(payload.get("max_sources", 30)))
+    if jtype == "product_photo_generate_initial":
+        from services.product_automation import run_initial_model_photos
+        return await run_initial_model_photos(limit_products=int(payload.get("limit_products", 50)), count=int(payload.get("count", 3)), include_owner=bool(payload.get("include_owner", True)))
+    if jtype == "product_photo_refresh_4w":
+        from services.product_automation import run_4week_event_photo_refresh
+        return await run_4week_event_photo_refresh(limit_products=int(payload.get("limit_products", 50)), count=int(payload.get("count", 3)), include_owner=bool(payload.get("include_owner", True)))
+    if jtype == "product_text_refresh_14d":
+        from services.product_automation import run_14day_text_refresh
+        return await run_14day_text_refresh(limit_products=int(payload.get("limit_products", 100)), marketplaces=payload.get("marketplaces"))
     # generic no-op job
     await write_log("INFO", "job_executed", f"Executed job type {jtype}", {"job_id": job.get("id")})
     return {"status": "ok", "type": jtype}
@@ -640,6 +673,10 @@ async def scheduler_loop() -> None:
     defaults = [
         ("matterhorn_import", 24*3600, {"mode": "safe"}),
         ("trend_analysis", 7*24*3600, {}),
+        ("scene_news_import", 12*3600, {"seed_first": True, "max_sources": 30}),
+        ("product_photo_generate_initial", 24*3600, {"limit_products": 20, "count": 3, "include_owner": True}),
+        ("product_photo_refresh_4w", 28*24*3600, {"limit_products": 50, "count": 3, "include_owner": True}),
+        ("product_text_refresh_14d", 14*24*3600, {"limit_products": 200}),
     ]
     for jt, interval, payload in defaults:
         try:
@@ -685,7 +722,18 @@ async def scheduler_loop() -> None:
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     """Initialize storage, services and workers; cancel them cleanly on shutdown."""
     await init_db()
+    try:
+        from database import ensure_default_settings
+        seeded = await ensure_default_settings()
+        if seeded:
+            await write_log("INFO", "settings_defaults_seeded", f"Seeded {seeded} default AI/OmniRoute settings.")
+    except Exception:
+        logger.exception("Failed to seed default settings")
     await configure_omniroute()
+    try:
+        await runtime.ai_orchestrator.start()
+    except Exception:
+        logger.exception("Failed to start AI orchestrator")
     runtime.worker_task = asyncio.create_task(fulfillment_worker(), name="fulfillment-worker")
     runtime.trend_task = asyncio.create_task(trend_scheduler(), name="trend-scheduler")
     runtime.persistent_job_task = asyncio.create_task(persistent_job_worker(), name="persistent-job-worker")
@@ -742,6 +790,10 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         except Exception:
             logger.exception("Failed to shutdown event bus")
         runtime.event_bus = None
+        try:
+            await runtime.ai_orchestrator.close()
+        except Exception:
+            logger.exception("Failed to close AI orchestrator")
         await runtime.importer.close()
         await close_pg_pool()
 
@@ -1211,9 +1263,26 @@ async def save_setting(payload: SettingsUpdate) -> dict[str, str]:
 async def products(
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
-) -> list[dict[str, Any]]:
-    """Return products with bounded pagination."""
-    return await list_products(limit, offset)
+    q: str | None = Query(default=None, max_length=200),
+    status: str | None = Query(default=None, max_length=32),
+    category: str | None = Query(default=None, max_length=128),
+    brand: str | None = Query(default=None, max_length=128),
+    has_image: bool | None = Query(default=None),
+    in_stock: bool | None = Query(default=None),
+    include_total: bool = Query(default=False),
+) -> Any:
+    """Return products with bounded pagination and catalog search/filtering."""
+    has_filters = any([q, status, category, brand, has_image is not None, in_stock is not None])
+    if not has_filters and not include_total:
+        items = await list_products(limit, offset)
+    elif not has_filters:
+        items = await list_products(limit, offset)
+    else:
+        items = await list_products(limit=limit, offset=offset, q=q, status=status, category=category, brand=brand, has_image=has_image, in_stock=in_stock)
+    if include_total:
+        total = await count_products(q=q, status=status, category=category, brand=brand, has_image=has_image, in_stock=in_stock)
+        return {"items": items, "total": total, "limit": limit, "offset": offset}
+    return items
 
 
 @app.post("/api/products", status_code=201)
@@ -2886,6 +2955,19 @@ async def omniroute_calculate_cost(
         "total_cost_usd": total_cost,
     }
 
+@app.get("/api/omniroute/gateway/models")
+async def omniroute_gateway_models():
+    """Fetch available models from the configured OmniRoute gateway."""
+    if runtime.omniroute is None:
+        return {"status": "not_configured", "configured": False, "models": [], "error": "OmniRoute-Gateway ist nicht konfiguriert."}
+    try:
+        models = await runtime.omniroute.list_models()
+        return {"status": "ok", "configured": True, "models": models}
+    except Exception as exc:
+        logger.warning("Failed to fetch OmniRoute gateway models: %s", exc)
+        return {"status": "error", "configured": True, "models": [], "error": f"Modellliste konnte nicht geladen werden: {exc}"}
+
+
 @app.get("/api/omniroute/stats")
 async def omniroute_stats():
     """Get OmniRoute Control Center statistics."""
@@ -3274,6 +3356,28 @@ async def api_content_generate(payload: ContentGenerateRequest) -> dict[str, Any
         raise HTTPException(status_code=404, detail="Product not found")
     from services.content_engine import generate_and_store
     result = await generate_and_store(product, payload.channels or ["shopware"], omniroute_client=getattr(runtime, "omniroute", None), model=payload.model)
+    # also persist separate per-marketplace managed content records
+    try:
+        from services.marketplace_content import upsert_marketplace_content
+        from database import utc_now as _utc_now
+        for it in (result.get("items") or []):
+            await upsert_marketplace_content({
+                "product_sku": str(product.get("sku") or payload.sku),
+                "marketplace": str(it.get("channel") or it.get("marketplace") or "shopware"),
+                "title": it.get("title") or "",
+                "short_description": it.get("short_description") or "",
+                "description": it.get("description") or "",
+                "seo_title": it.get("seo_title") or "",
+                "meta_description": it.get("meta_description") or "",
+                "keywords": it.get("keywords") or [],
+                "bullets": it.get("bullets") or [],
+                "status": "draft",
+                "approval_status": "draft",
+                "last_generated_at": _utc_now(),
+                "metadata": {"source": "content_generate", "model": it.get("model"), "validation": it.get("validation")},
+            })
+    except Exception:
+        logger.exception("Failed to persist per-marketplace content records")
     await publish_runtime_event("content.generated", {"sku": payload.sku, "channels": payload.channels, "count": result.get("count", 0)}, source="content_engine", entity_id=payload.sku)
     return result
 
@@ -3614,7 +3718,22 @@ async def api_crm_thread_messages(thread_id: str, limit: int = Query(default=200
 async def api_crm_ingest(payload: CrmIngestPayload, user: dict[str, Any] = Depends(require_permission("system.configure"))):
     from services.crm_adapters import ingest_webhook
     res = await ingest_webhook(payload.channel, payload.payload, direction=payload.direction)
-    return {"status": "ok", **res}
+    triage = None
+    try:
+        # best-effort triage + draft for inbound messages (no external send)
+        direction = str(payload.direction or "inbound").lower()
+        raw = payload.payload if isinstance(payload.payload, dict) else {}
+        msg_text = str(raw.get("body") or raw.get("message") or raw.get("text") or raw.get("content") or "")
+        subject = str(raw.get("subject") or raw.get("title") or "")
+        cust = str(raw.get("customer_reference") or raw.get("sender") or raw.get("from") or raw.get("customer_email") or "")
+        order_id = raw.get("order_id") or raw.get("orderId") or raw.get("external_order_id")
+        thread = (res.get("thread") or {}) if isinstance(res, dict) else {}
+        thread_id = thread.get("id") or raw.get("thread_id")
+        if direction == "inbound" and (msg_text or subject):
+            triage = await triage_and_draft(channel=payload.channel, message_text=msg_text, subject=subject, customer_ref=cust, order_id=str(order_id) if order_id else None, thread_id=str(thread_id) if thread_id else None)
+    except Exception:
+        logger.exception("CRM triage/draft failed (non-fatal)")
+    return {"status": "ok", **(res or {}), "triage": triage}
 
 @app.post("/api/crm/sync/{channel}")
 async def api_crm_sync(channel: str, user: dict[str, Any] = Depends(require_permission("system.configure"))):
@@ -3756,3 +3875,358 @@ async def api_trigger_connector_export(connector_id: str, payload: dict[str, Any
         item = await connector_export_enqueue(sku=p["sku"], connector_id=connector_id)
         enqueued_list.append(item)
     return {"status": "ok", "enqueued_count": len(enqueued_list)}
+
+
+
+
+class AutomationRunRequest(BaseModel):
+    limit_products: int = Field(default=50, ge=1, le=500)
+    count: int = Field(default=3, ge=1, le=6)
+    include_owner: bool = True
+    marketplaces: list[str] | None = None
+
+
+@app.post("/api/automation/product-photos/initial")
+async def api_automation_product_photos_initial(payload: AutomationRunRequest, user: dict[str, Any] = Depends(require_permission("ai.generate"))):
+    from services.product_automation import run_initial_model_photos
+    res = await run_initial_model_photos(limit_products=payload.limit_products, count=payload.count, include_owner=payload.include_owner)
+    return {"status": "ok", **res}
+
+
+@app.post("/api/automation/product-photos/refresh-4w")
+async def api_automation_product_photos_refresh(payload: AutomationRunRequest, user: dict[str, Any] = Depends(require_permission("ai.generate"))):
+    from services.product_automation import run_4week_event_photo_refresh
+    res = await run_4week_event_photo_refresh(limit_products=payload.limit_products, count=payload.count, include_owner=payload.include_owner)
+    return {"status": "ok", **res}
+
+
+@app.post("/api/automation/product-texts/refresh-14d")
+async def api_automation_product_texts_refresh(payload: AutomationRunRequest, user: dict[str, Any] = Depends(require_permission("ai.generate"))):
+    from services.product_automation import run_14day_text_refresh
+    res = await run_14day_text_refresh(limit_products=payload.limit_products, marketplaces=payload.marketplaces)
+    return {"status": "ok", **res}
+
+
+
+# ---------------------------------------------------------------------------
+# Scene knowledge/news import (hardcore/uptempo/hardstyle/gabber) & per-marketplace content
+# ---------------------------------------------------------------------------
+
+class SceneImportRequest(BaseModel):
+    seed_first: bool = True
+    max_sources: int = Field(default=30, ge=1, le=50)
+
+
+class MarketplaceContentUpsert(BaseModel):
+    product_sku: str = Field(min_length=1, max_length=128)
+    marketplace: str = Field(min_length=1, max_length=64)
+    title: str = ""
+    short_description: str = ""
+    description: str = ""
+    seo_title: str = ""
+    meta_description: str = ""
+    keywords: list[str] = Field(default_factory=list)
+    bullets: list[str] = Field(default_factory=list)
+    media: dict[str, Any] = Field(default_factory=dict)
+    status: str = "draft"
+    approval_status: str = "draft"
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ShopwareModelPhotoPlanRequest(BaseModel):
+    limit: int = Field(default=20, ge=1, le=100)
+    include_owner: bool = False
+
+
+@app.post("/api/scene-intelligence/import-seed")
+async def api_scene_import_seed(user: dict[str, Any] = Depends(require_permission("ai.generate"))):
+    from services.scene_news_importer import seed_scene_sources
+    res = await seed_scene_sources()
+    return {"status": "ok", **res}
+
+
+@app.post("/api/scene-intelligence/import-run")
+async def api_scene_import_run(payload: SceneImportRequest, user: dict[str, Any] = Depends(require_permission("ai.generate"))):
+    from services.scene_news_importer import import_all_scene_news
+    res = await import_all_scene_news(seed_first=payload.seed_first, max_sources=payload.max_sources)
+    return {"status": "ok", **res}
+
+
+@app.get("/api/products/marketplace-content")
+async def api_marketplace_content_list(product_sku: str | None = Query(default=None), marketplace: str | None = Query(default=None), limit: int = Query(default=200, ge=1, le=1000), user: dict[str, Any] = Depends(require_permission("ai.generate"))):
+    from services.marketplace_content import list_marketplace_content
+    items = await list_marketplace_content(product_sku=product_sku, marketplace=marketplace, limit=limit)
+    return {"status": "ok", "items": items, "count": len(items)}
+
+
+@app.post("/api/products/marketplace-content")
+async def api_marketplace_content_upsert(payload: MarketplaceContentUpsert, user: dict[str, Any] = Depends(require_permission("products.write"))):
+    from services.marketplace_content import upsert_marketplace_content
+    rec = await upsert_marketplace_content(payload.model_dump())
+    return {"status": "ok", "item": rec}
+
+
+@app.post("/api/photoshoot/shopware-model/plan")
+async def api_shopware_model_photo_plan(payload: ShopwareModelPhotoPlanRequest, user: dict[str, Any] = Depends(require_permission("ai.generate"))):
+    from services.shopware_model_photos import plan_shopware_model_photos
+    res = await plan_shopware_model_photos(limit=payload.limit, include_owner=payload.include_owner)
+    return {"status": "ok", **res}
+
+
+
+# ---------------------------------------------------------------------------
+# Marketplace assortment (AI selection, niche analysis) & auto/manual bundles
+# ---------------------------------------------------------------------------
+
+class AssortmentGenerateRequest(BaseModel):
+    marketplace: str = Field(default="shopware", max_length=64)
+    max_items: int = Field(default=2000, ge=1, le=2000)
+    use_ai_niche: bool = True
+    only_active: bool = True
+
+
+class AssortmentGenerateAllRequest(BaseModel):
+    marketplaces: list[str] | None = None
+    max_items: int = Field(default=2000, ge=1, le=2000)
+    use_ai_niche: bool = True
+
+
+class AutoBundleRequest(BaseModel):
+    max_bundles: int = Field(default=10, ge=1, le=50)
+    create: bool = False
+
+
+@app.post("/api/assortments/generate")
+async def api_assortment_generate(payload: AssortmentGenerateRequest, user: dict[str, Any] = Depends(require_permission("products.read"))):
+    from services.assortment_engine import generate_marketplace_assortment
+    plan = await generate_marketplace_assortment(payload.marketplace, max_items=payload.max_items, use_ai_niche=payload.use_ai_niche, only_active=payload.only_active)
+    # avoid returning huge list by default? keep items but cap response? include items
+    return {"status": "ok", "plan": plan}
+
+
+@app.post("/api/assortments/generate-all")
+async def api_assortment_generate_all(payload: AssortmentGenerateAllRequest, user: dict[str, Any] = Depends(require_permission("products.read"))):
+    from services.assortment_engine import generate_all_marketplace_assortments
+    res = await generate_all_marketplace_assortments(payload.marketplaces, max_items=payload.max_items, use_ai_niche=payload.use_ai_niche)
+    # slim items for all-marketplaces response
+    for mp, plan in (res.get("marketplaces") or {}).items():
+        if isinstance(plan, dict) and isinstance(plan.get("items"), list):
+            plan["items_preview"] = plan["items"][:50]
+            plan["items_count"] = len(plan["items"])
+            plan.pop("items", None)
+    return {"status": "ok", **res}
+
+
+@app.get("/api/assortments")
+async def api_assortments(marketplace: str | None = Query(default=None), limit: int = Query(default=20, ge=1, le=200), user: dict[str, Any] = Depends(require_permission("products.read"))):
+    items = await assortment_plan_list(marketplace=marketplace, limit=limit)
+    return {"status": "ok", "items": items, "count": len(items)}
+
+
+@app.get("/api/assortments/{plan_id}")
+async def api_assortment_get(plan_id: str, user: dict[str, Any] = Depends(require_permission("products.read"))):
+    plan = await assortment_plan_get(plan_id)
+    if not plan:
+        raise HTTPException(status_code=404, detail="Assortment plan not found")
+    return {"status": "ok", "plan": plan}
+
+
+@app.post("/api/bundles/auto-generate")
+async def api_bundles_auto_generate(payload: AutoBundleRequest, user: dict[str, Any] = Depends(require_permission("bundles.manage"))):
+    from services.bundle_engine import auto_generate_bundles
+    actor = str(user.get("email") or user.get("id") or "admin")
+    res = await auto_generate_bundles(max_bundles=payload.max_bundles, create=payload.create, actor=actor)
+    return {"status": "ok", **res}
+
+
+@app.get("/api/bundles/suggestions")
+async def api_bundles_suggestions(limit: int = Query(default=20, ge=1, le=50), user: dict[str, Any] = Depends(require_permission("bundles.read"))):
+    from services.bundle_engine import suggest_bundles
+    return {"status": "ok", **await suggest_bundles(max_suggestions=limit)}
+
+
+@app.get("/api/ai/training-feedback")
+async def api_ai_training_feedback(limit: int = Query(default=100, ge=1, le=500), context_type: str | None = Query(default=None), user: dict[str, Any] = Depends(require_permission("ai.configure"))):
+    items = await ai_training_feedback_list(limit=limit, context_type=context_type)
+    return {"status": "ok", "items": items, "count": len(items)}
+
+
+
+# ---------------------------------------------------------------------------
+# AI Orchestration, Telemetry, Batch Enrichment & OmniRoute Management APIs
+# ---------------------------------------------------------------------------
+
+class AiBatchEnrichRequest(BaseModel):
+    only_missing: bool = True
+    limit: int = Field(default=200, ge=1, le=1000)
+    generate_images: bool = False
+    generate_videos: bool = False
+    concurrency: int = Field(default=5, ge=1, le=10)
+
+
+class OmniRouteBenchmarkRequest(BaseModel):
+    combos: list[str] | None = None
+    prompt: str = "Antworte kurz mit: OK"
+    limit: int = Field(default=10, ge=1, le=50)
+
+
+class OmniRouteApplyConfigRequest(BaseModel):
+    base_url: str | None = None
+    apply_default_combos: bool = True
+
+
+@app.get("/api/ai/usage/summary")
+async def api_ai_usage_summary(user: dict[str, Any] = Depends(require_permission("ai.configure"))):
+    summary = await ai_usage_summary()
+    summary["spend"] = await ai_budget_spend_today_month()
+    summary["budgets"] = {
+        "daily_usd": await get_setting("ai_budget_daily_usd"),
+        "monthly_usd": await get_setting("ai_budget_monthly_usd"),
+        "strict_privacy_mode": await get_setting("ai_strict_privacy_mode"),
+        "cache_enabled": await get_setting("ai_cache_enabled"),
+    }
+    return {"status": "ok", "summary": summary}
+
+
+@app.get("/api/ai/usage/logs")
+async def api_ai_usage_logs(limit: int = Query(default=100, ge=1, le=1000), module: str | None = Query(default=None), user: dict[str, Any] = Depends(require_permission("ai.configure"))):
+    items = await ai_usage_logs_list(limit=limit, module=module)
+    return {"status": "ok", "items": items, "count": len(items)}
+
+
+@app.get("/api/ai/usage/budgets")
+async def api_ai_usage_budgets(user: dict[str, Any] = Depends(require_permission("ai.configure"))):
+    spend = await ai_budget_spend_today_month()
+    return {"status": "ok", "spend": spend, "daily_limit": await get_setting("ai_budget_daily_usd"), "monthly_limit": await get_setting("ai_budget_monthly_usd")}
+
+
+@app.get("/api/ai-control/test-connection")
+async def api_ai_control_test_connection(user: dict[str, Any] = Depends(require_permission("ai.configure"))):
+    """Health/connectivity test for configured OmniRoute gateway (no secrets exposed)."""
+    base_url = await get_setting("omniroute_url") or await get_setting("omni_route_base_url") or "http://192.168.176.22:20128/v1"
+    api_key = await get_setting("omniroute_api_key") or await get_setting("omni_route_api_key") or ""
+    from app.services.omniroute_management import OmniRouteManagementClient
+    client = OmniRouteManagementClient(base_url=base_url.replace("/v1", ""), api_key=api_key)
+    caps = await client.discover()
+    # simple v1 probe
+    healthy = False
+    try:
+        from services.omniroute_client import OmniRouteClient
+        healthy = await OmniRouteClient(base_url, api_key).check_health()
+    except Exception:
+        healthy = False
+    return {"status": "ok" if (healthy or caps.get("v1_models_ok")) else "degraded", "healthy": bool(healthy or caps.get("v1_models_ok")), "base_url": base_url, "capabilities": {k: v for k, v in caps.items() if k != "endpoints"}, "endpoints": caps.get("endpoints", {})}
+
+
+@app.post("/api/ai/enrichment/start")
+async def api_ai_enrichment_start(payload: AiBatchEnrichRequest, user: dict[str, Any] = Depends(require_permission("ai.generate"))):
+    actor = str(user.get("email") or user.get("username") or user.get("id") or "admin")
+    res = await start_catalog_enrichment(only_missing=payload.only_missing, limit=payload.limit, generate_images=payload.generate_images, generate_videos=payload.generate_videos, concurrency=payload.concurrency, created_by=actor)
+    return {"status": "ok", **res}
+
+
+@app.get("/api/ai/enrichment/jobs")
+async def api_ai_enrichment_jobs(limit: int = Query(default=50, ge=1, le=200), user: dict[str, Any] = Depends(require_permission("ai.generate"))):
+    items = await batch_job_list(limit=limit, job_type="catalog_enrichment")
+    return {"status": "ok", "items": items, "count": len(items)}
+
+
+@app.get("/api/ai/enrichment/jobs/{job_id}")
+async def api_ai_enrichment_job(job_id: str, user: dict[str, Any] = Depends(require_permission("ai.generate"))):
+    job = await batch_job_get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job nicht gefunden")
+    return {"status": "ok", "job": job}
+
+
+@app.post("/api/crm/triage")
+async def api_crm_triage(payload: dict[str, Any] = Body(...), user: dict[str, Any] = Depends(require_permission("products.read"))):
+    """Generate CRM intent/sentiment triage and draft reply (no external send)."""
+    channel = str(payload.get("channel") or "email")
+    text = str(payload.get("text") or payload.get("body") or payload.get("message") or "")
+    subject = str(payload.get("subject") or "")
+    customer_ref = str(payload.get("customer_reference") or payload.get("customer") or "")
+    order_id = payload.get("order_id")
+    thread_id = payload.get("thread_id")
+    if not (text or subject):
+        raise HTTPException(status_code=422, detail="text/body oder subject erforderlich")
+    triage = await triage_and_draft(channel=channel, message_text=text, subject=subject, customer_ref=customer_ref, order_id=str(order_id) if order_id else None, thread_id=str(thread_id) if thread_id else None)
+    return {"status": "ok", **triage}
+
+
+@app.get("/api/omniroute/discover")
+async def api_omniroute_discover(user: dict[str, Any] = Depends(require_permission("ai.configure"))):
+    base_url = await get_setting("omniroute_url") or await get_setting("omni_route_base_url") or "http://192.168.176.22:20128/v1"
+    api_key = await get_setting("omniroute_api_key") or await get_setting("omni_route_api_key") or ""
+    mgmt = os.environ.get("OMNIROUTE_MGMT_TOKEN", "")
+    from app.services.omniroute_management import OmniRouteManagementClient
+    client = OmniRouteManagementClient(base_url=base_url.replace("/v1", ""), api_key=api_key, mgmt_token=mgmt)
+    caps = await client.discover()
+    return {"status": "ok", "discovery": caps}
+
+
+@app.get("/api/omniroute/health")
+async def api_omniroute_health(user: dict[str, Any] = Depends(require_permission("ai.configure"))):
+    base_url = await get_setting("omniroute_url") or await get_setting("omni_route_base_url") or "http://192.168.176.22:20128/v1"
+    api_key = await get_setting("omniroute_api_key") or await get_setting("omni_route_api_key") or ""
+    from app.services.omniroute_management import OmniRouteManagementClient
+    client = OmniRouteManagementClient(base_url=base_url.replace("/v1", ""), api_key=api_key)
+    h = await client.get_health()
+    return {"status": "ok" if h.ok else "error", "http_status": h.status, "latency_ms": h.latency_ms, "data": h.data, "error": h.error}
+
+
+@app.get("/api/omniroute/usage")
+async def api_omniroute_usage(user: dict[str, Any] = Depends(require_permission("ai.configure"))):
+    base_url = await get_setting("omniroute_url") or await get_setting("omni_route_base_url") or "http://192.168.176.22:20128/v1"
+    api_key = await get_setting("omniroute_api_key") or await get_setting("omni_route_api_key") or ""
+    mgmt = os.environ.get("OMNIROUTE_MGMT_TOKEN", "")
+    from app.services.omniroute_management import OmniRouteManagementClient
+    client = OmniRouteManagementClient(base_url=base_url.replace("/v1", ""), api_key=api_key, mgmt_token=mgmt)
+    res = await client.get_usage()
+    return {"status": "ok" if res.ok else "unavailable", "http_status": res.status, "path": res.path, "data": res.data, "error": res.error, "note": "Requires mgmt access on many deployments." if not res.ok else None}
+
+
+@app.post("/api/omniroute/benchmark")
+async def api_omniroute_benchmark(payload: OmniRouteBenchmarkRequest, user: dict[str, Any] = Depends(require_permission("ai.configure"))):
+    base_url = await get_setting("omniroute_url") or await get_setting("omni_route_base_url") or "http://192.168.176.22:20128/v1"
+    api_key = await get_setting("omniroute_api_key") or await get_setting("omni_route_api_key") or ""
+    from app.services.omniroute_management import OmniRouteManagementClient, REQUIRED_COMBOS
+    client = OmniRouteManagementClient(base_url=base_url.replace("/v1", ""), api_key=api_key)
+    targets = payload.combos or (REQUIRED_COMBOS + ["auto/smart", "auto"])
+    targets = targets[: payload.limit]
+    results = []
+    for m in targets:
+        results.append(await client.benchmark(m, prompt=payload.prompt, timeout=20.0))
+    okc = sum(1 for r in results if r.get("ok"))
+    return {"status": "ok", "summary": {"tested": len(results), "ok": okc, "failed": len(results)-okc}, "results": results}
+
+
+@app.post("/api/omniroute/combos/sync")
+async def api_omniroute_combos_sync(user: dict[str, Any] = Depends(require_permission("ai.configure"))):
+    """Best-effort upsert of required omni-* combos into gateway (requires OMNIROUTE_MGMT_TOKEN + supported schema)."""
+    base_url = await get_setting("omniroute_url") or await get_setting("omni_route_base_url") or "http://192.168.176.22:20128/v1"
+    api_key = await get_setting("omniroute_api_key") or await get_setting("omni_route_api_key") or ""
+    mgmt = os.environ.get("OMNIROUTE_MGMT_TOKEN", "")
+    from app.services.omniroute_management import OmniRouteManagementClient
+    client = OmniRouteManagementClient(base_url=base_url.replace("/v1", ""), api_key=api_key, mgmt_token=mgmt)
+    if not mgmt:
+        return {"status": "blocked", "applied": False, "reason": "missing_management_token", "note": "Set OMNIROUTE_MGMT_TOKEN env and ensure /api/combos schema support. No changes made."}
+    # load combo definitions from config file if present
+    combos = []
+    try:
+        import pathlib, json as _json
+        cfg_path = pathlib.Path("config/omniroute/omnicore-auto-combos.json")
+        if cfg_path.exists():
+            data = _json.loads(cfg_path.read_text())
+            combos = data.get("combos") or []
+    except Exception:
+        combos = []
+    results = []
+    for c in combos:
+        name = c.get("name") or c.get("id") or ""
+        if not str(name).startswith("omni-"):
+            continue
+        r = await client.upsert_combo(c)
+        results.append({"name": name, "status": r.status, "ok": r.ok, "error": r.error})
+    okc = sum(1 for r in results if r.get("ok"))
+    return {"status": "ok" if okc and okc == len(results) and results else "partial", "attempted": len(results), "ok": okc, "results": results, "note": "API schema/capability dependent; verify via /api/omniroute/discover."}

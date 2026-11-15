@@ -1,62 +1,235 @@
 {% extends "base.html" %}
-{% block title %}Analytics | Omni-Core{% endblock %}
+{% block title %}Auswertungen & Analysen | OMNI-CORE{% endblock %}
 {% block content %}
-<div x-data="pageState()" x-init="loadAll()" class="space-y-4 max-w-7xl mx-auto">
+<div x-data="analyticsPage()" x-init="init()" class="space-y-5 max-w-7xl mx-auto">
   <div class="flex flex-col md:flex-row md:items-end md:justify-between gap-3">
     <div>
-      <h1 class="text-2xl md:text-3xl font-bold">Analytics</h1>
-      <p class="text-slate-400">KPIs, Performance und Berichte aus realen Daten.</p>
+      <h1 class="text-2xl md:text-3xl font-bold">Auswertungen & Analysen</h1>
+      <p class="text-slate-400">BA, BI und technische Kennzahlen – immer grafisch dargestellt (live aus realen Daten, keine erfundenen Werte).</p>
     </div>
-    <button @click="loadAll()" class="bg-slate-700 hover:bg-slate-600 px-4 py-2 rounded text-sm">Aktualisieren</button>
+    <div class="flex flex-wrap gap-2">
+      <button @click="load()" class="btn btn-secondary">Aktualisieren</button>
+      <a href="/ui/jobs-automation" class="btn btn-ghost">Jobs</a>
+    </div>
   </div>
 
-  <template x-if="globalError"><div class="rounded border border-red-700 bg-red-900/30 p-3 text-sm text-red-200" x-text="globalError"></div></template>
+  <template x-if="error"><div class="banner banner-error"><div class="font-medium">Daten konnten nicht vollständig geladen werden</div><div class="text-sm mt-1" x-text="error"></div></div></template>
+
+  <!-- Business / BA KPIs -->
+  <section>
+    <div class="flex items-center justify-between mb-2"><h2 class="font-semibold text-lg">Business & Betrieb (BA/BI)</h2><span class="text-xs text-slate-500" x-text="updatedAt?('Stand: '+updatedAt):''"></span></div>
+    <div class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">
+      <template x-for="k in bizKpis" :key="k.label">
+        <div class="card p-3">
+          <div class="text-xs text-slate-400" x-text="k.label"></div>
+          <div class="text-2xl font-bold mt-1" :class="k.cls||''" x-text="loading?'…':k.value"></div>
+          <div class="text-xs text-slate-500 mt-1" x-text="k.sub||''"></div>
+        </div>
+      </template>
+    </div>
+  </section>
 
   <div class="grid lg:grid-cols-2 gap-4">
-    <template x-for="ep in endpoints" :key="ep.url">
-      <div class="bg-slate-900 border border-slate-800 rounded-lg p-4">
-        <div class="flex items-center justify-between mb-2">
-          <h2 class="font-semibold" x-text="ep.label"></h2>
-          <span class="text-xs" :class="ep.state==='ok'?'text-emerald-400':(ep.state==='error'?'text-red-400':(ep.state==='empty'?'text-amber-400':'text-slate-400'))" x-text="ep.state"></span>
-        </div>
-        <div class="text-xs text-slate-500 mb-2" x-text="ep.url"></div>
-        <template x-if="ep.state==='loading'"><div class="text-sm text-slate-400">Lade…</div></template>
-        <template x-if="ep.state==='error'"><div class="text-sm text-red-300" x-text="ep.error"></div></template>
-        <template x-if="ep.state==='empty'"><div class="text-sm text-amber-300">Keine Daten / nicht konfiguriert oder leer.</div></template>
-        <template x-if="ep.state==='ok'"><pre class="text-xs bg-slate-950 border border-slate-800 rounded p-3 overflow-auto max-h-96" x-text="formatData(ep.data)"></pre></template>
+    <div class="card p-4">
+      <div class="flex items-center justify-between mb-2"><h3 class="font-semibold">Bestellstatus (Verteilung)</h3><span class="text-xs text-slate-500" x-text="(data.control?.business?.orders?.total||0)+' Bestellungen'"></span></div>
+      <template x-if="!hasBars(orderBars)"><div class="text-sm text-slate-400">Keine Bestelldaten vorhanden.</div></template>
+      <div class="space-y-2" x-show="hasBars(orderBars)">
+        <template x-for="b in orderBars" :key="b.label">
+          <div>
+            <div class="flex justify-between text-xs mb-1"><span x-text="b.label"></span><span class="text-slate-300"><span x-text="b.value"></span> (<span x-text="pct(b.value, maxVal(orderBars))"></span>%)</span></div>
+            <div class="h-3 bg-slate-800 rounded overflow-hidden"><div class="h-3 rounded" :class="b.color||'bg-indigo-500'" :style="'width:'+pct(b.value,maxVal(orderBars))+'%'"></div></div>
+          </div>
+        </template>
       </div>
-    </template>
+    </div>
+
+    <div class="card p-4">
+      <div class="flex items-center justify-between mb-2"><h3 class="font-semibold">Lager & Produktgesundheit</h3><span class="text-xs text-slate-500">Bestandssituation</span></div>
+      <template x-if="!hasBars(inventoryBars)"><div class="text-sm text-slate-400">Keine Lagerdaten vorhanden.</div></template>
+      <div class="space-y-2" x-show="hasBars(inventoryBars)">
+        <template x-for="b in inventoryBars" :key="b.label">
+          <div>
+            <div class="flex justify-between text-xs mb-1"><span x-text="b.label"></span><span class="text-slate-300" x-text="b.value"></span></div>
+            <div class="h-3 bg-slate-800 rounded overflow-hidden"><div class="h-3 rounded" :class="b.color||'bg-emerald-500'" :style="'width:'+pct(b.value,maxVal(inventoryBars))+'%'"></div></div>
+          </div>
+        </template>
+      </div>
+      <div class="grid grid-cols-3 gap-2 mt-4 text-center">
+        <div class="bg-slate-950 border border-slate-800 rounded p-2"><div class="text-xs text-slate-400">Gesamtbestand</div><div class="font-semibold" x-text="fmt(data.control?.business?.inventory?.total_stock_units||data.metrics?.total_stock||0)"></div></div>
+        <div class="bg-slate-950 border border-slate-800 rounded p-2"><div class="text-xs text-slate-400">Produkte</div><div class="font-semibold" x-text="fmt(data.metrics?.product_count||0)"></div></div>
+        <div class="bg-slate-950 border border-slate-800 rounded p-2"><div class="text-xs text-slate-400">Fehler (24h)</div><div class="font-semibold" :class="(data.metrics?.error_count||0)>0?'text-red-400':'text-emerald-400'" x-text="fmt(data.metrics?.error_count||0)"></div></div>
+      </div>
+    </div>
   </div>
+
+  <!-- Technical KPIs -->
+  <section>
+    <h2 class="font-semibold text-lg mb-2">Technische Auswertungen</h2>
+    <div class="grid lg:grid-cols-2 gap-4">
+      <div class="card p-4">
+        <div class="flex items-center justify-between mb-2"><h3 class="font-semibold">System & Laufzeit</h3><span class="badge" :class="uiBadgeClass(health.status||'unknown')" x-text="uiStatusLabel(health.status||'Unbekannt')"></span></div>
+        <div class="space-y-2">
+          <template x-for="b in techBars" :key="b.label">
+            <div>
+              <div class="flex justify-between text-xs mb-1"><span x-text="b.label"></span><span class="text-slate-300" x-text="b.display||b.value"></span></div>
+              <div class="h-3 bg-slate-800 rounded overflow-hidden"><div class="h-3 rounded" :class="b.color||'bg-sky-500'" :style="'width:'+Math.min(100,Math.max(0,b.pct||0))+'%'"></div></div>
+            </div>
+          </template>
+        </div>
+        <div class="mt-3 text-xs text-slate-400 grid grid-cols-2 gap-1">
+          <div>Datenbank: <span class="text-slate-200" x-text="String(health.database||'—')"></span></div>
+          <div>Queue: <span class="text-slate-200" x-text="(health.queue_size??0)+' Aufgaben'"></span></div>
+          <div>Betriebszeit: <span class="text-slate-200" x-text="health.uptime_seconds?Math.round(health.uptime_seconds/60)+' Min.':'—'"></span></div>
+          <div>Events: <span class="text-slate-200" x-text="events.running?'aktiv':'inaktiv'"></span></div>
+        </div>
+      </div>
+
+      <div class="card p-4">
+        <div class="flex items-center justify-between mb-2"><h3 class="font-semibold">Jobs & Importe</h3><span class="text-xs text-slate-500" x-text="(data.analytics?.jobs?.recent||0)+' Jobs (neu)'"></span></div>
+        <template x-if="!hasBars(jobBars)"><div class="text-sm text-slate-400">Keine Job-/Importdaten vorhanden.</div></template>
+        <div class="space-y-2" x-show="hasBars(jobBars)">
+          <template x-for="b in jobBars" :key="b.label">
+            <div>
+              <div class="flex justify-between text-xs mb-1"><span x-text="b.label"></span><span class="text-slate-300" x-text="b.value"></span></div>
+              <div class="h-3 bg-slate-800 rounded overflow-hidden"><div class="h-3 rounded" :class="b.color||'bg-indigo-500'" :style="'width:'+pct(b.value,maxVal(jobBars))+'%'"></div></div>
+            </div>
+          </template>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- AI / BI -->
+  <section>
+    <h2 class="font-semibold text-lg mb-2">KI, Kosten & Nutzung (BI/Technik)</h2>
+    <div class="grid lg:grid-cols-2 gap-4">
+      <div class="card p-4">
+        <div class="flex items-center justify-between mb-2"><h3 class="font-semibold">Nutzung nach Combo/Modul</h3><span class="text-xs text-slate-500" x-text="fmt(aiSummary.total_requests||0)+' Requests'"></span></div>
+        <div class="grid grid-cols-3 gap-2 mb-3 text-center">
+          <div class="bg-slate-950 border border-slate-800 rounded p-2"><div class="text-xs text-slate-400">Gesamtkosten</div><div class="font-semibold" x-text="money(aiSummary.total_cost)"></div></div>
+          <div class="bg-slate-950 border border-slate-800 rounded p-2"><div class="text-xs text-slate-400">Ø Latenz</div><div class="font-semibold" x-text="Math.round(Number(aiSummary.avg_latency_ms||0))+' ms'"></div></div>
+          <div class="bg-slate-950 border border-slate-800 rounded p-2"><div class="text-xs text-slate-400">Privacy-routed</div><div class="font-semibold" x-text="fmt(aiSummary.privacy_routed_count||0)"></div></div>
+        </div>
+        <template x-if="!(aiByCombo.length||aiByModule.length)"><div class="text-sm text-slate-400">Noch keine KI-Telemetrie vorhanden (Requests laufen lassen, dann erscheinen Auswertungen).</div></template>
+        <div class="space-y-2" x-show="aiByCombo.length">
+          <div class="text-xs text-slate-400 font-medium">Top Combos (Anfragen)</div>
+          <template x-for="b in aiByCombo" :key="b.label">
+            <div>
+              <div class="flex justify-between text-xs mb-1"><span class="truncate pr-2" x-text="b.label||'(unbekannt)'"></span><span class="text-slate-300"><span x-text="b.value"></span> · <span x-text="money(b.cost)"></span></span></div>
+              <div class="h-2.5 bg-slate-800 rounded overflow-hidden"><div class="h-2.5 rounded bg-violet-500" :style="'width:'+pct(b.value,maxVal(aiByCombo))+'%'"></div></div>
+            </div>
+          </template>
+        </div>
+        <div class="space-y-2 mt-3" x-show="aiByModule.length">
+          <div class="text-xs text-slate-400 font-medium">Top Module (Anfragen)</div>
+          <template x-for="b in aiByModule" :key="b.label">
+            <div>
+              <div class="flex justify-between text-xs mb-1"><span class="truncate pr-2" x-text="b.label||'(unbekannt)'"></span><span class="text-slate-300" x-text="b.value"></span></div>
+              <div class="h-2.5 bg-slate-800 rounded overflow-hidden"><div class="h-2.5 rounded bg-fuchsia-500" :style="'width:'+pct(b.value,maxVal(aiByModule))+'%'"></div></div>
+            </div>
+          </template>
+        </div>
+      </div>
+
+      <div class="card p-4">
+        <div class="flex items-center justify-between mb-2"><h3 class="font-semibold">Budgets & Cache</h3><span class="badge" :class="(aiSummary.cache_hits||0)>0?'badge-green':'badge-slate'" x-text="fmt(aiSummary.cache_hits||0)+' Cache-Hits'"></span></div>
+        <template x-if="!hasBars(budgetBars)"><div class="text-sm text-slate-400">Keine Budgetdaten konfiguriert (0 = unbegrenzt).</div></template>
+        <div class="space-y-3" x-show="hasBars(budgetBars)">
+          <template x-for="b in budgetBars" :key="b.label">
+            <div>
+              <div class="flex justify-between text-xs mb-1"><span x-text="b.label"></span><span class="text-slate-300" x-text="money(b.used)+' / '+(b.limit>0?money(b.limit):'∞')"></span></div>
+              <div class="h-3 bg-slate-800 rounded overflow-hidden"><div class="h-3 rounded" :class="b.pct>=100?'bg-red-500':(b.pct>=85?'bg-amber-500':'bg-emerald-500')" :style="'width:'+Math.min(100,b.pct)+'%'"></div></div>
+              <div class="text-[11px] text-slate-500 mt-0.5" x-text="b.limit>0?(b.pct.toFixed(1)+'% genutzt'):'kein Limit gesetzt'"></div>
+            </div>
+          </template>
+        </div>
+        <div class="mt-4 space-y-2" x-show="aiByCombo.length">
+          <div class="text-xs text-slate-400 font-medium">Kostenanteil (Top Combos)</div>
+          <template x-for="b in aiCostBars" :key="b.label">
+            <div>
+              <div class="flex justify-between text-xs mb-1"><span class="truncate pr-2" x-text="b.label"></span><span class="text-slate-300" x-text="money(b.value)"></span></div>
+              <div class="h-2.5 bg-slate-800 rounded overflow-hidden"><div class="h-2.5 rounded bg-emerald-500" :style="'width:'+pct(b.value,maxVal(aiCostBars))+'%'"></div></div>
+            </div>
+          </template>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <details class="card p-4">
+    <summary class="cursor-pointer font-medium">Rohdaten (Technik)</summary>
+    <pre class="mt-3 text-xs bg-slate-950 border border-slate-800 rounded p-3 overflow-auto max-h-[28rem]" x-text="raw"></pre>
+  </details>
 </div>
 {% endblock %}
 {% block scripts %}
 <script>
-function pageState(){
-  return {
-    endpoints: [{url:'/api/analytics',label:'Analytics Overview'},{url:'/api/stats',label:'Stats'},{url:'/api/health',label:'Health'},{url:'/api/import-runs?limit=20',label:'Import Runs'}],
-    globalError: '',
-    supplier: 10, calcResult: null,
-    query: '', actionResult: null, busy: false,
-    q:'', status:'',
-    setKey:'', setVal:'', actionMsg:'', actionErr:false,
-    async loadAll(){ this.globalError=''; await Promise.all(this.endpoints.map(e=>this.loadEp(e))); },
-    async loadEp(ep){
-      ep.state='loading'; ep.error=''; ep.data=null;
-      try {
-        const d = await apiFetch(ep.url);
-        ep.data = d;
-        const empty = d==null || (Array.isArray(d) && d.length===0) || (typeof d==='object' && !Array.isArray(d) && Object.keys(d).length===0);
-        ep.state = empty ? 'empty' : 'ok';
-      } catch(e){ ep.state='error'; ep.error=e.message; }
-    },
-    formatData(d){ try{ return JSON.stringify(d, null, 2); }catch(_ ){ return String(d); } },
-    filteredProducts(){ const all = (this.endpoints.find(e=>e.url.startsWith('/api/products'))||{}).data||[]; const q=(this.q||'').toLowerCase(); return (Array.isArray(all)?all:[]).filter(p=>{ if(this.status && String(p.status)!==this.status) return false; if(!q) return true; return [p.sku,p.title,p.ai_title,p.category].some(v=>String(v||'').toLowerCase().includes(q)); }); },
-    orders(){ const all=(this.endpoints.find(e=>e.url.startsWith('/api/orders'))||{}).data||[]; return Array.isArray(all)?all:(all.items||[]); },
-    async calc(){ try{ this.calcResult=await apiFetch('/api/pricing/calculate',{method:'POST',body:JSON.stringify({supplier_price:Number(this.supplier||0)})}); }catch(e){ this.calcResult={error:e.message}; } },
-    async search(){ try{ this.actionResult=await apiFetch('/api/competitor/search',{method:'POST',body:JSON.stringify({query:this.query,limit:10})}); }catch(e){ this.actionResult={error:e.message}; } },
-    async runTrend(){ this.busy=true; try{ this.actionResult=await apiFetch('/api/ai/trend-analysis',{method:'POST'}); }catch(e){ this.actionResult={error:e.message}; } this.busy=false; },
-    async saveSetting(){ this.actionMsg=''; this.actionErr=false; try{ await apiFetch('/api/settings',{method:'POST',body:JSON.stringify({key:this.setKey,value:this.setVal})}); this.actionMsg='Gespeichert.'; await this.loadAll(); }catch(e){ this.actionErr=true; this.actionMsg='Fehler: '+e.message; } }
+function analyticsPage(){return{
+  loading:true,error:'',updatedAt:'',data:{},health:{},events:{},raw:'{}',
+  bizKpis:[],orderBars:[],inventoryBars:[],techBars:[],jobBars:[],aiSummary:{},aiByCombo:[],aiByModule:[],aiCostBars:[],budgetBars:[],
+  fmt(n){return new Intl.NumberFormat('de-DE').format(Number(n||0));},
+  money(n){const v=Number(n||0);return new Intl.NumberFormat('de-DE',{style:'currency',currency:'USD',maximumFractionDigits:4}).format(v);},
+  maxVal(arr){return Math.max(1,...(arr||[]).map(x=>Number(x.value||0)) );},
+  pct(v,m){m=Math.max(1,Number(m||1));const p=(Number(v||0)/m)*100;return (p>0&&p<3)?3:Math.min(100,Math.round(p));},
+  hasBars(arr){return (arr||[]).some(b=>Number(b.value||b.limit||b.used||0)>0) || (arr||[]).length>0;},
+  async init(){await this.load();},
+  async load(){this.loading=true;this.error='';const safe=async(u)=>{try{return {ok:true,data:await apiFetch(u)}}catch(e){return {ok:false,err:e.message,url:u}}};
+    const [stats,analytics,control,ai,health,events]=await Promise.all([
+      safe('/api/stats'), safe('/api/analytics'), safe('/api/control-center/dashboard'),
+      safe('/api/ai/usage/summary'), safe('/api/health'), safe('/api/events/stats')
+    ]);
+    const errs=[stats,analytics,control,ai,health,events].filter(x=>!x.ok).map(x=>x.url+': '+x.err);
+    if(errs.length) this.error=errs.join(' | ');
+    this.data={stats:stats.ok?stats.data:null,analytics:analytics.ok?analytics.data:null,control:control.ok?control.data:null,ai:ai.ok?ai.data:null};
+    this.health=health.ok?health.data:{}; this.events=events.ok?events.data:{};
+    const m=this.data.stats||this.data.analytics?.metrics||{}; const b=this.data.control?.business||{}; const inv=b.inventory||{}; const ord=b.orders||{};
+    this.bizKpis=[
+      {label:'Produkte', value:this.fmt(m.product_count||0), sub:(m.active_product_count||0)+' aktiv'},
+      {label:'Offene Bestellungen', value:this.fmt(m.pending_order_count||ord.pending||0), cls:(m.pending_order_count||0)>0?'text-amber-300':'', sub:(ord.total||0)+' gesamt'},
+      {label:'Fehler (24h)', value:this.fmt(m.error_count||0), cls:(m.error_count||0)>0?'text-red-400':'text-emerald-400', sub:'Systemprotokoll'},
+      {label:'Umsatz nah (Proxy)', value:this.fmt(m.product_count||0), sub:'Produkte als Basis'},
+      {label:'Imports (neu)', value:this.fmt(this.data.analytics?.imports?.recent||0), sub:(this.data.analytics?.imports?.successful_recent||0)+' erfolgreich'},
+      {label:'Jobs fehlgeschlagen', value:this.fmt(this.data.analytics?.jobs?.failed_recent||0), cls:(this.data.analytics?.jobs?.failed_recent||0)>0?'text-amber-300':'', sub:(this.data.analytics?.jobs?.recent||0)+' zuletzt'},
+    ];
+    this.orderBars=[
+      {label:'Ausstehend', value:Number(ord.pending||0), color:'bg-amber-500'},
+      {label:'Reserviert', value:Number(ord.reserved||0), color:'bg-sky-500'},
+      {label:'Versendet', value:Number(ord.dispatched||0), color:'bg-emerald-500'},
+      {label:'Fehlgeschlagen', value:Number(ord.failed||0), color:'bg-red-500'},
+      {label:'Abgebrochen', value:Number(ord.cancelled||0), color:'bg-slate-500'},
+    ];
+    this.inventoryBars=[
+      {label:'Auf Lager', value:Number(inv.in_stock||Math.max(0,(m.active_product_count||0)-(inv.out_of_stock||0))), color:'bg-emerald-500'},
+      {label:'Niedriger Bestand', value:Number(inv.low_stock||0), color:'bg-amber-500'},
+      {label:'Ohne Bestand', value:Number(inv.out_of_stock||0), color:'bg-red-500'},
+    ];
+    const upMin=Math.round(Number(this.health.uptime_seconds||0)/60); const q=Number(this.health.queue_size||0);
+    this.techBars=[
+      {label:'Betriebszeit', value:upMin, display:upMin+' Min.', pct:Math.min(100,(upMin/ (24*60))*100), color:'bg-emerald-500'},
+      {label:'Warteschlange', value:q, display:q+' Aufgaben', pct:Math.min(100,q*10), color:q>5?'bg-amber-500':'bg-sky-500'},
+      {label:'Fehler (24h)', value:Number(m.error_count||0), display:String(m.error_count||0), pct:Math.min(100,Number(m.error_count||0)*20), color:(m.error_count||0)>0?'bg-red-500':'bg-emerald-500'},
+    ];
+    this.jobBars=[
+      {label:'Importe (neu)', value:Number(this.data.analytics?.imports?.recent||0), color:'bg-indigo-500'},
+      {label:'Importe erfolgreich', value:Number(this.data.analytics?.imports?.successful_recent||0), color:'bg-emerald-500'},
+      {label:'Jobs (neu)', value:Number(this.data.analytics?.jobs?.recent||0), color:'bg-sky-500'},
+      {label:'Jobs fehlgeschlagen', value:Number(this.data.analytics?.jobs?.failed_recent||0), color:'bg-red-500'},
+    ];
+    const ai=(this.data.ai&&this.data.ai.summary)||{};
+    this.aiSummary=ai;
+    this.aiByCombo=(ai.by_combo||[]).map(x=>({label:x.combo_used||x.combo||x.label||'', value:Number(x.n||x.count||0), cost:Number(x.cost||0)})).filter(x=>x.value>0||x.cost>0);
+    this.aiByModule=(ai.by_module||[]).map(x=>({label:x.module||'', value:Number(x.n||x.count||0), cost:Number(x.cost||0)})).filter(x=>x.value>0||x.cost>0);
+    this.aiCostBars=[...this.aiByCombo].sort((a,b)=>b.cost-a.cost).slice(0,8).map(x=>({label:x.label,value:x.cost}));
+    const spend=ai.spend||{}; const budgets=ai.budgets||{};
+    const mk=(label,used,limit)=>{limit=Number(limit||0); used=Number(used||0); return {label, used, limit, pct: limit>0?(used/limit*100):0};};
+    this.budgetBars=[
+      mk('Tagesbudget (USD)', spend.daily, budgets.daily_usd),
+      mk('Monatsbudget (USD)', spend.monthly, budgets.monthly_usd),
+    ].filter(b=>b.limit>0 || b.used>0);
+    this.updatedAt=new Date().toLocaleString('de-DE');
+    this.raw=JSON.stringify({stats:this.data.stats,analytics:this.data.analytics,control:this.data.control,ai:this.data.ai,health:this.health,events:this.events},null,2);
+    this.loading=false;
   }
-}
+}}
 </script>
 {% endblock %}

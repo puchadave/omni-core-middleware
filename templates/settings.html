@@ -43,7 +43,32 @@
                   <textarea class="input font-mono text-xs" rows="3" x-model="form[f.key]" :placeholder="f.placeholder||''"></textarea>
                 </template>
                 <template x-if="f.type!=='select' && f.type!=='textarea'">
-                  <div class="relative"><input class="input" :type="f.secret && !revealed[f.key] ? 'password' : 'text'" x-model="form[f.key]" :placeholder="f.placeholder||''" autocomplete="off"><button type="button" x-show="f.secret" @click="revealed[f.key]=!revealed[f.key]" class="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-indigo-400 hover:text-indigo-300" x-text="revealed[f.key]?'Verbergen':'Anzeigen'"></button></div>
+                  <div class="space-y-1">
+                    <div class="relative">
+                      <input class="input" :list="f.modelList ? ('dl-'+f.key) : null" :type="f.secret && !revealed[f.key] ? 'password' : 'text'" x-model="form[f.key]" :placeholder="f.placeholder||''" autocomplete="off">
+                      <button type="button" x-show="f.secret" @click="revealed[f.key]=!revealed[f.key]" class="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-indigo-400 hover:text-indigo-300" x-text="revealed[f.key]?'Verbergen':'Anzeigen'"></button>
+                    </div>
+                    <template x-if="f.quickUrls && f.quickUrls.length">
+                      <div class="flex flex-wrap gap-1.5 mt-1">
+                        <template x-for="u in f.quickUrls" :key="u"><button type="button" @click="form[f.key]=u" class="px-2 py-1 rounded text-[11px] border border-slate-700 bg-slate-800 hover:bg-slate-700 text-slate-200" :class="form[f.key]===u?'border-indigo-500 text-white':''" x-text="u.includes('localhost')?'Lokal: '+u:'Öffentlich: '+u"></button></template>
+                        <span class="text-[11px] text-slate-500 self-center">oder eigene Adresse eintragen</span>
+                      </div>
+                    </template>
+                    <template x-if="f.modelList">
+                      <div>
+                        <datalist :id="'dl-'+f.key">
+                          <template x-for="m in gatewayModelOptions()" :key="m.id||m.model||m.name"><option :value="m.id||m.model||m.name" x-text="mLabel(m)"></option></template>
+                        </datalist>
+                        <div class="flex items-center gap-2 text-[11px] text-slate-500">
+                          <span x-show="gatewayModelsState==='loading'">Gateway-Modelle werden geladen…</span>
+                          <span x-show="gatewayModelsState==='ok'" x-text="(gatewayModels.length>0 ? gatewayModels.length+' Modell(e) vom Gateway geladen. ' : 'Keine zusätzlichen Modelle gemeldet. ') + 'Empfohlen: auto/smart & omnicore-Combos – oder Modell wählen/manuell eintragen.'"></span>
+                          <span x-show="gatewayModelsState==='not_configured'">Gateway nicht konfiguriert – Adresse/Key speichern, dann Modelle laden.</span>
+                          <span x-show="gatewayModelsState==='error'" class="text-amber-400" x-text="'Modelle nicht ladbar: '+(gatewayModelsMsg||'unbekannt')"></span>
+                          <button type="button" @click="loadGatewayModels()" class="text-indigo-400 hover:text-indigo-300 underline-offset-2 hover:underline" :disabled="gatewayModelsState==='loading'">Aktualisieren</button>
+                        </div>
+                      </div>
+                    </template>
+                  </div>
                 </template>
                 <p class="help-text" x-show="f.placeholder && f.type!=='select'" x-text="'Beispiel: '+f.placeholder"></p>
                 <div class="text-[11px] text-slate-500 mt-1">Aktueller Wert: <span class="font-medium" :class="(settings[f.key] && settings[f.key]!=='')?'text-slate-300':'text-slate-500'" x-text="displayValue(f.key)"></span></div>
@@ -90,13 +115,30 @@
 <script>
 function settingsPage(){return{
   settings:{}, integrations:{}, form:{}, revealed:{}, q:'', rawKey:'', rawVal:'',
+  gatewayModels:[], gatewayModelsState:'idle', gatewayModelsMsg:'',
   saving:false, error:'', banner:'', bannerErr:false,
   groups:[
-    {id:'core', title:'KI & Modell-Gateway (OmniRoute)', help:'Grundkonfiguration für KI-Funktionen und den Copilot. Ohne gültige, erreichbare Konfiguration werden keine echten KI-Antworten oder Generierungen ausgeführt.', fields:[
-      {key:'omniroute_url', label:'Gateway-Adresse (URL)', placeholder:'http://omniroute:3000', help:'Interne/erreichbare Adresse des KI-Gateways.'},
-      {key:'omniroute_api_key', label:'Gateway-Zugangsschlüssel', secret:true, placeholder:'Zugangsschlüssel', help:'Geheimer Schlüssel für die Verbindung zum KI-Gateway.'},
-      {key:'default_llm_model', label:'Standard-Sprachmodell', placeholder:'z. B. gpt-4o-mini', help:'Modell für Text- und Copilot-Anfragen (muss verfügbar sein).'},
-      {key:'default_image_model', label:'Standard-Bildmodell', placeholder:'z. B. Anbieter/Modell', help:'Modell für Bilderzeugung, sofern konfiguriert.'},
+    {id:'core', title:'KI & Modell-Gateway (OmniRoute)', help:'Schnellstart: nur Gateway-Adresse auswählen/eintragen und API-Key speichern – alle Modell-/Auto-Kombo-Konfigurationen (auto/smart, omnicore-* inkl. Fotoshooting-Identitäten) sind bereits vorkonfiguriert. Alternativ kann der KI-Copilot die Verbindung über die Agenten-Funktion einrichten (mit Bestätigung).', fields:[
+      {key:'omniroute_url', label:'Gateway-Adresse (URL)', placeholder:'https://puchalla.online/v1', help:'Wähle lokal oder öffentlich oder trage eine eigene Adresse ein. Lokal: http://localhost:20128/v1 · Öffentlich: https://puchalla.online/v1', quickUrls:['https://puchalla.online/v1','http://localhost:20128/v1']},
+      {key:'omniroute_api_key', label:'Gateway-Zugangsschlüssel (API-Key)', secret:true, placeholder:'API-Key', help:'Einziger Pflichtwert – danach „Speichern“, der Rest ist vorbelegt.'},
+      {key:'omniroute_agent_model', label:'Copilot-/Agent-Modell (vorkonfiguriert)', placeholder:'omnicore-copilot', help:'Vorbelegt: omnicore-copilot (auto/smart).', modelList:true},
+      {key:'default_llm_model', label:'Standard-Sprachmodell (vorkonfiguriert)', placeholder:'auto/smart', help:'Vorbelegt: auto/smart.', modelList:true},
+      {key:'default_image_model', label:'Standard-Bild/Vision-Modell (vorkonfiguriert)', placeholder:'auto/vision', help:'Vorbelegt: auto/vision.', modelList:true},
+    ]},
+    {id:'ai_auto', title:'KI-Automatik & Einsatzprofile (vorkonfiguriert)', help:'Empfohlene Auto-Kombos pro Einsatz sind bereits gesetzt (auto/smart, auto/fast, auto/cheap, auto/coding, auto/vision, omnicore-*). Nur anpassen, wenn nötig.', fields:[
+      {key:'ai_model_copilot', label:'Copilot/Agent', placeholder:'omnicore-copilot', help:'Copilot, Steuerung, Tool-Planung.', modelList:true},
+      {key:'ai_model_content_quality', label:'Texte/SEO (Qualität)', placeholder:'omnicore-content-quality', help:'Produkt- & Marketingtexte in hoher Qualität.', modelList:true},
+      {key:'ai_model_content_bulk', label:'Texte/SEO (Masse/Budget)', placeholder:'omnicore-content-bulk', help:'Bulk-Content, Meta, Übersetzungen kostenoptimiert.', modelList:true},
+      {key:'ai_model_coding', label:'Code/Regeln/Mapping', placeholder:'auto/coding', help:'Struktur-, Mapping- und Logik-Aufgaben.', modelList:true},
+      {key:'ai_model_classification', label:'Klassifikation/Extraktion (schnell)', placeholder:'auto/fast', help:'Tagging, Extraktion, kurze Antworten.', modelList:true},
+      {key:'ai_model_trend', label:'Trend-/Marktanalyse', placeholder:'omnicore-trend-analysis', help:'Trends, Insights, Bundle-Vorschläge.', modelList:true},
+      {key:'ai_model_photoshoot', label:'Fotoshooting / Bildgenerierung', placeholder:'omnicore-photoshoot', help:'KI-Produktbilder (Vision/Image).', modelList:true},
+      {key:'ai_model_photoshoot_identity', label:'Fotoshooting mit Modell-Identität', placeholder:'omnicore-photoshoot-identity', help:'Fotos mit Modell-Profilen (z. B. Luna/Raven/Nyx), identitätstreu.', modelList:true},
+      {key:'ai_model_reliable', label:'Kritisch/hohe Zuverlässigkeit', placeholder:'omnicore-critical-fusion', help:'Wichtige Ausgaben (Fusion/Fallback).', modelList:true},
+      {key:'ai_model_budget', label:'Budget/Abo zuerst', placeholder:'omnicore-subscription-thrifty', help:'Erst Plan-/Abo-Quota, dann günstig.', modelList:true},
+      {key:'ai_fallback_chain', label:'Globale Fallback-Kette (JSON)', type:'textarea', placeholder:'["auto/smart","auto","auto/cheap"]', full:true, help:'Automatische Ausweichmodelle bei Fehler/Limit.'},
+      {key:'ai_default_strategy', label:'Standard-Routing-Strategie', placeholder:'lkgp', help:'z. B. lkgp, auto, cost, latency, sla-aware (vom Gateway unterstützt).'},
+      {key:'omniroute_combo_config_path', label:'Combo-Konfigurationsdatei (Server)', placeholder:'config/omniroute/omnicore-auto-combos.json', full:true, help:'Vordefinierte omnicore-auto-Kombos auf dem Middleware-Server.'},
     ]},
     {id:'matterhorn', title:'Lieferant / Produktimport (Matterhorn)', help:'Quelle für Produktdaten-Importe. Geben Sie eine echte, erreichbare Feed-Adresse an.', fields:[
       {key:'matterhorn_feed_url', label:'Feed-Adresse (URL)', placeholder:'https://…/export.xml', full:true, help:'Öffentliche oder autorisierte Adresse des Lieferanten-Feeds.'},
@@ -130,9 +172,23 @@ function settingsPage(){return{
     ]},
   ],
   normStatus(v){return typeof v==='string'?v:(v&&(v.status||v.state))||'unknown';},
-  async init(){await this.load();},
+  async init(){await this.load(); this.loadGatewayModels();},
   async load(){this.error=''; try{const [s,i]=await Promise.all([apiFetch('/api/settings'), apiFetch('/api/integrations/status')]); this.settings=s||{}; this.integrations=i||{}; this.seedForm();}catch(e){this.error=e.message;}},
-  seedForm(){ for(const g of this.groups){ for(const f of g.fields){ const v=this.settings[f.key]; this.form[f.key]=(v && v!=='********')?v:''; } } },
+  mLabel(m){ if(!m) return ''; const id=m.id||m.model||m.name||''; const name=m.name && m.name!==id ? m.name : ''; const owner=m.owned_by||m.provider||''; return name ? `${id} — ${name}` : (owner ? `${id} (${owner})` : id); },
+  gatewayModelOptions(){ const suggested=[
+      {id:'auto', name:'Auto (automatische Modellauswahl, empfohlen)'},
+      {id:'smart', name:'Smart (intelligente Modellauswahl, empfohlen)'}
+    ]; const seen=new Set(suggested.map(x=>x.id));
+    const out=[...suggested];
+    for(const m of (this.gatewayModels||[])){ const id=(m&& (m.id||m.model||m.name))||''; if(!id||seen.has(id)) continue; seen.add(id); out.push(m); }
+    return out;
+  },
+  async loadGatewayModels(){ this.gatewayModelsState='loading'; this.gatewayModelsMsg=''; try{ const r=await apiFetch('/api/omniroute/gateway/models'); this.gatewayModels=Array.isArray(r.models)?r.models:[]; this.gatewayModelsState=r.status||'ok'; this.gatewayModelsMsg=r.error||''; }catch(e){ this.gatewayModelsState='error'; this.gatewayModelsMsg=e.message||'Fehler'; this.gatewayModels=[]; } },
+  defaults(){
+    const d={omniroute_agent_model:'omnicore-copilot',default_llm_model:'auto/smart',default_image_model:'auto/vision',ai_model_copilot:'omnicore-copilot',ai_model_chat:'auto/smart',ai_model_coding:'auto/coding',ai_model_content_bulk:'omnicore-content-bulk',ai_model_content_quality:'omnicore-content-quality',ai_model_seo:'auto/cheap',ai_model_translation:'auto/cheap',ai_model_classification:'auto/fast',ai_model_trend:'omnicore-trend-analysis',ai_model_longcontext:'omnicore-longcontext',ai_model_vision:'auto/vision',ai_model_image:'auto/vision',ai_model_photoshoot:'omnicore-photoshoot',ai_model_photoshoot_identity:'omnicore-photoshoot-identity',ai_model_reliable:'omnicore-critical-fusion',ai_model_budget:'omnicore-subscription-thrifty',ai_model_cache:'omnicore-cache-optimized',ai_fallback_chain:'["auto/smart","auto","auto/cheap"]',ai_default_strategy:'lkgp',omniroute_combo_config_path:'config/omniroute/omnicore-auto-combos.json'};
+    return d;
+  },
+  seedForm(){ const d=this.defaults(); for(const g of this.groups){ for(const f of g.fields){ const v=this.settings[f.key]; if(v && v!=='********'){ this.form[f.key]=v; } else if(!f.secret && d[f.key]!==undefined && (v===undefined||v===null||v==='')){ this.form[f.key]=d[f.key]; } else { this.form[f.key]=(v && v!=='********')?v:''; } } } },
   displayValue(k){ const v=this.settings[k]; if(v===undefined||v===null||v==='') return '— nicht gesetzt —'; if(v==='********') return '•••••• (gesetzt)'; return v; },
   groupStatus(g){ const required=g.fields.filter(f=>!f.optional); const known=required.map(f=>this.settings[f.key]).filter(v=>v && v!==''); if(known.length===0) return {label:'Nicht eingerichtet',cls:'badge-slate'}; if(known.length<required.length) return {label:'Teilweise eingerichtet',cls:'badge-amber'}; return {label:'Eingerichtet',cls:'badge-green'}; },
   async saveGroup(group){ this.saving=true; this.banner=''; this.bannerErr=false; try{ let n=0; for(const f of group.fields){ const val=this.form[f.key]; if(val===undefined) continue; if(f.secret && (val==='' || val===null)) continue; await apiFetch('/api/settings',{method:'POST',body:JSON.stringify({key:f.key,value:String(val)})}); n++; } this.banner='Einstellungen für „'+group.title+'“ gespeichert ('+n+' Werte).'; toast(this.banner,'success'); await this.load(); }catch(e){ this.bannerErr=true; this.banner='Speichern nicht möglich: '+e.message; } this.saving=false; },

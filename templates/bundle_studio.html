@@ -1,30 +1,46 @@
 {% extends "base.html" %}
-{% block title %}Bundles | Omni-Core Admin{% endblock %}
+{% block title %}Bundles & Sets | Omni-Core Admin{% endblock %}
 {% block content %}
 <div x-data="bundlePage()" x-init="load()" class="space-y-4 max-w-7xl mx-auto">
   <div class="flex flex-col md:flex-row md:items-end md:justify-between gap-3">
-    <div><h1 class="text-2xl md:text-3xl font-bold">Bundle Studio</h1><p class="text-slate-400">Bundles erstellen, verwalten und Bestand/Intelligenz aus realen Produktdaten ableiten.</p></div>
-    <button @click="load()" class="btn btn-secondary">Aktualisieren</button>
+    <div><h1 class="text-2xl md:text-3xl font-bold">Bundle Studio · Sets & Sortiment</h1><p class="text-slate-400">Manuelle Set-Bildung, automatische Bundle-Generierung sowie KI-Artikelauswahl pro Marktplatz (max. 2000) mit datenbasierter Nischenanalyse (Trends/Nachfrage/interne Signale).</p></div>
+    <div class="flex gap-2 flex-wrap"><button @click="load()" class="btn btn-secondary">Aktualisieren</button><button @click="loadSuggestions()" class="btn btn-ghost">Vorschläge laden</button></div>
   </div>
 
-  <div class="grid lg:grid-cols-2 gap-4">
+  <div class="grid xl:grid-cols-3 gap-4">
     <div class="card p-4 space-y-3">
-      <h2 class="font-semibold">Bundle anlegen / aktualisieren</h2>
+      <h2 class="font-semibold">Manuelles Set / Bundle</h2>
       <div><label class="label">Bundle-SKU *</label><input x-model="form.bundle_sku" class="input font-mono" placeholder="BUNDLE-001"></div>
       <div><label class="label">Titel *</label><input x-model="form.title" class="input"></div>
       <div><label class="label">Komponenten-SKUs (kommagetrennt) *</label><input x-model="form.componentsText" class="input font-mono" placeholder="SKU-A, SKU-B"></div>
-      <button @click="save()" class="btn btn-primary" :disabled="saving">Speichern</button>
-      <p class="text-xs text-slate-500">Der Bundle-Bestand wird serverseitig aus Komponenten berechnet.</p>
+      <div class="flex gap-2 flex-wrap"><button @click="save()" class="btn btn-primary" :disabled="saving">Speichern</button><button @click="manualViaCopilot()" class="btn btn-ghost">Im KI-Copilot vorbereiten</button></div>
+      <p class="text-xs text-slate-500">Bundle-Bestand wird serverseitig aus Komponenten berechnet. Schreibende Aktionen über Copilot erfolgen nur nach Bestätigung.</p>
     </div>
-    <div class="card p-4">
-      <h2 class="font-semibold mb-2">Bundle Intelligence</h2>
-      <template x-if="intelError"><div class="text-sm text-red-300" x-text="intelError"></div></template>
-      <pre class="text-xs bg-slate-950 border border-slate-800 rounded p-3 overflow-auto max-h-80" x-text="format(intel)"></pre>
+
+    <div class="card p-4 space-y-3">
+      <h2 class="font-semibold">Automatische Bundle-Bildung</h2>
+      <div class="flex items-end gap-2"><div class="flex-1"><label class="label">Max. Bundles</label><input type="number" min="1" max="50" x-model.number="autoBundles.max" class="input"></div><label class="flex items-center gap-2 text-sm text-slate-300 pb-2"><input type="checkbox" x-model="autoBundles.create"> direkt erstellen</label></div>
+      <div class="flex gap-2 flex-wrap"><button @click="runAutoBundles()" class="btn btn-primary" :disabled="autoBundles.loading" x-text="autoBundles.loading?'Läuft…':'Vorschläge/Erstellung starten'"></button></div>
+      <template x-if="autoBundles.result"><div class="text-xs text-slate-300">Erstellt: <span x-text="autoBundles.result.created_count||0"></span> · Vorschläge: <span x-text="(autoBundles.result.suggestions||[]).length"></span></div></template>
+      <pre class="text-xs bg-slate-950 border border-slate-800 rounded p-3 overflow-auto max-h-56" x-text="format(autoBundles.result || suggestions)"></pre>
+    </div>
+
+    <div class="card p-4 space-y-3">
+      <h2 class="font-semibold">KI-Artikelauswahl pro Marktplatz</h2>
+      <p class="text-xs text-slate-400">Datenbasiert (Nachfrage/Bestellungen, Bestand, interne Trend/News-Signale, Marge, Vollständigkeit). Keine erfundenen externen Social-Daten. Max. 2000 Artikel/Shop.</p>
+      <div class="grid grid-cols-2 gap-2">
+        <div><label class="label">Marktplatz</label><select x-model="assort.marketplace" class="select"><template x-for="m in ['shopware','amazon','ebay','google_shopping','kaufland','otto','hood','zalando']" :key="m"><option :value="m" x-text="m"></option></template></select></div>
+        <div><label class="label">Max. Artikel</label><input type="number" min="1" max="2000" x-model.number="assort.max_items" class="input"></div>
+      </div>
+      <label class="flex items-center gap-2 text-sm text-slate-300"><input type="checkbox" x-model="assort.use_ai_niche"> KI-Nischenanalyse (falls konfiguriert)</label>
+      <div class="flex gap-2 flex-wrap"><button @click="runAssortment()" class="btn btn-primary" :disabled="assort.loading" x-text="assort.loading?'Analysiert…':'Auswahl + Nischenanalyse erzeugen'"></button></div>
+      <template x-if="assort.result"><div class="text-xs text-slate-300">Ausgewählt: <span x-text="(assort.result.plan||{}).selected_count||0"></span> / Kandidaten: <span x-text="(assort.result.plan||{}).candidate_count||0"></span></div></template>
+      <pre class="text-xs bg-slate-950 border border-slate-800 rounded p-3 overflow-auto max-h-56" x-text="formatAssortment(assort.result)"></pre>
     </div>
   </div>
 
   <div class="card">
-    <div class="px-4 py-3 border-b border-slate-800 flex justify-between"><h2 class="font-semibold">Vorhandene Bundles</h2><span class="text-sm text-slate-400" x-text="items.length + ' Bundles'"></span></div>
+    <div class="px-4 py-3 border-b border-slate-800 flex justify-between items-center"><h2 class="font-semibold">Vorhandene Bundles</h2><span class="text-sm text-slate-400" x-text="items.length + ' Bundles'"></span></div>
     <template x-if="error"><div class="p-4 text-red-300" x-text="error"></div></template>
     <div class="table-wrap">
       <table class="tbl">
@@ -48,6 +64,24 @@
 {% endblock %}
 {% block scripts %}
 <script>
-function bundlePage(){return{items:[],intel:null,loading:false,saving:false,error:'',intelError:'',form:{bundle_sku:'',title:'',componentsText:''},async load(){this.loading=true; this.error=''; this.intelError=''; try{const d=await apiFetch('/api/bundles'); this.items=Array.isArray(d)?d:(d.items||[]);}catch(e){this.error=e.message; this.items=[];} try{this.intel=await apiFetch('/api/bundles/intelligence');}catch(e){this.intelError=e.message; this.intel=null;} this.loading=false;},components(b){const c=b.component_skus_json||b.component_skus||b.components||[]; return Array.isArray(c)?c.join(', '):String(c||'—');},format(d){try{return JSON.stringify(d,null,2);}catch(_){return String(d||'—');}},async save(){const comps=this.form.componentsText.split(',').map(s=>s.trim()).filter(Boolean); if(!this.form.bundle_sku||!this.form.title||comps.length===0){toast('SKU, Titel und Komponenten erforderlich','error'); return;} this.saving=true; try{await apiFetch('/api/bundles',{method:'POST',body:JSON.stringify({bundle_sku:this.form.bundle_sku,title:this.form.title,component_skus:comps})}); toast('Bundle gespeichert','success'); this.form={bundle_sku:'',title:'',componentsText:''}; await this.load();}catch(e){toast(e.message,'error')} this.saving=false;},async remove(b){const sku=b.bundle_sku||b.sku; if(!sku||!confirm(`Bundle ${sku} löschen?`)) return; try{await apiFetch('/api/bundles/'+encodeURIComponent(sku),{method:'DELETE'}); toast('Bundle gelöscht','success'); await this.load();}catch(e){toast(e.message,'error')}}}}
+function bundlePage(){return{
+  items:[],intel:null,suggestions:null,loading:false,saving:false,error:'',intelError:'',
+  form:{bundle_sku:'',title:'',componentsText:''},
+  autoBundles:{max:10,create:false,loading:false,result:null},
+  assort:{marketplace:'shopware',max_items:2000,use_ai_niche:true,loading:false,result:null},
+  async load(){this.loading=true; this.error=''; this.intelError='';
+    try{const d=await apiFetch('/api/bundles'); this.items=Array.isArray(d)?d:(d.items||[]);}catch(e){this.error=e.message; this.items=[];}
+    try{this.intel=await apiFetch('/api/bundles/intelligence');}catch(e){this.intelError=e.message; this.intel=null;}
+    this.loading=false;},
+  async loadSuggestions(){try{this.suggestions=await apiFetch('/api/bundles/suggestions?limit=20'); toast('Vorschläge geladen','success');}catch(e){toast(e.message,'error');}},
+  components(b){const c=b.component_skus_json||b.component_skus||b.components||[]; return Array.isArray(c)?c.join(', '):String(c||'—');},
+  format(d){try{return JSON.stringify(d,null,2);}catch(_){return String(d||'—');}},
+  formatAssortment(r){if(!r||!r.plan) return this.format(r); const p=r.plan; return JSON.stringify({marketplace:p.marketplace,selected_count:p.selected_count,candidate_count:p.candidate_count,selection_policy:p.selection_policy,niche_analysis:p.niche_analysis,items_preview:(p.items||[]).slice(0,20)},null,2);},
+  async save(){const comps=this.form.componentsText.split(',').map(s=>s.trim()).filter(Boolean); if(!this.form.bundle_sku||!this.form.title||comps.length===0){toast('SKU, Titel und Komponenten erforderlich','error'); return;} this.saving=true; try{await apiFetch('/api/bundles',{method:'POST',body:JSON.stringify({bundle_sku:this.form.bundle_sku,title:this.form.title,component_skus:comps})}); toast('Bundle gespeichert','success'); this.form={bundle_sku:'',title:'',componentsText:''}; await this.load();}catch(e){toast(e.message,'error')} this.saving=false;},
+  async remove(b){const sku=b.bundle_sku||b.sku; if(!sku||!confirm(`Bundle ${sku} löschen?`)) return; try{await apiFetch('/api/bundles/'+encodeURIComponent(sku),{method:'DELETE'}); toast('Bundle gelöscht','success'); await this.load();}catch(e){toast(e.message,'error')}},
+  async runAutoBundles(){this.autoBundles.loading=true; try{this.autoBundles.result=await apiFetch('/api/bundles/auto-generate',{method:'POST',body:JSON.stringify({max_bundles:this.autoBundles.max, create:this.autoBundles.create})}); toast(this.autoBundles.create?'Auto-Bundles verarbeitet':'Vorschläge erzeugt','success'); await this.load();}catch(e){toast(e.message,'error')} this.autoBundles.loading=false;},
+  async runAssortment(){this.assort.loading=true; try{this.assort.result=await apiFetch('/api/assortments/generate',{method:'POST',body:JSON.stringify({marketplace:this.assort.marketplace,max_items:this.assort.max_items,use_ai_niche:this.assort.use_ai_niche})}); toast('Artikelauswahl/Nischenanalyse erzeugt','success');}catch(e){toast(e.message,'error')} this.assort.loading=false;},
+  manualViaCopilot(){const comps=this.form.componentsText||'SKU-A, SKU-B'; const sku=this.form.bundle_sku||'SET-001'; const title=this.form.title||'Neues Set'; toggleAIAgent(); setTimeout(()=>aiSendPreset(`Erstelle ein Set/Bundle manuell: SKU ${sku}, Titel "${title}", Komponenten: ${comps}`), 50);}
+}}
 </script>
 {% endblock %}

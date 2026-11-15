@@ -612,10 +612,19 @@ class MatterhornUniversalImporter:
         if resolved and not resolved.lower().startswith(("http://","https://")) and os.path.exists(resolved):
             with open(resolved, "r", encoding="utf-8-sig", errors="replace") as f:
                 return f.read(), resolved, os.path.basename(resolved)
-        resp = await self.client.get(resolved, timeout=30.0)
+        headers = {"User-Agent": "OMNI-CORE Matterhorn Importer/1.0", "Accept": "application/xml,text/xml,application/json,text/csv,*/*"}
+        resp = await self.client.get(resolved, timeout=30.0, headers=headers, follow_redirects=True)
         resp.raise_for_status()
         resp.encoding = resp.encoding or "utf-8"
-        return resp.text, resolved, (filename or resolved.rsplit("/",1)[-1] or "feed")
+        text = resp.text or ""
+        if not text.strip():
+            ct = resp.headers.get("content-type", "")
+            raise ValueError(
+                f"Feed-Antwort ist leer (HTTP {resp.status_code}, Content-Type: {ct or 'unbekannt'}, "
+                f"Bytes: {len(resp.content)}). Die Quelle liefert ohne gültige Zugangsdaten/Session ggf. keine Daten "
+                f"oder eine leere Seite. Bitte Feed-URL/Parameter/Zugang prüfen."
+            )
+        return text, resolved, (filename or resolved.rsplit("/",1)[-1] or "feed")
 
     async def fetch_products(self, feed_url: str | None = None, prefer: str = "xml", *, content: str | bytes | None = None, filename: str | None = None, format_hint: str | None = None) -> List[Dict[str, Any]]:
         text, resolved, fname = await self._load_source(feed_url=feed_url, content=content, filename=filename)

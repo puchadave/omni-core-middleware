@@ -2925,9 +2925,12 @@ async def init_db() -> None:
     if uses_postgres():
         pool = await get_pg_pool()
         async with pool.acquire() as conn:
-            async with conn.transaction():
-                for statement in POSTGRES_SCHEMA:
+            for statement in POSTGRES_SCHEMA:
+                try:
                     await conn.execute(statement)
+                except Exception as exc:
+                    # Tolerate already-applied/evolved-schema cases; compat migrations follow.
+                    logger.debug("Schema statement skipped: %s (%s)", str(exc).splitlines()[0], statement[:60])
             # idempotent compatibility migrations for evolved schemas
             compat = [
                 "ALTER TABLE products ADD COLUMN IF NOT EXISTS external_matterhorn_id TEXT NOT NULL DEFAULT ''",
@@ -2988,6 +2991,17 @@ async def init_db() -> None:
                 "CREATE TABLE IF NOT EXISTS product_variants (id TEXT PRIMARY KEY, parent_sku TEXT NOT NULL, sku TEXT NOT NULL UNIQUE, external_matterhorn_id TEXT NOT NULL DEFAULT '', title TEXT NOT NULL DEFAULT '', ean TEXT NOT NULL DEFAULT '', barcode TEXT NOT NULL DEFAULT '', supplier_price NUMERIC(12,4) NOT NULL DEFAULT 0, sale_price NUMERIC(12,4) NOT NULL DEFAULT 0, stock_quantity INTEGER NOT NULL DEFAULT 0, reserved_quantity INTEGER NOT NULL DEFAULT 0, available_quantity INTEGER NOT NULL DEFAULT 0, weight_net_kg NUMERIC(12,4) NOT NULL DEFAULT 0, weight_gross_kg NUMERIC(12,4) NOT NULL DEFAULT 0, length_cm NUMERIC(12,4) NOT NULL DEFAULT 0, width_cm NUMERIC(12,4) NOT NULL DEFAULT 0, height_cm NUMERIC(12,4) NOT NULL DEFAULT 0, attributes_json JSONB NOT NULL DEFAULT '{}'::jsonb, raw_source_data_json JSONB NOT NULL DEFAULT '{}'::jsonb, status TEXT NOT NULL DEFAULT 'active', source_hash TEXT NOT NULL DEFAULT '', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())",
                 "CREATE TABLE IF NOT EXISTS product_attributes (id TEXT PRIMARY KEY, product_sku TEXT NOT NULL, variant_sku TEXT NOT NULL DEFAULT '', name TEXT NOT NULL, value TEXT NOT NULL DEFAULT '', unit TEXT NOT NULL DEFAULT '', is_filterable BOOLEAN NOT NULL DEFAULT FALSE, is_variant BOOLEAN NOT NULL DEFAULT FALSE, source_field TEXT NOT NULL DEFAULT '', extra_json JSONB NOT NULL DEFAULT '{}'::jsonb, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())",
                 "CREATE TABLE IF NOT EXISTS product_media (id TEXT PRIMARY KEY, product_sku TEXT NOT NULL, variant_sku TEXT NOT NULL DEFAULT '', media_type TEXT NOT NULL DEFAULT 'image', url TEXT NOT NULL, position INTEGER NOT NULL DEFAULT 0, title TEXT NOT NULL DEFAULT '', alt_text TEXT NOT NULL DEFAULT '', metadata_json JSONB NOT NULL DEFAULT '{}'::jsonb, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())",
+                "CREATE INDEX IF NOT EXISTS idx_products_external_matterhorn_id ON products(external_matterhorn_id)",
+                "CREATE INDEX IF NOT EXISTS idx_products_parent_sku ON products(parent_sku)",
+                "CREATE INDEX IF NOT EXISTS idx_products_ean ON products(ean)",
+                "CREATE INDEX IF NOT EXISTS idx_categories_parent ON categories(parent_id)",
+                "CREATE INDEX IF NOT EXISTS idx_categories_external ON categories(external_matterhorn_id)",
+                "CREATE INDEX IF NOT EXISTS idx_product_categories_category ON product_categories(category_id)",
+                "CREATE INDEX IF NOT EXISTS idx_product_variants_parent ON product_variants(parent_sku)",
+                "CREATE INDEX IF NOT EXISTS idx_product_variants_external ON product_variants(external_matterhorn_id)",
+                "CREATE INDEX IF NOT EXISTS idx_product_attributes_product ON product_attributes(product_sku)",
+                "CREATE INDEX IF NOT EXISTS idx_product_attributes_name ON product_attributes(name)",
+                "CREATE INDEX IF NOT EXISTS idx_product_media_product ON product_media(product_sku, media_type)",
                 "ALTER TABLE matterhorn_feeds ADD COLUMN IF NOT EXISTS feed_url TEXT",
                 "ALTER TABLE matterhorn_feeds ADD COLUMN IF NOT EXISTS auth_header TEXT NOT NULL DEFAULT ''",
                 "ALTER TABLE matterhorn_feeds ADD COLUMN IF NOT EXISTS last_imported_at TIMESTAMPTZ",
@@ -3010,6 +3024,43 @@ async def init_db() -> None:
                     source_hash TEXT NOT NULL DEFAULT '',
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 )""",
+                """CREATE TABLE IF NOT EXISTS ai_usage_logs (id TEXT PRIMARY KEY, module TEXT NOT NULL DEFAULT '', combo_used TEXT NOT NULL DEFAULT '', model TEXT NOT NULL DEFAULT '', latency_ms INTEGER NOT NULL DEFAULT 0, prompt_tokens INTEGER NOT NULL DEFAULT 0, completion_tokens INTEGER NOT NULL DEFAULT 0, estimated_cost NUMERIC(18,8) NOT NULL DEFAULT 0, privacy_routed BOOLEAN NOT NULL DEFAULT FALSE, status TEXT NOT NULL DEFAULT 'success', error_message TEXT NOT NULL DEFAULT '', metadata_json JSONB NOT NULL DEFAULT '{}'::jsonb, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())""",
+                "CREATE INDEX IF NOT EXISTS idx_ai_usage_logs_created ON ai_usage_logs(created_at DESC)",
+                """CREATE TABLE IF NOT EXISTS ai_cache (cache_key TEXT PRIMARY KEY, module TEXT NOT NULL DEFAULT '', response_json JSONB NOT NULL DEFAULT '{}'::jsonb, expires_at TIMESTAMPTZ NOT NULL, hit_count INTEGER NOT NULL DEFAULT 0, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())""",
+                "CREATE INDEX IF NOT EXISTS idx_ai_cache_expires ON ai_cache(expires_at)",
+                """CREATE TABLE IF NOT EXISTS batch_jobs (id TEXT PRIMARY KEY, job_type TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', total_items INTEGER NOT NULL DEFAULT 0, processed_items INTEGER NOT NULL DEFAULT 0, success_items INTEGER NOT NULL DEFAULT 0, failed_items INTEGER NOT NULL DEFAULT 0, payload_json JSONB NOT NULL DEFAULT '{}'::jsonb, result_json JSONB NOT NULL DEFAULT '{}'::jsonb, error_message TEXT NOT NULL DEFAULT '', created_by TEXT NOT NULL DEFAULT '', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), started_at TIMESTAMPTZ, finished_at TIMESTAMPTZ, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())""",
+                "CREATE INDEX IF NOT EXISTS idx_batch_jobs_status ON batch_jobs(status, created_at DESC)",
+            "CREATE TABLE IF NOT EXISTS assortment_plans (id TEXT PRIMARY KEY, marketplace TEXT NOT NULL, max_items INTEGER NOT NULL DEFAULT 2000, selected_count INTEGER NOT NULL DEFAULT 0, plan_json TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL)",
+            "CREATE INDEX IF NOT EXISTS idx_assortment_marketplace_created ON assortment_plans(marketplace, created_at DESC)",
+            "CREATE TABLE IF NOT EXISTS ai_training_feedback (id TEXT PRIMARY KEY, source TEXT NOT NULL DEFAULT 'manual', context_type TEXT NOT NULL DEFAULT '', input_json TEXT NOT NULL DEFAULT '{}', output_json TEXT NOT NULL DEFAULT '{}', feedback_text TEXT NOT NULL DEFAULT '', rating INTEGER, metadata_json TEXT NOT NULL DEFAULT '{}', created_by TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL)",
+            "CREATE INDEX IF NOT EXISTS idx_ai_training_feedback_created ON ai_training_feedback(created_at DESC)",
+    """
+    CREATE TABLE IF NOT EXISTS assortment_plans (
+        id TEXT PRIMARY KEY,
+        marketplace TEXT NOT NULL,
+        max_items INTEGER NOT NULL DEFAULT 2000,
+        selected_count INTEGER NOT NULL DEFAULT 0,
+        plan_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_assortment_marketplace_created ON assortment_plans(marketplace, created_at DESC)",
+    """
+    CREATE TABLE IF NOT EXISTS ai_training_feedback (
+        id TEXT PRIMARY KEY,
+        source TEXT NOT NULL DEFAULT 'manual',
+        context_type TEXT NOT NULL DEFAULT '',
+        input_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+        output_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+        feedback_text TEXT NOT NULL DEFAULT '',
+        rating INTEGER,
+        metadata_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+        created_by TEXT NOT NULL DEFAULT '',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_ai_training_feedback_created ON ai_training_feedback(created_at DESC)",
+                """CREATE TABLE IF NOT EXISTS gateway_settings (key TEXT PRIMARY KEY, value_json JSONB NOT NULL DEFAULT '{}'::jsonb, is_secret BOOLEAN NOT NULL DEFAULT FALSE, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())""",
             ]
             for stmt in compat:
                 try:
@@ -3086,6 +3137,43 @@ async def init_db() -> None:
             "CREATE INDEX IF NOT EXISTS idx_product_variants_parent ON product_variants(parent_sku)",
             "CREATE INDEX IF NOT EXISTS idx_product_attributes_product ON product_attributes(product_sku)",
             "CREATE INDEX IF NOT EXISTS idx_product_media_product ON product_media(product_sku, media_type)",
+            "CREATE TABLE IF NOT EXISTS ai_usage_logs (id TEXT PRIMARY KEY, module TEXT NOT NULL DEFAULT '', combo_used TEXT NOT NULL DEFAULT '', model TEXT NOT NULL DEFAULT '', latency_ms INTEGER NOT NULL DEFAULT 0, prompt_tokens INTEGER NOT NULL DEFAULT 0, completion_tokens INTEGER NOT NULL DEFAULT 0, estimated_cost REAL NOT NULL DEFAULT 0, privacy_routed INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'success', error_message TEXT NOT NULL DEFAULT '', metadata_json TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL)",
+            "CREATE INDEX IF NOT EXISTS idx_ai_usage_logs_created ON ai_usage_logs(created_at DESC)",
+            "CREATE TABLE IF NOT EXISTS ai_cache (cache_key TEXT PRIMARY KEY, module TEXT NOT NULL DEFAULT '', response_json TEXT NOT NULL DEFAULT '{}', expires_at TEXT NOT NULL, hit_count INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)",
+            "CREATE INDEX IF NOT EXISTS idx_ai_cache_expires ON ai_cache(expires_at)",
+            "CREATE TABLE IF NOT EXISTS batch_jobs (id TEXT PRIMARY KEY, job_type TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', total_items INTEGER NOT NULL DEFAULT 0, processed_items INTEGER NOT NULL DEFAULT 0, success_items INTEGER NOT NULL DEFAULT 0, failed_items INTEGER NOT NULL DEFAULT 0, payload_json TEXT NOT NULL DEFAULT '{}', result_json TEXT NOT NULL DEFAULT '{}', error_message TEXT NOT NULL DEFAULT '', created_by TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, started_at TEXT, finished_at TEXT, updated_at TEXT NOT NULL)",
+            "CREATE INDEX IF NOT EXISTS idx_batch_jobs_status ON batch_jobs(status, created_at DESC)",
+            "CREATE TABLE IF NOT EXISTS assortment_plans (id TEXT PRIMARY KEY, marketplace TEXT NOT NULL, max_items INTEGER NOT NULL DEFAULT 2000, selected_count INTEGER NOT NULL DEFAULT 0, plan_json TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL)",
+            "CREATE INDEX IF NOT EXISTS idx_assortment_marketplace_created ON assortment_plans(marketplace, created_at DESC)",
+            "CREATE TABLE IF NOT EXISTS ai_training_feedback (id TEXT PRIMARY KEY, source TEXT NOT NULL DEFAULT 'manual', context_type TEXT NOT NULL DEFAULT '', input_json TEXT NOT NULL DEFAULT '{}', output_json TEXT NOT NULL DEFAULT '{}', feedback_text TEXT NOT NULL DEFAULT '', rating INTEGER, metadata_json TEXT NOT NULL DEFAULT '{}', created_by TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL)",
+            "CREATE INDEX IF NOT EXISTS idx_ai_training_feedback_created ON ai_training_feedback(created_at DESC)",
+    """
+    CREATE TABLE IF NOT EXISTS assortment_plans (
+        id TEXT PRIMARY KEY,
+        marketplace TEXT NOT NULL,
+        max_items INTEGER NOT NULL DEFAULT 2000,
+        selected_count INTEGER NOT NULL DEFAULT 0,
+        plan_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_assortment_marketplace_created ON assortment_plans(marketplace, created_at DESC)",
+    """
+    CREATE TABLE IF NOT EXISTS ai_training_feedback (
+        id TEXT PRIMARY KEY,
+        source TEXT NOT NULL DEFAULT 'manual',
+        context_type TEXT NOT NULL DEFAULT '',
+        input_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+        output_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+        feedback_text TEXT NOT NULL DEFAULT '',
+        rating INTEGER,
+        metadata_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+        created_by TEXT NOT NULL DEFAULT '',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_ai_training_feedback_created ON ai_training_feedback(created_at DESC)",
+            "CREATE TABLE IF NOT EXISTS gateway_settings (key TEXT PRIMARY KEY, value_json TEXT NOT NULL DEFAULT '{}', is_secret INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL)",
         ]
         for stmt in sqlite_compat:
             try:
@@ -3150,6 +3238,78 @@ async def list_settings(*, reveal_secrets: bool = False) -> dict[str, str]:
         rows = await cursor.fetchall()
         await cursor.close()
         return {str(r["key"]): str(r["value"]) if reveal_secrets or not r["is_secret"] else "********" for r in rows}
+
+
+def _default_ai_settings() -> dict[str, str]:
+    mapping = {
+        "copilot_agent": "omnicore-copilot",
+        "chat_general": "auto/smart",
+        "reasoning_complex": "auto/smart",
+        "coding_rules": "auto/coding",
+        "content_bulk": "omnicore-content-bulk",
+        "seo_text": "auto/cheap",
+        "product_description": "omnicore-content-quality",
+        "translation": "auto/cheap",
+        "classification_extraction": "auto/fast",
+        "trend_analysis": "omnicore-trend-analysis",
+        "catalog_analysis_long_context": "omnicore-longcontext",
+        "vision_image_analysis": "auto/vision",
+        "image_generation": "auto/vision",
+        "photoshoot_product": "omnicore-photoshoot",
+        "photoshoot_with_model_identity": "omnicore-photoshoot-identity",
+        "critical_reliable": "omnicore-critical-fusion",
+        "budget_subscription_first": "omnicore-subscription-thrifty",
+        "realtime_fast": "auto/fast",
+        "offline_quota": "auto/offline",
+    }
+    return {
+        "omniroute_agent_model": "omnicore-copilot",
+        "default_llm_model": "auto/smart",
+        "default_image_model": "auto/vision",
+        "ai_model_copilot": "omnicore-copilot",
+        "ai_model_chat": "auto/smart",
+        "ai_model_coding": "auto/coding",
+        "ai_model_content_bulk": "omnicore-content-bulk",
+        "ai_model_content_quality": "omnicore-content-quality",
+        "ai_model_seo": "auto/cheap",
+        "ai_model_translation": "auto/cheap",
+        "ai_model_classification": "auto/fast",
+        "ai_model_trend": "omnicore-trend-analysis",
+        "ai_model_longcontext": "omnicore-longcontext",
+        "ai_model_vision": "auto/vision",
+        "ai_model_image": "auto/vision",
+        "ai_model_photoshoot": "omnicore-photoshoot",
+        "ai_model_photoshoot_identity": "omnicore-photoshoot-identity",
+        "ai_model_reliable": "omnicore-critical-fusion",
+        "ai_model_budget": "omnicore-subscription-thrifty",
+        "ai_model_cache": "omnicore-cache-optimized",
+        "omniroute_image_model": "omnicore-photoshoot",
+        "ai_fallback_chain": json.dumps(["auto/smart", "auto", "auto/cheap"], ensure_ascii=False),
+        "ai_default_strategy": "lkgp",
+        "ai_task_model_mapping": json.dumps(mapping, ensure_ascii=False),
+        "omniroute_combo_config_path": "config/omniroute/omnicore-auto-combos.json",
+        "omniroute_combo_config_loaded": "true",
+        "ai_cache_enabled": "1",
+        "ai_cache_ttl_seconds": "3600",
+        "ai_budget_daily_usd": "0",
+        "ai_budget_monthly_usd": "0",
+        "ai_cost_input_per_1k": "0",
+        "ai_cost_output_per_1k": "0",
+        "ai_strict_privacy_mode": "0",
+        "omniroute_gateway_default_url": "http://127.0.0.1:20128/v1",
+    }
+
+
+async def ensure_default_settings() -> int:
+    """Seed recommended non-secret default settings without overwriting existing values."""
+    defaults = _default_ai_settings()
+    created = 0
+    for key, value in defaults.items():
+        existing = await get_setting(key)
+        if existing is None or str(existing).strip() == "":
+            await set_setting(key, str(value), is_secret=False)
+            created += 1
+    return created
 
 
 async def write_log(level: str, event: str, message: str, context: Mapping[str, Any] | None = None) -> None:
@@ -3496,19 +3656,163 @@ def _decode_product_row(row: Any) -> dict[str, Any]:
     return d
 
 
-async def list_products(limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
-    """Return products with bounded pagination."""
+async def list_products(
+    limit: int = 100,
+    offset: int = 0,
+    q: str | None = None,
+    status: str | None = None,
+    category: str | None = None,
+    brand: str | None = None,
+    has_image: bool | None = None,
+    in_stock: bool | None = None,
+    **_kwargs: Any,
+) -> list[dict[str, Any]]:
+    """Return products with bounded pagination and optional search/filtering."""
+    if _kwargs:
+        # tolerate legacy/extra kwargs
+        q = q if q is not None else _kwargs.get("q")
+        status = status if status is not None else _kwargs.get("status")
+        category = category if category is not None else _kwargs.get("category")
+        brand = brand if brand is not None else _kwargs.get("brand")
+        has_image = has_image if has_image is not None else _kwargs.get("has_image")
+        in_stock = in_stock if in_stock is not None else _kwargs.get("in_stock")
     safe_limit, safe_offset = min(max(limit, 1), 500), max(offset, 0)
+    where: list[str] = []
+    params_pg: list[Any] = []
+    params_sq: list[Any] = []
+
+    def add(cond_pg: str, cond_sq: str, *vals: Any):
+        where.append(cond_pg)
+        # store tuple of (sq_cond, vals)
+        params_pg.extend(vals)
+        params_sq.extend(vals)
+
+    # will build separately for clarity
+    conds_pg=[]; conds_sq=[]; args_pg=[]; args_sq=[]
+    if status:
+        args_pg.append(status); args_sq.append(status)
+        conds_pg.append(f"status = ${len(args_pg)}"); conds_sq.append("status = ?")
+    if category:
+        args_pg.append(f"%{category}%"); args_sq.append(f"%{category}%")
+        conds_pg.append(f"category ILIKE ${len(args_pg)}" if uses_postgres() else f"category LIKE ${len(args_pg)}")
+        conds_sq.append("LOWER(category) LIKE LOWER(?)")
+    if brand:
+        args_pg.append(f"%{brand}%"); args_sq.append(f"%{brand}%")
+        conds_pg.append(f"brand ILIKE ${len(args_pg)}" if uses_postgres() else f"brand LIKE ${len(args_pg)}")
+        conds_sq.append("LOWER(brand) LIKE LOWER(?)")
+    if has_image is True:
+        conds_pg.append("COALESCE(main_image_url,'') <> ''"); conds_sq.append("COALESCE(main_image_url,'') <> ''")
+    elif has_image is False:
+        conds_pg.append("COALESCE(main_image_url,'') = ''"); conds_sq.append("COALESCE(main_image_url,'') = ''")
+    if in_stock is True:
+        conds_pg.append("COALESCE(stock_quantity, stock, 0) > 0"); conds_sq.append("COALESCE(stock_quantity, stock, 0) > 0")
+    elif in_stock is False:
+        conds_pg.append("COALESCE(stock_quantity, stock, 0) <= 0"); conds_sq.append("COALESCE(stock_quantity, stock, 0) <= 0")
+    if q and str(q).strip():
+        term = f"%{str(q).strip()}%"
+        # search core fields; variants/attributes via EXISTS for richer catalog search
+        if uses_postgres():
+            base_idx = len(args_pg) + 1
+            args_pg.extend([term]*8)
+            conds_pg.append(
+                f"(sku ILIKE ${base_idx} OR title ILIKE ${base_idx+1} OR COALESCE(ai_title,'') ILIKE ${base_idx+2} OR COALESCE(brand,'') ILIKE ${base_idx+3} OR COALESCE(category,'') ILIKE ${base_idx+4} OR COALESCE(ean,'') ILIKE ${base_idx+5} OR COALESCE(external_matterhorn_id,'') ILIKE ${base_idx+6} OR COALESCE(raw_description,'') ILIKE ${base_idx+7}"
+                f" OR EXISTS (SELECT 1 FROM product_variants v WHERE (v.parent_sku=products.sku OR v.sku=products.sku) AND (v.sku ILIKE ${base_idx} OR COALESCE(v.ean,'') ILIKE ${base_idx+5} OR COALESCE(v.title,'') ILIKE ${base_idx+1}))"
+                f" OR EXISTS (SELECT 1 FROM product_attributes a WHERE a.product_sku=products.sku AND (a.name ILIKE ${base_idx+1} OR a.value ILIKE ${base_idx+7}))"
+                f")"
+            )
+        args_sq.extend([term]*8)
+        conds_sq.append(
+            "(LOWER(sku) LIKE LOWER(?) OR LOWER(title) LIKE LOWER(?) OR LOWER(COALESCE(ai_title,'')) LIKE LOWER(?) OR LOWER(COALESCE(brand,'')) LIKE LOWER(?) OR LOWER(COALESCE(category,'')) LIKE LOWER(?) OR LOWER(COALESCE(ean,'')) LIKE LOWER(?) OR LOWER(COALESCE(external_matterhorn_id,'')) LIKE LOWER(?) OR LOWER(COALESCE(raw_description,'')) LIKE LOWER(?)"
+            " OR EXISTS (SELECT 1 FROM product_variants v WHERE (v.parent_sku=products.sku OR v.sku=products.sku) AND (LOWER(v.sku) LIKE LOWER(?) OR LOWER(COALESCE(v.ean,'')) LIKE LOWER(?) OR LOWER(COALESCE(v.title,'')) LIKE LOWER(?)))"
+            " OR EXISTS (SELECT 1 FROM product_attributes a WHERE a.product_sku=products.sku AND (LOWER(a.name) LIKE LOWER(?) OR LOWER(a.value) LIKE LOWER(?)))"
+            ")"
+        )
+        # extra terms for sqlite exists params (re-use same term)
+        args_sq.extend([term, term, term, term, term])
+
+    where_pg = (" WHERE " + " AND ".join(conds_pg)) if conds_pg else ""
+    where_sq = (" WHERE " + " AND ".join(conds_sq)) if conds_sq else ""
+
     if uses_postgres():
         pool = await get_pg_pool()
+        qsql = (
+            "SELECT p.*, "
+            "(SELECT COUNT(*) FROM product_variants v WHERE v.parent_sku=p.sku) AS variant_count, "
+            "(SELECT COUNT(*) FROM product_attributes a WHERE a.product_sku=p.sku) AS attribute_count, "
+            "(SELECT COUNT(*) FROM product_media m WHERE m.product_sku=p.sku) AS media_count "
+            f"FROM products p{where_pg.replace('products.sku','p.sku').replace('products.brand','p.brand') if where_pg else ''} "
+            f"ORDER BY p.updated_at DESC, p.sku ASC LIMIT ${len(args_pg)+1} OFFSET ${len(args_pg)+2}"
+        )
         async with pool.acquire() as conn:
-            rows = await conn.fetch("SELECT * FROM products ORDER BY updated_at DESC, sku ASC LIMIT $1 OFFSET $2", safe_limit, safe_offset)
+            rows = await conn.fetch(qsql, *args_pg, safe_limit, safe_offset)
         return [_decode_product_row(row) for row in rows]
+    qsql = (
+        "SELECT p.*, "
+        "(SELECT COUNT(*) FROM product_variants v WHERE v.parent_sku=p.sku) AS variant_count, "
+        "(SELECT COUNT(*) FROM product_attributes a WHERE a.product_sku=p.sku) AS attribute_count, "
+        "(SELECT COUNT(*) FROM product_media m WHERE m.product_sku=p.sku) AS media_count "
+        f"FROM products p{where_sq.replace('products.sku','p.sku')} "
+        "ORDER BY p.updated_at DESC, p.sku ASC LIMIT ? OFFSET ?"
+    )
     async with get_connection() as db:
-        cursor = await db.execute("SELECT * FROM products ORDER BY updated_at DESC, sku ASC LIMIT ? OFFSET ?", (safe_limit, safe_offset))
+        cursor = await db.execute(qsql, (*args_sq, safe_limit, safe_offset))
         rows = await cursor.fetchall()
         await cursor.close()
         return [_decode_product_row(row) for row in rows]
+
+
+async def count_products(q: str | None = None, status: str | None = None, category: str | None = None, brand: str | None = None, has_image: bool | None = None, in_stock: bool | None = None) -> int:
+    """Return total number of products matching optional filters/search."""
+    conds_pg=[]; conds_sq=[]; args_pg=[]; args_sq=[]
+    if status:
+        args_pg.append(status); args_sq.append(status)
+        conds_pg.append(f"status = ${len(args_pg)}"); conds_sq.append("status = ?")
+    if category:
+        args_pg.append(f"%{category}%"); args_sq.append(f"%{category}%")
+        conds_pg.append(f"category ILIKE ${len(args_pg)}" if uses_postgres() else f"category LIKE ${len(args_pg)}")
+        conds_sq.append("LOWER(category) LIKE LOWER(?)")
+    if brand:
+        args_pg.append(f"%{brand}%"); args_sq.append(f"%{brand}%")
+        conds_pg.append(f"brand ILIKE ${len(args_pg)}" if uses_postgres() else f"brand LIKE ${len(args_pg)}")
+        conds_sq.append("LOWER(brand) LIKE LOWER(?)")
+    if has_image is True:
+        conds_pg.append("COALESCE(main_image_url,'') <> ''"); conds_sq.append("COALESCE(main_image_url,'') <> ''")
+    elif has_image is False:
+        conds_pg.append("COALESCE(main_image_url,'') = ''"); conds_sq.append("COALESCE(main_image_url,'') = ''")
+    if in_stock is True:
+        conds_pg.append("COALESCE(stock_quantity, stock, 0) > 0"); conds_sq.append("COALESCE(stock_quantity, stock, 0) > 0")
+    elif in_stock is False:
+        conds_pg.append("COALESCE(stock_quantity, stock, 0) <= 0"); conds_sq.append("COALESCE(stock_quantity, stock, 0) <= 0")
+    if q and str(q).strip():
+        term = f"%{str(q).strip()}%"
+        if uses_postgres():
+            base_idx = len(args_pg) + 1
+            args_pg.extend([term]*8)
+            conds_pg.append(
+                f"(sku ILIKE ${base_idx} OR title ILIKE ${base_idx+1} OR COALESCE(ai_title,'') ILIKE ${base_idx+2} OR COALESCE(brand,'') ILIKE ${base_idx+3} OR COALESCE(category,'') ILIKE ${base_idx+4} OR COALESCE(ean,'') ILIKE ${base_idx+5} OR COALESCE(external_matterhorn_id,'') ILIKE ${base_idx+6} OR COALESCE(raw_description,'') ILIKE ${base_idx+7}"
+                f" OR EXISTS (SELECT 1 FROM product_variants v WHERE (v.parent_sku=products.sku OR v.sku=products.sku) AND (v.sku ILIKE ${base_idx} OR COALESCE(v.ean,'') ILIKE ${base_idx+5} OR COALESCE(v.title,'') ILIKE ${base_idx+1}))"
+                f" OR EXISTS (SELECT 1 FROM product_attributes a WHERE a.product_sku=products.sku AND (a.name ILIKE ${base_idx+1} OR a.value ILIKE ${base_idx+7}))"
+                f")"
+            )
+        args_sq.extend([term]*8)
+        conds_sq.append(
+            "(LOWER(sku) LIKE LOWER(?) OR LOWER(title) LIKE LOWER(?) OR LOWER(COALESCE(ai_title,'')) LIKE LOWER(?) OR LOWER(COALESCE(brand,'')) LIKE LOWER(?) OR LOWER(COALESCE(category,'')) LIKE LOWER(?) OR LOWER(COALESCE(ean,'')) LIKE LOWER(?) OR LOWER(COALESCE(external_matterhorn_id,'')) LIKE LOWER(?) OR LOWER(COALESCE(raw_description,'')) LIKE LOWER(?)"
+            " OR EXISTS (SELECT 1 FROM product_variants v WHERE (v.parent_sku=products.sku OR v.sku=products.sku) AND (LOWER(v.sku) LIKE LOWER(?) OR LOWER(COALESCE(v.ean,'')) LIKE LOWER(?) OR LOWER(COALESCE(v.title,'')) LIKE LOWER(?)))"
+            " OR EXISTS (SELECT 1 FROM product_attributes a WHERE a.product_sku=products.sku AND (LOWER(a.name) LIKE LOWER(?) OR LOWER(a.value) LIKE LOWER(?)))"
+            ")"
+        )
+        args_sq.extend([term, term, term, term, term])
+    where_pg = (" WHERE " + " AND ".join(conds_pg)) if conds_pg else ""
+    where_sq = (" WHERE " + " AND ".join(conds_sq)) if conds_sq else ""
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            val = await conn.fetchval(f"SELECT COUNT(*) FROM products{where_pg}", *args_pg)
+        return int(val or 0)
+    async with get_connection() as db:
+        cur = await db.execute(f"SELECT COUNT(*) FROM products{where_sq}", tuple(args_sq))
+        row = await cur.fetchone(); await cur.close()
+        return int((row[0] if row else 0) or 0)
 
 
 async def fetch_product(sku: str) -> dict[str, Any] | None:
@@ -3580,17 +3884,44 @@ async def fetch_product(sku: str) -> dict[str, Any] | None:
 
 
 async def list_bundles() -> list[dict[str, Any]]:
-    """Return all bundle definitions."""
+    """Return all bundle definitions enriched with bundle product photo/stock/price."""
     if uses_postgres():
         pool = await get_pg_pool()
         async with pool.acquire() as conn:
-            rows = await conn.fetch("SELECT * FROM bundles ORDER BY bundle_sku")
-        return [dict(row) for row in rows]
-    async with get_connection() as db:
-        cursor = await db.execute("SELECT * FROM bundles ORDER BY bundle_sku")
-        rows = await cursor.fetchall()
-        await cursor.close()
-        return [dict(row) for row in rows]
+            rows = await conn.fetch(
+                """SELECT b.*, p.main_image_url, p.gallery_json, p.stock AS bundle_stock, p.status,
+                          p.sale_price, p.supplier_price, p.ai_title, p.category
+                   FROM bundles b LEFT JOIN products p ON p.sku = b.bundle_sku
+                   ORDER BY b.bundle_sku"""
+            )
+        out = [dict(row) for row in rows]
+    else:
+        async with get_connection() as db:
+            cursor = await db.execute(
+                """SELECT b.*, p.main_image_url, p.gallery_json, p.stock AS bundle_stock, p.status,
+                          p.sale_price, p.supplier_price, p.ai_title, p.category
+                   FROM bundles b LEFT JOIN products p ON p.sku = b.bundle_sku
+                   ORDER BY b.bundle_sku"""
+            )
+            rows = await cursor.fetchall()
+            await cursor.close()
+        out = [dict(row) for row in rows]
+    for r in out:
+        for k in ("component_skus_json", "gallery_json"):
+            if isinstance(r.get(k), str):
+                try:
+                    r[k] = json.loads(r[k])
+                except Exception:
+                    pass
+        # derive display image
+        img = (r.get("main_image_url") or "").strip()
+        if not img:
+            g = r.get("gallery_json") or []
+            if isinstance(g, list) and g:
+                first = g[0]
+                img = (first if isinstance(first, str) else (first or {}).get("url") or (first or {}).get("src") or "").strip() if isinstance(first, dict) else str(first or "").strip()
+        r["display_image_url"] = img or ""
+    return out
 
 
 async def upsert_bundle(bundle_sku: str, title: str, component_skus: Sequence[str]) -> None:
@@ -6732,6 +7063,125 @@ async def replace_product_attributes(product_sku: str, attributes: list[dict[str
     return count
 
 
+
+async def append_product_media(product_sku: str, media: list[dict[str, Any]], *, source: str = "ai_generated") -> int:
+    """Append media entries to a product without removing originals/Matterhorn media.
+    Also updates gallery_json/main_image_url additively (keeps existing main image)."""
+    if not media:
+        return 0
+    now = utc_now()
+    # get current position offset and existing urls
+    existing_urls: set[str] = set()
+    start_pos = 0
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("SELECT url, position FROM product_media WHERE product_sku=$1", product_sku)
+            for r in rows:
+                u = str(r.get("url") or "").strip()
+                if u: existing_urls.add(u)
+                try: start_pos = max(start_pos, int(r.get("position") or 0) + 1)
+                except Exception: pass
+    else:
+        async with get_connection() as db:
+            cur = await db.execute("SELECT url, position FROM product_media WHERE product_sku=?", (product_sku,))
+            rows = await cur.fetchall(); await cur.close()
+            for r in rows:
+                d = dict(r)
+                u = str(d.get("url") or "").strip()
+                if u: existing_urls.add(u)
+                try: start_pos = max(start_pos, int(d.get("position") or 0) + 1)
+                except Exception: pass
+
+    added = 0
+    to_insert = []
+    for i, m in enumerate(media or []):
+        url = str((m or {}).get("url") or (m or {}).get("src") or "").strip()
+        if not url or url in existing_urls:
+            continue
+        existing_urls.add(url)
+        mid = str((m or {}).get("id") or f"media-{product_sku}-{uuid.uuid4().hex[:10]}")
+        pos = _coerce_int((m or {}).get("position"), start_pos + added)
+        mtype = str((m or {}).get("media_type") or (m or {}).get("type") or "image")
+        title = str((m or {}).get("title") or "")
+        alt = str((m or {}).get("alt_text") or (m or {}).get("alt") or "")
+        meta = (m or {}).get("metadata_json") or (m or {}).get("metadata") or {}
+        if isinstance(meta, dict):
+            meta = {**meta, "append_source": source}
+        else:
+            meta = {"append_source": source}
+        to_insert.append((mid, product_sku, str((m or {}).get("variant_sku") or ""), mtype, url, pos, title, alt, _json_dump(meta, {})))
+        added += 1
+
+    if not to_insert:
+        return 0
+
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            for row in to_insert:
+                await conn.execute(
+                    """INSERT INTO product_media(id,product_sku,variant_sku,media_type,url,position,title,alt_text,metadata_json,created_at,updated_at)
+                       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,NOW(),NOW())
+                       ON CONFLICT (id) DO NOTHING""",
+                    *row)
+            # update gallery_json additively, keep main_image_url if set
+            prod = await conn.fetchrow("SELECT main_image_url, gallery_json FROM products WHERE sku=$1", product_sku)
+            if prod:
+                main = str(prod.get("main_image_url") or "").strip()
+                gj = prod.get("gallery_json") or []
+                if isinstance(gj, str):
+                    try: gj = json.loads(gj)
+                    except Exception: gj = []
+                if not isinstance(gj, list): gj = []
+                existing_g = set()
+                norm_g = []
+                for g in gj:
+                    u = g if isinstance(g, str) else (g or {}).get("url") or (g or {}).get("src") if isinstance(g, dict) else str(g or "")
+                    u = str(u or "").strip()
+                    if u and u not in existing_g:
+                        existing_g.add(u); norm_g.append(u)
+                for _,_,_,_,url,*_rest in to_insert:
+                    if url not in existing_g:
+                        existing_g.add(url); norm_g.append(url)
+                if not main and norm_g:
+                    main = norm_g[0]
+                await conn.execute("UPDATE products SET main_image_url=$1, gallery_json=$2::jsonb, updated_at=NOW() WHERE sku=$3", main, json.dumps(norm_g, ensure_ascii=False), product_sku)
+        return added
+
+    async with get_connection() as db:
+        for row in to_insert:
+            await db.execute(
+                """INSERT OR IGNORE INTO product_media(id,product_sku,variant_sku,media_type,url,position,title,alt_text,metadata_json,created_at,updated_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                (row[0], row[1], row[2], row[3], row[4], row[5], row[6], row[7], row[8], now, now))
+        cur = await db.execute("SELECT main_image_url, gallery_json FROM products WHERE sku=?", (product_sku,))
+        prod = await cur.fetchone(); await cur.close()
+        if prod:
+            d = dict(prod)
+            main = str(d.get("main_image_url") or "").strip()
+            gj = d.get("gallery_json") or []
+            if isinstance(gj, str):
+                try: gj = json.loads(gj)
+                except Exception: gj = []
+            if not isinstance(gj, list): gj = []
+            existing_g = set(); norm_g = []
+            for g in gj:
+                u = g if isinstance(g, str) else (g or {}).get("url") or (g or {}).get("src") if isinstance(g, dict) else str(g or "")
+                u = str(u or "").strip()
+                if u and u not in existing_g:
+                    existing_g.add(u); norm_g.append(u)
+            for row in to_insert:
+                url = row[4]
+                if url not in existing_g:
+                    existing_g.add(url); norm_g.append(url)
+            if not main and norm_g:
+                main = norm_g[0]
+            await db.execute("UPDATE products SET main_image_url=?, gallery_json=?, updated_at=? WHERE sku=?", (main, json.dumps(norm_g, ensure_ascii=False), now, product_sku))
+        await db.commit()
+    return added
+
+
 async def replace_product_media(product_sku: str, media: list[dict[str, Any]]) -> int:
     now = utc_now(); count=0
     if uses_postgres():
@@ -6818,3 +7268,432 @@ async def upsert_product_aggregate(data: dict[str, Any], *, sync_rules: dict[str
     mcount = await replace_product_media(sku, media) if isinstance(media, list) else 0
     return {"sku": sku, "changed": bool(changed), "categories_linked": len(cat_ids), "variants_linked": vcount, "attributes_saved": acount, "media_saved": mcount}
 
+
+# ════════════════════════════════════════════════════════════════════════════
+# AI Orchestration helpers: usage logs, cache, budgets, batch jobs, gateway
+# ════════════════════════════════════════════════════════════════════════════
+
+async def ai_usage_log_insert(record: dict[str, Any]) -> None:
+    """Insert FinOps/telemetry usage log (ai_usage_logs). Best-effort, non-fatal."""
+    try:
+        rid = str(record.get("id") or str(__import__('uuid').uuid4()))
+        module = str(record.get("module") or "")
+        combo = str(record.get("combo_used") or "")
+        model = str(record.get("model") or "")
+        latency = int(record.get("latency_ms") or 0)
+        pt = int(record.get("prompt_tokens") or 0)
+        ct = int(record.get("completion_tokens") or 0)
+        cost = float(record.get("estimated_cost") or 0)
+        privacy = bool(record.get("privacy_routed", False))
+        status = str(record.get("status") or "success")
+        err = str(record.get("error_message") or "")
+        meta = record.get("metadata_json") or {}
+        meta_s = meta if isinstance(meta, str) else json.dumps(meta, ensure_ascii=False, default=str)
+        created = record.get("created_at") or utc_now()
+        if uses_postgres():
+            pool = await get_pg_pool()
+            async with pool.acquire() as conn:
+                await conn.execute(
+                    """INSERT INTO ai_usage_logs(id,module,combo_used,model,latency_ms,prompt_tokens,completion_tokens,estimated_cost,privacy_routed,status,error_message,metadata_json,created_at)
+                       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13::timestamptz)
+                       ON CONFLICT (id) DO NOTHING""",
+                    rid, module, combo, model, latency, pt, ct, cost, privacy, status, err, meta_s, _pg_ts(created),
+                )
+                # mirror into legacy ai_usage_records for compatibility
+                await conn.execute(
+                    """INSERT INTO ai_usage_records(provider_id,model_id,workflow_id,request_type,tokens_input,tokens_output,images_generated,videos_generated,cost_usd,latency_ms,status,error_message,created_at)
+                       VALUES ($1,$2,$3,$4,$5,$6,0,0,$7,$8,$9,$10,$11::timestamptz)""",
+                    combo or "orchestrator", model, module, "chat", pt, ct, cost, latency, status, err, _pg_ts(created),
+                )
+            return
+        async with get_connection() as db:
+            await db.execute(
+                """INSERT OR IGNORE INTO ai_usage_logs(id,module,combo_used,model,latency_ms,prompt_tokens,completion_tokens,estimated_cost,privacy_routed,status,error_message,metadata_json,created_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (rid, module, combo, model, latency, pt, ct, cost, 1 if privacy else 0, status, err, meta_s, created),
+            )
+            await db.execute(
+                """INSERT INTO ai_usage_records(provider_id,model_id,workflow_id,request_type,tokens_input,tokens_output,images_generated,videos_generated,cost_usd,latency_ms,status,error_message,created_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (combo or "orchestrator", model, module, "chat", pt, ct, 0, 0, cost, latency, status, err, created),
+            )
+            await db.commit()
+    except Exception:
+        logger.exception("ai_usage_log_insert failed")
+
+
+async def ai_usage_logs_list(limit: int = 200, module: str | None = None) -> list[dict[str, Any]]:
+    limit = min(max(limit, 1), 1000)
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            if module:
+                rows = await conn.fetch("SELECT * FROM ai_usage_logs WHERE module=$1 ORDER BY created_at DESC LIMIT $2", module, limit)
+            else:
+                rows = await conn.fetch("SELECT * FROM ai_usage_logs ORDER BY created_at DESC LIMIT $1", limit)
+        out = [dict(r) for r in rows]
+    else:
+        async with get_connection() as db:
+            if module:
+                cur = await db.execute("SELECT * FROM ai_usage_logs WHERE module=? ORDER BY created_at DESC LIMIT ?", (module, limit))
+            else:
+                cur = await db.execute("SELECT * FROM ai_usage_logs ORDER BY created_at DESC LIMIT ?", (limit,))
+            rows = await cur.fetchall(); await cur.close()
+            out = [dict(r) for r in rows]
+    for r in out:
+        if isinstance(r.get("metadata_json"), str):
+            try: r["metadata_json"] = json.loads(r["metadata_json"])
+            except Exception: pass
+    return out
+
+
+async def ai_usage_summary() -> dict[str, Any]:
+    """Aggregate telemetry for UI/API."""
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """SELECT COUNT(*)::int AS total_requests,
+                          COALESCE(SUM(estimated_cost),0) AS total_cost,
+                          COALESCE(AVG(latency_ms),0) AS avg_latency_ms,
+                          COALESCE(SUM(CASE WHEN status IN ('success','cache_hit') THEN 1 ELSE 0 END),0)::int AS success_count,
+                          COALESCE(SUM(CASE WHEN privacy_routed THEN 1 ELSE 0 END),0)::int AS privacy_routed_count,
+                          COALESCE(SUM(CASE WHEN status='cache_hit' THEN 1 ELSE 0 END),0)::int AS cache_hits
+                   FROM ai_usage_logs""")
+            by_combo = await conn.fetch("SELECT combo_used, COUNT(*)::int AS n, COALESCE(SUM(estimated_cost),0) AS cost, COALESCE(AVG(latency_ms),0) AS avg_ms FROM ai_usage_logs GROUP BY combo_used ORDER BY n DESC LIMIT 20")
+            by_module = await conn.fetch("SELECT module, COUNT(*)::int AS n, COALESCE(SUM(estimated_cost),0) AS cost FROM ai_usage_logs GROUP BY module ORDER BY n DESC LIMIT 20")
+        base = dict(row) if row else {}
+        base["by_combo"] = [dict(r) for r in by_combo]
+        base["by_module"] = [dict(r) for r in by_module]
+        return base
+    async with get_connection() as db:
+        cur = await db.execute("SELECT COUNT(*) AS total_requests, COALESCE(SUM(estimated_cost),0) AS total_cost, COALESCE(AVG(latency_ms),0) AS avg_latency_ms, COALESCE(SUM(CASE WHEN status IN ('success','cache_hit') THEN 1 ELSE 0 END),0) AS success_count, COALESCE(SUM(CASE WHEN privacy_routed=1 THEN 1 ELSE 0 END),0) AS privacy_routed_count, COALESCE(SUM(CASE WHEN status='cache_hit' THEN 1 ELSE 0 END),0) AS cache_hits FROM ai_usage_logs")
+        row = await cur.fetchone(); await cur.close()
+        cur = await db.execute("SELECT combo_used, COUNT(*) AS n, COALESCE(SUM(estimated_cost),0) AS cost, COALESCE(AVG(latency_ms),0) AS avg_ms FROM ai_usage_logs GROUP BY combo_used ORDER BY n DESC LIMIT 20")
+        by_combo = [dict(r) for r in await cur.fetchall()]; await cur.close()
+        cur = await db.execute("SELECT module, COUNT(*) AS n, COALESCE(SUM(estimated_cost),0) AS cost FROM ai_usage_logs GROUP BY module ORDER BY n DESC LIMIT 20")
+        by_module = [dict(r) for r in await cur.fetchall()]; await cur.close()
+    base = dict(row) if row else {}
+    base["by_combo"] = by_combo; base["by_module"] = by_module
+    return base
+
+
+async def ai_cache_get(cache_key: str) -> dict[str, Any] | None:
+    now = utc_now()
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT response_json, expires_at FROM ai_cache WHERE cache_key=$1", cache_key)
+            if not row:
+                return None
+            exp = row.get("expires_at")
+            if exp and exp < __import__('datetime').datetime.now(__import__('datetime').timezone.utc):
+                await conn.execute("DELETE FROM ai_cache WHERE cache_key=$1", cache_key)
+                return None
+            await conn.execute("UPDATE ai_cache SET hit_count = hit_count + 1, updated_at = NOW() WHERE cache_key=$1", cache_key)
+        val = row.get("response_json")
+        if isinstance(val, str):
+            try: return json.loads(val)
+            except Exception: return {"content": val}
+        return dict(val) if isinstance(val, dict) else val
+    async with get_connection() as db:
+        cur = await db.execute("SELECT response_json, expires_at FROM ai_cache WHERE cache_key=?", (cache_key,))
+        row = await cur.fetchone(); await cur.close()
+        if not row:
+            return None
+        if str(row["expires_at"]) < now:
+            await db.execute("DELETE FROM ai_cache WHERE cache_key=?", (cache_key,)); await db.commit()
+            return None
+        await db.execute("UPDATE ai_cache SET hit_count = hit_count + 1, updated_at=? WHERE cache_key=?", (now, cache_key)); await db.commit()
+    try:
+        return json.loads(row["response_json"]) if isinstance(row["response_json"], str) else row["response_json"]
+    except Exception:
+        return {"content": row["response_json"]}
+
+
+async def ai_cache_set(cache_key: str, response: Any, *, ttl_seconds: int = 3600, module: str = "") -> None:
+    now_dt = __import__('datetime').datetime.now(__import__('datetime').timezone.utc)
+    exp_dt = now_dt + __import__('datetime').timedelta(seconds=max(int(ttl_seconds), 1))
+    exp = exp_dt.isoformat(timespec="seconds")
+    now = utc_now()
+    payload = response if isinstance(response, str) else json.dumps(response, ensure_ascii=False, default=str)
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO ai_cache(cache_key,module,response_json,expires_at,hit_count,created_at,updated_at)
+                   VALUES ($1,$2,$3::jsonb,$4::timestamptz,0,NOW(),NOW())
+                   ON CONFLICT(cache_key) DO UPDATE SET module=EXCLUDED.module,response_json=EXCLUDED.response_json,expires_at=EXCLUDED.expires_at,updated_at=NOW()""",
+                cache_key, module, payload, exp_dt,
+            )
+        return
+    async with get_connection() as db:
+        await db.execute(
+            """INSERT INTO ai_cache(cache_key,module,response_json,expires_at,hit_count,created_at,updated_at)
+               VALUES (?,?,?,?,0,?,?)
+               ON CONFLICT(cache_key) DO UPDATE SET module=excluded.module,response_json=excluded.response_json,expires_at=excluded.expires_at,updated_at=excluded.updated_at""",
+            (cache_key, module, payload, exp, now, now),
+        )
+        await db.commit()
+
+
+async def ai_budget_spend_today_month() -> dict[str, float]:
+    """Return {'daily': x, 'monthly': y} estimated spend from ai_usage_logs."""
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """SELECT
+                     COALESCE(SUM(CASE WHEN created_at >= date_trunc('day', NOW()) THEN estimated_cost ELSE 0 END),0) AS daily,
+                     COALESCE(SUM(CASE WHEN created_at >= date_trunc('month', NOW()) THEN estimated_cost ELSE 0 END),0) AS monthly
+                   FROM ai_usage_logs""")
+        return {"daily": float(row["daily"] or 0), "monthly": float(row["monthly"] or 0)} if row else {"daily": 0.0, "monthly": 0.0}
+    async with get_connection() as db:
+        cur = await db.execute("SELECT COALESCE(SUM(CASE WHEN substr(created_at,1,10)=substr(datetime('now'),1,10) THEN estimated_cost ELSE 0 END),0) AS daily, COALESCE(SUM(CASE WHEN substr(created_at,1,7)=substr(datetime('now'),1,7) THEN estimated_cost ELSE 0 END),0) AS monthly FROM ai_usage_logs")
+        row = await cur.fetchone(); await cur.close()
+    return {"daily": float(row["daily"] or 0), "monthly": float(row["monthly"] or 0)} if row else {"daily": 0.0, "monthly": 0.0}
+
+
+# ── Batch jobs (Matterhorn enrichment pipeline state/progress) ──────────────
+
+async def batch_job_create(*, job_type: str, total_items: int = 0, payload: dict[str, Any] | None = None, created_by: str = "") -> dict[str, Any]:
+    jid = str(__import__('uuid').uuid4())
+    now = utc_now(); payload_s = json.dumps(payload or {}, ensure_ascii=False, default=str)
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO batch_jobs(id,job_type,status,total_items,processed_items,success_items,failed_items,payload_json,result_json,error_message,created_by,created_at,updated_at)
+                   VALUES ($1,$2,'pending',$3,0,0,0,$4::jsonb,'{}'::jsonb,'',$5,NOW(),NOW())""",
+                jid, job_type, int(total_items), payload_s, created_by)
+            row = await conn.fetchrow("SELECT * FROM batch_jobs WHERE id=$1", jid)
+        return dict(row) if row else {"id": jid}
+    async with get_connection() as db:
+        await db.execute(
+            """INSERT INTO batch_jobs(id,job_type,status,total_items,processed_items,success_items,failed_items,payload_json,result_json,error_message,created_by,created_at,updated_at)
+               VALUES (?,?, 'pending', ?,0,0,0,?,'{}','',?,?,?)""",
+            (jid, job_type, int(total_items), payload_s, created_by, now, now))
+        await db.commit(); cur = await db.execute("SELECT * FROM batch_jobs WHERE id=?", (jid,)); row = await cur.fetchone(); await cur.close()
+        return dict(row) if row else {"id": jid}
+
+
+async def batch_job_update(job_id: str, **fields: Any) -> None:
+    if not fields: return
+    if uses_postgres():
+        pool = await get_pg_pool(); sets=[]; vals=[]
+        for k,v in fields.items():
+            if k.endswith('_json') and not isinstance(v, str): v = json.dumps(v, ensure_ascii=False, default=str)
+            if k in ('payload_json','result_json'):
+                sets.append(f"{k}=${len(vals)+1}::jsonb")
+            elif k in ('started_at','finished_at','created_at','updated_at'):
+                sets.append(f"{k}=${len(vals)+1}::timestamptz"); v=_pg_ts(v) if isinstance(v,str) else v
+            else:
+                sets.append(f"{k}=${len(vals)+1}")
+            vals.append(v)
+        vals.append(job_id)
+        async with pool.acquire() as conn:
+            await conn.execute(f"UPDATE batch_jobs SET {', '.join(sets)}, updated_at=NOW() WHERE id=${len(vals)}", *vals)
+        return
+    async with get_connection() as db:
+        sets=[]; vals=[]
+        for k,v in fields.items():
+            if isinstance(v,(dict,list)): v=json.dumps(v, ensure_ascii=False, default=str)
+            sets.append(f"{k}=?"); vals.append(v)
+        vals.extend([utc_now(), job_id])
+        await db.execute(f"UPDATE batch_jobs SET {', '.join(sets)}, updated_at=? WHERE id=?", tuple(vals)); await db.commit()
+
+
+async def batch_job_get(job_id: str) -> dict[str, Any] | None:
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT * FROM batch_jobs WHERE id=$1", job_id)
+        return dict(row) if row else None
+    async with get_connection() as db:
+        cur = await db.execute("SELECT * FROM batch_jobs WHERE id=?", (job_id,)); row = await cur.fetchone(); await cur.close()
+        return dict(row) if row else None
+
+
+async def batch_job_list(limit: int = 50, job_type: str | None = None) -> list[dict[str, Any]]:
+    limit = min(max(limit,1),200)
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            if job_type:
+                rows = await conn.fetch("SELECT * FROM batch_jobs WHERE job_type=$1 ORDER BY created_at DESC LIMIT $2", job_type, limit)
+            else:
+                rows = await conn.fetch("SELECT * FROM batch_jobs ORDER BY created_at DESC LIMIT $1", limit)
+        return [dict(r) for r in rows]
+    async with get_connection() as db:
+        if job_type:
+            cur = await db.execute("SELECT * FROM batch_jobs WHERE job_type=? ORDER BY created_at DESC LIMIT ?", (job_type, limit))
+        else:
+            cur = await db.execute("SELECT * FROM batch_jobs ORDER BY created_at DESC LIMIT ?", (limit,))
+        rows = await cur.fetchall(); await cur.close(); return [dict(r) for r in rows]
+
+
+# ── Gateway settings (structured, extends key-value settings) ───────────────
+
+async def gateway_setting_set(key: str, value: Any, *, is_secret: bool = False) -> None:
+    val_s = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, default=str)
+    now = utc_now()
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO gateway_settings(key,value_json,is_secret,updated_at) VALUES ($1,$2::jsonb,$3,NOW())
+                   ON CONFLICT(key) DO UPDATE SET value_json=EXCLUDED.value_json,is_secret=EXCLUDED.is_secret,updated_at=NOW()""",
+                key, val_s, is_secret)
+        return
+    async with get_connection() as db:
+        await db.execute(
+            """INSERT INTO gateway_settings(key,value_json,is_secret,updated_at) VALUES (?,?,?,?)
+               ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json,is_secret=excluded.is_secret,updated_at=excluded.updated_at""",
+            (key, val_s, 1 if is_secret else 0, now)); await db.commit()
+
+
+async def gateway_setting_get(key: str) -> Any:
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT value_json,is_secret FROM gateway_settings WHERE key=$1", key)
+        if not row: return None
+        v = row.get("value_json")
+        if isinstance(v, str):
+            try: return json.loads(v)
+            except Exception: return v
+        return v
+    async with get_connection() as db:
+        cur = await db.execute("SELECT value_json FROM gateway_settings WHERE key=?", (key,)); row = await cur.fetchone(); await cur.close()
+    if not row: return None
+    try: return json.loads(row["value_json"])
+    except Exception: return row["value_json"]
+
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Assortment plans & AI training feedback
+# ════════════════════════════════════════════════════════════════════════════
+
+async def assortment_plan_save(plan: dict[str, Any]) -> dict[str, Any]:
+    pid = str(plan.get("id") or uuid.uuid4())
+    marketplace = str(plan.get("marketplace") or "unknown")
+    max_items = int(plan.get("max_items") or 2000)
+    selected_count = int(plan.get("selected_count") or len(plan.get("items") or []))
+    pjson = json.dumps(plan, ensure_ascii=False, default=str)
+    now = utc_now()
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO assortment_plans(id, marketplace, max_items, selected_count, plan_json, created_at)
+                   VALUES ($1,$2,$3,$4,$5::jsonb,NOW())
+                   ON CONFLICT(id) DO UPDATE SET marketplace=EXCLUDED.marketplace, max_items=EXCLUDED.max_items,
+                     selected_count=EXCLUDED.selected_count, plan_json=EXCLUDED.plan_json""",
+                pid, marketplace, max_items, selected_count, pjson,
+            )
+            row = await conn.fetchrow("SELECT id, marketplace, max_items, selected_count, created_at FROM assortment_plans WHERE id=$1", pid)
+        return dict(row) if row else {"id": pid}
+    async with get_connection() as db:
+        await db.execute(
+            """INSERT INTO assortment_plans(id, marketplace, max_items, selected_count, plan_json, created_at)
+               VALUES (?,?,?,?,?,?)
+               ON CONFLICT(id) DO UPDATE SET marketplace=excluded.marketplace, max_items=excluded.max_items,
+                 selected_count=excluded.selected_count, plan_json=excluded.plan_json""",
+            (pid, marketplace, max_items, selected_count, pjson, now),
+        )
+        await db.commit()
+        cur = await db.execute("SELECT id, marketplace, max_items, selected_count, created_at FROM assortment_plans WHERE id=?", (pid,))
+        row = await cur.fetchone(); await cur.close()
+        return dict(row) if row else {"id": pid}
+
+
+async def assortment_plan_list(marketplace: str | None = None, limit: int = 20) -> list[dict[str, Any]]:
+    limit = min(max(int(limit or 20), 1), 200)
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            if marketplace:
+                rows = await conn.fetch("SELECT id, marketplace, max_items, selected_count, created_at FROM assortment_plans WHERE marketplace=$1 ORDER BY created_at DESC LIMIT $2", marketplace, limit)
+            else:
+                rows = await conn.fetch("SELECT id, marketplace, max_items, selected_count, created_at FROM assortment_plans ORDER BY created_at DESC LIMIT $1", limit)
+        return [dict(r) for r in rows]
+    async with get_connection() as db:
+        if marketplace:
+            cur = await db.execute("SELECT id, marketplace, max_items, selected_count, created_at FROM assortment_plans WHERE marketplace=? ORDER BY created_at DESC LIMIT ?", (marketplace, limit))
+        else:
+            cur = await db.execute("SELECT id, marketplace, max_items, selected_count, created_at FROM assortment_plans ORDER BY created_at DESC LIMIT ?", (limit,))
+        rows = await cur.fetchall(); await cur.close()
+        return [dict(r) for r in rows]
+
+
+async def assortment_plan_get(plan_id: str) -> dict[str, Any] | None:
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT * FROM assortment_plans WHERE id=$1", plan_id)
+        if not row:
+            return None
+        d = dict(row)
+        pj = d.get("plan_json")
+        if isinstance(pj, str):
+            try: d["plan_json"] = json.loads(pj)
+            except Exception: pass
+        return d
+    async with get_connection() as db:
+        cur = await db.execute("SELECT * FROM assortment_plans WHERE id=?", (plan_id,))
+        row = await cur.fetchone(); await cur.close()
+        if not row:
+            return None
+        d = dict(row)
+        if isinstance(d.get("plan_json"), str):
+            try: d["plan_json"] = json.loads(d["plan_json"])
+            except Exception: pass
+        return d
+
+
+async def ai_training_feedback_create(*, source: str = "manual", context_type: str = "", input_data: dict[str, Any] | None = None, output_data: dict[str, Any] | None = None, feedback_text: str = "", rating: int | None = None, metadata: dict[str, Any] | None = None, created_by: str = "") -> dict[str, Any]:
+    fid = str(uuid.uuid4())
+    ij = json.dumps(input_data or {}, ensure_ascii=False, default=str)
+    oj = json.dumps(output_data or {}, ensure_ascii=False, default=str)
+    mj = json.dumps(metadata or {}, ensure_ascii=False, default=str)
+    now = utc_now()
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO ai_training_feedback(id, source, context_type, input_json, output_json, feedback_text, rating, metadata_json, created_by, created_at)
+                   VALUES ($1,$2,$3,$4::jsonb,$5::jsonb,$6,$7,$8::jsonb,$9,NOW())""",
+                fid, source, context_type, ij, oj, feedback_text, rating, mj, created_by,
+            )
+            row = await conn.fetchrow("SELECT * FROM ai_training_feedback WHERE id=$1", fid)
+        return dict(row) if row else {"id": fid}
+    async with get_connection() as db:
+        await db.execute(
+            """INSERT INTO ai_training_feedback(id, source, context_type, input_json, output_json, feedback_text, rating, metadata_json, created_by, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+            (fid, source, context_type, ij, oj, feedback_text, rating, mj, created_by, now),
+        )
+        await db.commit()
+        cur = await db.execute("SELECT * FROM ai_training_feedback WHERE id=?", (fid,))
+        row = await cur.fetchone(); await cur.close()
+        return dict(row) if row else {"id": fid}
+
+
+async def ai_training_feedback_list(limit: int = 100, context_type: str | None = None) -> list[dict[str, Any]]:
+    limit = min(max(int(limit or 100), 1), 500)
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            if context_type:
+                rows = await conn.fetch("SELECT * FROM ai_training_feedback WHERE context_type=$1 ORDER BY created_at DESC LIMIT $2", context_type, limit)
+            else:
+                rows = await conn.fetch("SELECT * FROM ai_training_feedback ORDER BY created_at DESC LIMIT $1", limit)
+        return [dict(r) for r in rows]
+    async with get_connection() as db:
+        if context_type:
+            cur = await db.execute("SELECT * FROM ai_training_feedback WHERE context_type=? ORDER BY created_at DESC LIMIT ?", (context_type, limit))
+        else:
+            cur = await db.execute("SELECT * FROM ai_training_feedback ORDER BY created_at DESC LIMIT ?", (limit,))
+        rows = await cur.fetchall(); await cur.close()
+        return [dict(r) for r in rows]

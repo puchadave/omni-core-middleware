@@ -32,6 +32,40 @@ class OmniRouteClient:
             logger.error("OmniRoute health check failed: %s", exc)
             return False
 
+    async def list_models(self) -> list[dict[str, Any]]:
+        """Fetch available models from the OpenAI-compatible /models endpoint."""
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.get(f"{self.base_url}/models", headers=self.headers)
+                response.raise_for_status()
+                data = response.json()
+        except Exception as exc:
+            logger.error("OmniRoute model listing failed: %s", exc)
+            raise
+
+        raw = data.get("data") if isinstance(data, dict) else data
+        if not isinstance(raw, list):
+            raw = []
+        models: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for item in raw:
+            if isinstance(item, str):
+                model_id = item
+                entry: dict[str, Any] = {"id": model_id, "name": model_id}
+            elif isinstance(item, dict):
+                model_id = str(item.get("id") or item.get("model") or item.get("name") or "").strip()
+                if not model_id:
+                    continue
+                entry = {"id": model_id, "name": str(item.get("name") or model_id), **{k: v for k, v in item.items() if k not in {"id", "name"}}}
+            else:
+                continue
+            if model_id in seen:
+                continue
+            seen.add(model_id)
+            models.append(entry)
+        models.sort(key=lambda m: str(m.get("id", "")).lower())
+        return models
+
     async def chat_completion(
         self,
         *,

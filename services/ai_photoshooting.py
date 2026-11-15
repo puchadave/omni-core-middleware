@@ -119,10 +119,17 @@ def set_provider(provider: ImageGenerationProvider) -> None:
 async def _resolve_provider(runtime: Any = None) -> tuple[ImageGenerationProvider, dict[str, Any]]:
     base = await get_setting("omniroute_url") or await get_setting("omni_route_base_url") or os.environ.get("OMNIROUTE_BASE_URL") or ""
     key = await get_setting("omniroute_api_key") or await get_setting("omni_route_api_key") or os.environ.get("OMNIROUTE_API_KEY") or ""
-    model = await get_setting("omniroute_image_model") or os.environ.get("OMNIROUTE_IMAGE_MODEL") or ""
-    if base and model:
+    model = (
+        await get_setting("omniroute_image_model")
+        or await get_setting("ai_model_photoshoot")
+        or await get_setting("ai_model_image")
+        or await get_setting("default_image_model")
+        or os.environ.get("OMNIROUTE_IMAGE_MODEL")
+        or "auto/vision"
+    )
+    if base:
         return OmniRouteProvider(base, key, model), {"configured": True, "base_url": base, "model": model}
-    return LocalPlaceholderProvider(), {"configured": False, "reason": "omniroute_image_not_configured"}
+    return LocalPlaceholderProvider(), {"configured": False, "reason": "omniroute_url_not_configured"}
 
 
 # ── Agents ───────────────────────────────────────────────────────────────
