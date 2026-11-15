@@ -63,6 +63,7 @@ from services.competitor_pricing import DynamicPricingEngine
 from services.google_merchant_client import GoogleMerchantClient
 from services.google_product_mapper import GoogleProductMapper, GoogleProductValidator
 from services.google_export_engine import AutonomousExportEngine
+from services.ai_photoshooting import get_provider as get_photoshoot_provider
 from services.omniroute_provider import AIProvider, ProviderManager
 from services.omniroute_model_registry import AIModel, ModelRegistry, RoutingRule, RoutingPolicy, IntelligentRoutingEngine, CostCalculator
 from services.trend_engine import TrendEngine
@@ -1686,8 +1687,7 @@ async def start_photoshoot(request: dict[str, Any]) -> dict[str, Any]:
     """Start an AI photoshoot."""
     from uuid import uuid4
 
-    photoshoot = AIPhotoshoot()
-    result = await photoshoot.generate(request)
+    result = await get_photoshoot_provider().generate(request)
     return {"shoot_id": str(uuid4()), "status": "processing", **result}
 
 
