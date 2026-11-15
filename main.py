@@ -22,12 +22,13 @@ import uuid
 import xml.etree.ElementTree as ET
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
-from typing import Any, AsyncIterator
+from decimal import Decimal
+from typing import Any, AsyncIterator, Literal
 
 from fastapi import Body, Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.templating import Jinja2Templates
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from database import (
     DATABASE_URL,
@@ -85,8 +86,13 @@ from database import (
     upsert_bundle,
     write_log,
     iam_get_user_by_email, iam_get_user, iam_list_users, iam_update_user, iam_ensure_role, iam_assign_role, iam_list_roles, iam_list_permissions, iam_grant_permission, iam_create_session, iam_get_session, iam_revoke_session, iam_touch_session, iam_get_user_roles, iam_create_user,
+    finance_document_upsert, finance_transaction_upsert, finance_settlement_upsert,
+    finance_document_list, finance_transaction_list, finance_settlement_list,
+    finance_transaction_get, finance_document_candidates, finance_reconciliation_create,
+    finance_reconciliation_list, finance_overview,
 )
 from services.fulfillment import FulfillmentService
+from services.finance import reconcile_payment_to_documents
 from services.inventory_guard import InventoryGuard
 from services.matterhorn_importer import MatterhornUniversalImporter
 from services.omniroute_client import OmniRouteClient
@@ -145,6 +151,8 @@ RBAC_RULES: list[tuple[str, tuple[str, ...], str]] = [
     ("DELETE", ("/api/products",), "products.write"),
     ("GET", ("/api/products", "/ui/products", "/admin/products"), "products.read"),
     ("GET", ("/api/orders", "/ui/orders", "/admin/orders"), "products.read"),
+    ("GET", ("/api/finance/",), "finance.read"),
+    ("POST", ("/api/finance/",), "finance.write"),
     ("GET", ("/api/audit-log", "/api/logs", "/ui/audit-log"), "audit.read"),
     ("GET", ("/api/jobs", "/ui/jobs-automation"), "system.configure"),
     ("POST", ("/api/jobs",), "system.configure"),
@@ -230,6 +238,94 @@ class MatterhornImportRequest(BaseModel):
     confirm_full_without_preview: bool = False
     dry_run: bool = False
     async_job: bool = False
+
+
+class FinancePayloadRequest(BaseModel):
+    payload_json: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("payload_json")
+    @classmethod
+    def limit_finance_payload(cls, value: dict[str, Any]) -> dict[str, Any]:
+        if len(json.dumps(value, ensure_ascii=False, default=str).encode("utf-8")) > 65_536:
+            raise ValueError("Finance source metadata must not exceed 64 KiB.")
+        return value
+
+
+class FinanceDocumentRequest(FinancePayloadRequest):
+    provider: str = Field(min_length=1, max_length=64)
+    external_id: str = Field(min_length=1, max_length=256)
+    document_type: Literal["invoice", "credit_note", "supplier_invoice", "expense"]
+    direction: Literal["receivable", "payable"]
+    order_reference: str = Field(default="", max_length=256)
+    currency: str = Field(pattern=r"^[A-Z]{3}$")
+    net_amount: Decimal = Field(ge=0, max_digits=20, decimal_places=6)
+    tax_amount: Decimal = Field(ge=0, max_digits=20, decimal_places=6)
+    gross_amount: Decimal = Field(ge=0, max_digits=20, decimal_places=6)
+    status: str = Field(default="issued", min_length=1, max_length=32)
+    issued_at: datetime | None = None
+    due_at: datetime | None = None
+
+    @field_validator("currency", mode="before")
+    @classmethod
+    def normalize_currency(cls, value: Any) -> Any:
+        return value.strip().upper() if isinstance(value, str) else value
+
+    @field_validator("issued_at", "due_at")
+    @classmethod
+    def normalize_document_timestamp(cls, value: datetime | None) -> datetime | None:
+        if value is not None and value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value
+
+
+class FinanceTransactionRequest(FinancePayloadRequest):
+    provider: str = Field(min_length=1, max_length=64)
+    external_id: str = Field(min_length=1, max_length=256)
+    transaction_type: Literal["payment", "refund", "fee", "payout", "adjustment"]
+    order_reference: str = Field(default="", max_length=256)
+    settlement_reference: str = Field(default="", max_length=256)
+    currency: str = Field(pattern=r"^[A-Z]{3}$")
+    amount: Decimal = Field(ge=0, max_digits=20, decimal_places=6)
+    occurred_at: datetime | None = None
+
+    @field_validator("currency", mode="before")
+    @classmethod
+    def normalize_currency(cls, value: Any) -> Any:
+        return value.strip().upper() if isinstance(value, str) else value
+
+    @field_validator("occurred_at")
+    @classmethod
+    def normalize_transaction_timestamp(cls, value: datetime | None) -> datetime | None:
+        if value is not None and value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value
+
+
+class FinanceSettlementRequest(FinancePayloadRequest):
+    provider: str = Field(min_length=1, max_length=64)
+    external_id: str = Field(min_length=1, max_length=256)
+    currency: str = Field(pattern=r"^[A-Z]{3}$")
+    gross_amount: Decimal = Field(ge=0, max_digits=20, decimal_places=6)
+    fees_amount: Decimal = Field(ge=0, max_digits=20, decimal_places=6)
+    net_amount: Decimal = Field(max_digits=20, decimal_places=6)
+    status: str = Field(default="received", min_length=1, max_length=32)
+    settled_at: datetime | None = None
+
+    @field_validator("currency", mode="before")
+    @classmethod
+    def normalize_currency(cls, value: Any) -> Any:
+        return value.strip().upper() if isinstance(value, str) else value
+
+    @field_validator("settled_at")
+    @classmethod
+    def normalize_settlement_timestamp(cls, value: datetime | None) -> datetime | None:
+        if value is not None and value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value
+
+
+class FinanceReconcileRequest(BaseModel):
+    transaction_id: str = Field(min_length=1, max_length=64)
 
 
 
@@ -1075,6 +1171,113 @@ async def orders(
 ) -> list[dict[str, Any]]:
     """Return channel orders with bounded pagination."""
     return await list_orders(limit, offset)
+
+
+@app.get("/api/finance/overview")
+async def finance_dashboard_metrics() -> dict[str, Any]:
+    """Return persisted finance source totals grouped by currency and type."""
+    return await finance_overview()
+
+
+@app.post("/api/finance/documents")
+async def finance_document_import(payload: FinanceDocumentRequest) -> dict[str, Any]:
+    """Idempotently import an invoice, credit note, supplier invoice, or expense."""
+    record = await finance_document_upsert(payload.model_dump())
+    await write_log(
+        "INFO",
+        "finance_document_imported",
+        "Finance document imported or updated.",
+        {"provider": payload.provider, "external_id": payload.external_id, "document_type": payload.document_type},
+    )
+    return record
+
+
+@app.get("/api/finance/documents")
+async def finance_documents(
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+) -> list[dict[str, Any]]:
+    return await finance_document_list(limit, offset)
+
+
+@app.post("/api/finance/transactions")
+async def finance_transaction_import(payload: FinanceTransactionRequest) -> dict[str, Any]:
+    """Idempotently import a payment-provider or marketplace transaction."""
+    record = await finance_transaction_upsert(payload.model_dump())
+    await write_log(
+        "INFO",
+        "finance_transaction_imported",
+        "Finance transaction imported or updated.",
+        {"provider": payload.provider, "external_id": payload.external_id, "transaction_type": payload.transaction_type},
+    )
+    return record
+
+
+@app.get("/api/finance/transactions")
+async def finance_transactions(
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+) -> list[dict[str, Any]]:
+    return await finance_transaction_list(limit, offset)
+
+
+@app.post("/api/finance/settlements")
+async def finance_settlement_import(payload: FinanceSettlementRequest) -> dict[str, Any]:
+    """Idempotently import a provider settlement without inferring accounting entries."""
+    record = await finance_settlement_upsert(payload.model_dump())
+    await write_log(
+        "INFO",
+        "finance_settlement_imported",
+        "Finance settlement imported or updated.",
+        {"provider": payload.provider, "external_id": payload.external_id},
+    )
+    return record
+
+
+@app.get("/api/finance/settlements")
+async def finance_settlements(
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+) -> list[dict[str, Any]]:
+    return await finance_settlement_list(limit, offset)
+
+
+@app.post("/api/finance/reconcile")
+async def finance_reconcile_payment(payload: FinanceReconcileRequest) -> dict[str, Any]:
+    """Match one payment to invoice records and persist the outcome for review."""
+    transaction = await finance_transaction_get(payload.transaction_id)
+    if transaction is None:
+        raise HTTPException(status_code=404, detail="Finance transaction not found.")
+    if transaction.get("transaction_type") != "payment":
+        raise HTTPException(status_code=422, detail="Only payment transactions can be reconciled to receivable documents.")
+
+    candidates = await finance_document_candidates(
+        currency=str(transaction["currency"]),
+        order_reference=str(transaction.get("order_reference") or ""),
+        gross_amount=transaction["amount"],
+    )
+    result = reconcile_payment_to_documents(transaction, candidates)
+    persisted = await finance_reconciliation_create(
+        {
+            "source_type": "transaction",
+            "source_id": payload.transaction_id,
+            "target_type": result["target_type"],
+            "target_id": result["target_id"],
+            "status": result["status"],
+            "currency": result["currency"],
+            "matched_amount": result["matched_amount"],
+            "details_json": {"candidate_ids": result["candidate_ids"]},
+        }
+    )
+    return persisted
+
+
+@app.get("/api/finance/reconciliations")
+async def finance_reconciliations(
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+) -> list[dict[str, Any]]:
+    return await finance_reconciliation_list(limit, offset)
 
 
 @app.post("/api/import/matterhorn")

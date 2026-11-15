@@ -18,6 +18,7 @@ from typing import Any
 
 from database import (
     count_dashboard_metrics,
+    finance_overview,
     fetch_product,
     list_products,
     recent_import_runs,
@@ -226,6 +227,7 @@ class GlobalControlCenter:
             "orders": {
                 "pending": db_metrics.get("pending_order_count", 0),
             },
+            "finance": await finance_overview(),
             "errors_24h": db_metrics.get("error_count", 0),
         }
 

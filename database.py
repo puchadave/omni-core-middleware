@@ -13,6 +13,7 @@ import logging
 import os
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, AsyncIterator, Mapping, Sequence
 
@@ -1243,7 +1244,82 @@ POSTGRES_SCHEMA: tuple[str, ...] = (
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
     """,
-    "CREATE INDEX IF NOT EXISTS idx_fidelity_job ON product_fidelity_checks(job_id)"
+    "CREATE INDEX IF NOT EXISTS idx_fidelity_job ON product_fidelity_checks(job_id)",
+    """
+    CREATE TABLE IF NOT EXISTS finance_documents (
+        id TEXT PRIMARY KEY,
+        provider TEXT NOT NULL,
+        external_id TEXT NOT NULL,
+        document_type TEXT NOT NULL CHECK (document_type IN ('invoice','credit_note','supplier_invoice','expense')),
+        direction TEXT NOT NULL CHECK (direction IN ('receivable','payable')),
+        order_reference TEXT NOT NULL DEFAULT '',
+        currency TEXT NOT NULL CHECK (char_length(currency) = 3),
+        net_amount NUMERIC(20,6) NOT NULL CHECK (net_amount >= 0),
+        tax_amount NUMERIC(20,6) NOT NULL CHECK (tax_amount >= 0),
+        gross_amount NUMERIC(20,6) NOT NULL CHECK (gross_amount >= 0),
+        status TEXT NOT NULL DEFAULT 'issued',
+        issued_at TIMESTAMPTZ,
+        due_at TIMESTAMPTZ,
+        payload_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE(provider, external_id)
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_finance_documents_order ON finance_documents(order_reference, currency)",
+    "CREATE INDEX IF NOT EXISTS idx_finance_documents_issued ON finance_documents(issued_at DESC)",
+    """
+    CREATE TABLE IF NOT EXISTS finance_transactions (
+        id TEXT PRIMARY KEY,
+        provider TEXT NOT NULL,
+        external_id TEXT NOT NULL,
+        transaction_type TEXT NOT NULL CHECK (transaction_type IN ('payment','refund','fee','payout','adjustment')),
+        order_reference TEXT NOT NULL DEFAULT '',
+        settlement_reference TEXT NOT NULL DEFAULT '',
+        currency TEXT NOT NULL CHECK (char_length(currency) = 3),
+        amount NUMERIC(20,6) NOT NULL CHECK (amount >= 0),
+        occurred_at TIMESTAMPTZ,
+        payload_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE(provider, external_id)
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_finance_transactions_order ON finance_transactions(order_reference, currency)",
+    "CREATE INDEX IF NOT EXISTS idx_finance_transactions_settlement ON finance_transactions(settlement_reference)",
+    """
+    CREATE TABLE IF NOT EXISTS finance_settlements (
+        id TEXT PRIMARY KEY,
+        provider TEXT NOT NULL,
+        external_id TEXT NOT NULL,
+        currency TEXT NOT NULL CHECK (char_length(currency) = 3),
+        gross_amount NUMERIC(20,6) NOT NULL CHECK (gross_amount >= 0),
+        fees_amount NUMERIC(20,6) NOT NULL CHECK (fees_amount >= 0),
+        net_amount NUMERIC(20,6) NOT NULL,
+        status TEXT NOT NULL DEFAULT 'received',
+        settled_at TIMESTAMPTZ,
+        payload_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE(provider, external_id)
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_finance_settlements_date ON finance_settlements(settled_at DESC)",
+    """
+    CREATE TABLE IF NOT EXISTS finance_reconciliations (
+        id TEXT PRIMARY KEY,
+        source_type TEXT NOT NULL,
+        source_id TEXT NOT NULL,
+        target_type TEXT NOT NULL DEFAULT '',
+        target_id TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL CHECK (status IN ('matched','partial_match','mismatch','missing_document','ambiguous','review_required')),
+        currency TEXT NOT NULL,
+        matched_amount NUMERIC(20,6) NOT NULL DEFAULT 0,
+        details_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_finance_reconciliations_source ON finance_reconciliations(source_type, source_id, created_at DESC)"
 
 
 )
@@ -2237,6 +2313,74 @@ CREATE TABLE IF NOT EXISTS product_fidelity_checks (
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_fidelity_job ON product_fidelity_checks(job_id);
+
+CREATE TABLE IF NOT EXISTS finance_documents (
+    id TEXT PRIMARY KEY,
+    provider TEXT NOT NULL,
+    external_id TEXT NOT NULL,
+    document_type TEXT NOT NULL CHECK (document_type IN ('invoice','credit_note','supplier_invoice','expense')),
+    direction TEXT NOT NULL CHECK (direction IN ('receivable','payable')),
+    order_reference TEXT NOT NULL DEFAULT '',
+    currency TEXT NOT NULL CHECK (length(currency) = 3),
+    net_amount NUMERIC NOT NULL CHECK (net_amount >= 0),
+    tax_amount NUMERIC NOT NULL CHECK (tax_amount >= 0),
+    gross_amount NUMERIC NOT NULL CHECK (gross_amount >= 0),
+    status TEXT NOT NULL DEFAULT 'issued',
+    issued_at TEXT,
+    due_at TEXT,
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(provider, external_id)
+);
+CREATE INDEX IF NOT EXISTS idx_finance_documents_order ON finance_documents(order_reference, currency);
+CREATE INDEX IF NOT EXISTS idx_finance_documents_issued ON finance_documents(issued_at DESC);
+CREATE TABLE IF NOT EXISTS finance_transactions (
+    id TEXT PRIMARY KEY,
+    provider TEXT NOT NULL,
+    external_id TEXT NOT NULL,
+    transaction_type TEXT NOT NULL CHECK (transaction_type IN ('payment','refund','fee','payout','adjustment')),
+    order_reference TEXT NOT NULL DEFAULT '',
+    settlement_reference TEXT NOT NULL DEFAULT '',
+    currency TEXT NOT NULL CHECK (length(currency) = 3),
+    amount NUMERIC NOT NULL CHECK (amount >= 0),
+    occurred_at TEXT,
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(provider, external_id)
+);
+CREATE INDEX IF NOT EXISTS idx_finance_transactions_order ON finance_transactions(order_reference, currency);
+CREATE INDEX IF NOT EXISTS idx_finance_transactions_settlement ON finance_transactions(settlement_reference);
+CREATE TABLE IF NOT EXISTS finance_settlements (
+    id TEXT PRIMARY KEY,
+    provider TEXT NOT NULL,
+    external_id TEXT NOT NULL,
+    currency TEXT NOT NULL CHECK (length(currency) = 3),
+    gross_amount NUMERIC NOT NULL CHECK (gross_amount >= 0),
+    fees_amount NUMERIC NOT NULL CHECK (fees_amount >= 0),
+    net_amount NUMERIC NOT NULL,
+    status TEXT NOT NULL DEFAULT 'received',
+    settled_at TEXT,
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(provider, external_id)
+);
+CREATE INDEX IF NOT EXISTS idx_finance_settlements_date ON finance_settlements(settled_at DESC);
+CREATE TABLE IF NOT EXISTS finance_reconciliations (
+    id TEXT PRIMARY KEY,
+    source_type TEXT NOT NULL,
+    source_id TEXT NOT NULL,
+    target_type TEXT NOT NULL DEFAULT '',
+    target_id TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL CHECK (status IN ('matched','partial_match','mismatch','missing_document','ambiguous','review_required')),
+    currency TEXT NOT NULL,
+    matched_amount NUMERIC NOT NULL DEFAULT 0,
+    details_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_finance_reconciliations_source ON finance_reconciliations(source_type, source_id, created_at DESC);
 
 """
 
@@ -5104,3 +5248,265 @@ async def fidelity_check_list(limit: int = 200, job_id: str | None = None) -> li
         if job_id: cur = await db.execute("SELECT * FROM product_fidelity_checks WHERE job_id=? ORDER BY created_at DESC LIMIT ?", (job_id, limit))
         else: cur = await db.execute("SELECT * FROM product_fidelity_checks ORDER BY created_at DESC LIMIT ?", (limit,))
         rows = await cur.fetchall(); await cur.close(); return [dict(r) for r in rows]
+
+
+_FINANCE_RECORD_FIELDS: dict[str, tuple[str, ...]] = {
+    "finance_documents": (
+        "document_type", "direction", "order_reference", "currency",
+        "net_amount", "tax_amount", "gross_amount", "status", "issued_at", "due_at",
+    ),
+    "finance_transactions": (
+        "transaction_type", "order_reference", "settlement_reference",
+        "currency", "amount", "occurred_at",
+    ),
+    "finance_settlements": (
+        "currency", "gross_amount", "fees_amount", "net_amount", "status", "settled_at",
+    ),
+}
+
+
+def _decode_finance_row(row: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    if row is None:
+        return None
+    result = dict(row)
+    for field in ("payload_json", "details_json"):
+        if isinstance(result.get(field), str):
+            try:
+                result[field] = json.loads(result[field])
+            except json.JSONDecodeError:
+                logger.exception("Invalid JSON stored for finance record %s", result.get("id"))
+                raise DatabaseError("Stored finance payload is not valid JSON.")
+    return result
+
+
+async def _finance_record_upsert(table: str, data: Mapping[str, Any]) -> dict[str, Any]:
+    if table not in _FINANCE_RECORD_FIELDS:
+        raise ValueError("Unsupported finance record type.")
+    import uuid as _uuid
+
+    record_id = str(data.get("id") or _uuid.uuid4())
+    provider = str(data.get("provider") or "").strip()
+    external_id = str(data.get("external_id") or "").strip()
+    if not provider or not external_id:
+        raise ValueError("Finance provider and external ID are required.")
+
+    fields = _FINANCE_RECORD_FIELDS[table]
+    now = utc_now()
+    payload_json = json.dumps(data.get("payload_json") or {}, ensure_ascii=False, default=str)
+    values: list[Any] = [record_id, provider, external_id]
+    for field in fields:
+        value = data.get(field)
+        if field in {"order_reference", "settlement_reference"}:
+            value = str(value or "")
+        elif field == "status":
+            value = str(value or ("received" if table == "finance_settlements" else "issued"))
+        if field in {"issued_at", "due_at", "occurred_at", "settled_at"}:
+            value = _pg_ts(value) if value is not None else None
+            if value is not None and not uses_postgres() and hasattr(value, "isoformat"):
+                value = value.isoformat()
+        if not uses_postgres() and isinstance(value, Decimal):
+            value = str(value)
+        values.append(value)
+    created_at = _pg_ts(now) if uses_postgres() else now
+    updated_at = created_at
+    values.extend((payload_json, created_at, updated_at))
+    columns = ("id", "provider", "external_id", *fields, "payload_json", "created_at", "updated_at")
+    update_fields = (*fields, "payload_json", "updated_at")
+
+    if uses_postgres():
+        pool = await get_pg_pool()
+        placeholders = [
+            f"${index}::jsonb" if column == "payload_json" else f"${index}"
+            for index, column in enumerate(columns, start=1)
+        ]
+        updates = ", ".join(f"{field}=EXCLUDED.{field}" for field in update_fields)
+        query = (
+            f"INSERT INTO {table} ({', '.join(columns)}) VALUES ({', '.join(placeholders)}) "
+            f"ON CONFLICT(provider, external_id) DO UPDATE SET {updates} RETURNING *"
+        )
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(query, *values)
+        return _decode_finance_row(row) or {"id": record_id}
+
+    assignments = ", ".join(f"{field}=excluded.{field}" for field in update_fields)
+    query = (
+        f"INSERT INTO {table} ({', '.join(columns)}) VALUES ({', '.join('?' for _ in columns)}) "
+        f"ON CONFLICT(provider, external_id) DO UPDATE SET {assignments}"
+    )
+    async with get_connection() as db:
+        await db.execute(query, tuple(values))
+        await db.commit()
+        cursor = await db.execute(
+            f"SELECT * FROM {table} WHERE provider=? AND external_id=?",
+            (provider, external_id),
+        )
+        row = await cursor.fetchone()
+        await cursor.close()
+    return _decode_finance_row(row) or {"id": record_id}
+
+
+async def finance_document_upsert(data: Mapping[str, Any]) -> dict[str, Any]:
+    """Create or update an imported invoice, credit note, or expense by provider ID."""
+    return await _finance_record_upsert("finance_documents", data)
+
+
+async def finance_transaction_upsert(data: Mapping[str, Any]) -> dict[str, Any]:
+    """Create or update an imported payment or payment-provider transaction."""
+    return await _finance_record_upsert("finance_transactions", data)
+
+
+async def finance_settlement_upsert(data: Mapping[str, Any]) -> dict[str, Any]:
+    """Create or update a marketplace/payment settlement by provider ID."""
+    return await _finance_record_upsert("finance_settlements", data)
+
+
+async def _finance_list(table: str, *, limit: int, offset: int = 0) -> list[dict[str, Any]]:
+    if table not in {*_FINANCE_RECORD_FIELDS, "finance_reconciliations"}:
+        raise ValueError("Unsupported finance record type.")
+    safe_limit = min(max(limit, 1), 500)
+    safe_offset = max(offset, 0)
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                f"SELECT * FROM {table} ORDER BY created_at DESC LIMIT $1 OFFSET $2",
+                safe_limit,
+                safe_offset,
+            )
+        return [_decode_finance_row(row) or {} for row in rows]
+    async with get_connection() as db:
+        cursor = await db.execute(
+            f"SELECT * FROM {table} ORDER BY created_at DESC LIMIT ? OFFSET ?",
+            (safe_limit, safe_offset),
+        )
+        rows = await cursor.fetchall()
+        await cursor.close()
+    return [_decode_finance_row(row) or {} for row in rows]
+
+
+async def finance_document_list(limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
+    return await _finance_list("finance_documents", limit=limit, offset=offset)
+
+
+async def finance_transaction_list(limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
+    return await _finance_list("finance_transactions", limit=limit, offset=offset)
+
+
+async def finance_settlement_list(limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
+    return await _finance_list("finance_settlements", limit=limit, offset=offset)
+
+
+async def finance_reconciliation_list(limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
+    return await _finance_list("finance_reconciliations", limit=limit, offset=offset)
+
+
+async def finance_transaction_get(transaction_id: str) -> dict[str, Any] | None:
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT * FROM finance_transactions WHERE id=$1", transaction_id)
+        return _decode_finance_row(row)
+    async with get_connection() as db:
+        cursor = await db.execute("SELECT * FROM finance_transactions WHERE id=?", (transaction_id,))
+        row = await cursor.fetchone()
+        await cursor.close()
+    return _decode_finance_row(row)
+
+
+async def finance_document_candidates(
+    *,
+    currency: str,
+    order_reference: str,
+    gross_amount: Any,
+) -> list[dict[str, Any]]:
+    """Fetch exact/reference candidates for safe, bounded payment matching."""
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT * FROM finance_documents
+                   WHERE direction='receivable' AND currency=$1
+                     AND (($2 <> '' AND order_reference=$2) OR gross_amount=$3)
+                   ORDER BY created_at DESC LIMIT 501""",
+                currency, order_reference, gross_amount,
+            )
+        return [_decode_finance_row(row) or {} for row in rows]
+    async with get_connection() as db:
+        cursor = await db.execute(
+            """SELECT * FROM finance_documents
+               WHERE direction='receivable' AND currency=?
+                 AND ((? <> '' AND order_reference=?) OR gross_amount=?)
+               ORDER BY created_at DESC LIMIT 501""",
+            (currency, order_reference, order_reference, str(gross_amount)),
+        )
+        rows = await cursor.fetchall()
+        await cursor.close()
+    return [_decode_finance_row(row) or {} for row in rows]
+
+
+async def finance_reconciliation_create(data: Mapping[str, Any]) -> dict[str, Any]:
+    import uuid as _uuid
+
+    record_id = str(data.get("id") or _uuid.uuid4())
+    details_json = json.dumps(data.get("details_json") or {}, ensure_ascii=False, default=str)
+    values = (
+        record_id,
+        str(data["source_type"]),
+        str(data["source_id"]),
+        str(data.get("target_type") or ""),
+        str(data.get("target_id") or ""),
+        str(data["status"]),
+        str(data["currency"]),
+        Decimal(str(data.get("matched_amount", "0"))),
+        details_json,
+        utc_now(),
+    )
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """INSERT INTO finance_reconciliations
+                   (id,source_type,source_id,target_type,target_id,status,currency,matched_amount,details_json,created_at)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,NOW()) RETURNING *""",
+                *values[:-1],
+            )
+        return _decode_finance_row(row) or {"id": record_id}
+    values = (*values[:7], str(values[7]), *values[8:])
+    async with get_connection() as db:
+        await db.execute(
+            """INSERT INTO finance_reconciliations
+               (id,source_type,source_id,target_type,target_id,status,currency,matched_amount,details_json,created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+            values,
+        )
+        await db.commit()
+        cursor = await db.execute("SELECT * FROM finance_reconciliations WHERE id=?", (record_id,))
+        row = await cursor.fetchone()
+        await cursor.close()
+    result = dict(row) if row else {"id": record_id}
+    if isinstance(result.get("details_json"), str):
+        result["details_json"] = json.loads(result["details_json"])
+    return result
+
+
+async def finance_overview() -> dict[str, Any]:
+    """Return source totals grouped by currency, never conflating unlike records."""
+    queries = {
+        "documents": "SELECT currency, COUNT(*) AS count, SUM(gross_amount) AS gross_amount FROM finance_documents GROUP BY currency ORDER BY currency",
+        "transactions": "SELECT currency, transaction_type, COUNT(*) AS count, SUM(amount) AS amount FROM finance_transactions GROUP BY currency, transaction_type ORDER BY currency, transaction_type",
+        "settlements": "SELECT currency, COUNT(*) AS count, SUM(gross_amount) AS gross_amount, SUM(fees_amount) AS fees_amount, SUM(net_amount) AS net_amount FROM finance_settlements GROUP BY currency ORDER BY currency",
+        "reconciliations": "SELECT status, COUNT(*) AS count FROM finance_reconciliations GROUP BY status ORDER BY status",
+    }
+    results: dict[str, Any] = {}
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            for name, query in queries.items():
+                results[name] = [dict(row) for row in await conn.fetch(query)]
+    else:
+        async with get_connection() as db:
+            for name, query in queries.items():
+                cursor = await db.execute(query)
+                results[name] = [dict(row) for row in await cursor.fetchall()]
+                await cursor.close()
+    return results
