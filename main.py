@@ -170,6 +170,66 @@ async def products_page(request: Request):
     )
 
 
+@app.get("/admin/product/{sku}", response_class=HTMLResponse)
+async def product_detail(request: Request, sku: str):
+    """Render the product detail page with channel-specific content."""
+    async with get_connection() as db:
+        async with db.execute(
+            "SELECT sku, title, category, supplier_price, retail_price, stock, buffered_stock, "
+            "optimized_title, ai_meta FROM products WHERE sku = ?",
+            (sku,),
+        ) as cursor:
+            product = await cursor.fetchone()
+
+    if not product:
+        return JSONResponse({"error": "Product not found"}, status_code=404)
+
+    ai_meta_parsed = {}
+    if product[8]:
+        try:
+            ai_meta_parsed = json.loads(product[8])
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+    # Fetch channel content for this product
+    channel_content: Dict[str, Dict[str, Any]] = {}
+    async with get_connection() as db:
+        for channel in ["shopify", "amazon", "google_shopping"]:
+            async with db.execute(
+                "SELECT optimized_title, description_html, seo_keywords, image_prompt, is_published "
+                "FROM channel_content WHERE sku = ? AND channel_name = ?",
+                (sku, channel),
+            ) as cursor:
+                row = await cursor.fetchone()
+                if row:
+                    channel_content[channel] = {
+                        "optimized_title": row[0] or "",
+                        "description_html": row[1] or "",
+                        "seo_keywords": json.loads(row[2]) if row[2] else [],
+                        "image_prompt": row[3] or "",
+                        "is_published": row[4],
+                    }
+
+    return templates.TemplateResponse(
+        "product_detail.html",
+        {
+            "request": request,
+            "product": {
+                "sku": product[0],
+                "title": product[1],
+                "category": product[2],
+                "supplier_price": product[3] or 0.0,
+                "retail_price": product[4] or 0.0,
+                "stock": product[5] or 0,
+                "buffered_stock": product[6] or 0,
+                "optimized_title": product[7] or "",
+                "ai_meta": ai_meta_parsed,
+            },
+            "channel_content": channel_content,
+        },
+    )
+
+
 @app.get("/admin/settings", response_class=HTMLResponse)
 async def settings_page(request: Request):
     """Render the configuration page."""

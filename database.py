@@ -157,6 +157,19 @@ async def init_db() -> None:
                 FOREIGN KEY (sku) REFERENCES products(sku) ON DELETE CASCADE
             );
 
+            CREATE TABLE IF NOT EXISTS channel_content (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                sku TEXT,
+                channel_name TEXT,           -- 'shopify', 'amazon', 'google_shopping'
+                optimized_title TEXT,
+                description_html TEXT,
+                seo_keywords TEXT,
+                image_prompt TEXT,
+                is_published BOOLEAN DEFAULT 1,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (sku) REFERENCES products(sku) ON DELETE CASCADE
+            );
+
             CREATE TABLE IF NOT EXISTS system_logs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 sku TEXT,

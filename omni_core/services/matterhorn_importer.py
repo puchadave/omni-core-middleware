@@ -524,6 +524,82 @@ class MatterhornUniversalImporter:
 
         return stats
 
+    async def trigger_multi_channel_ai(self, products: List[Dict[str, Any | None]] | None = None) -> Dict[str, int]:
+        """Trigger plattformspezifische KI-Inhaltsgenerierung für alle Kanäle.
+
+        Generiert für jedes Produkt kanal-spezifische Titel, Beschreibungen und
+        SEO-Metadaten für Shopify, Amazon und Google Shopping und speichert sie
+        in der Datenbank-Tabelle `channel_content`.
+
+        :param products: List of product dictionaries. If None, fetches recently
+            imported products from the database.
+        :return: Dictionary with generation statistics per channel
+        """
+        stats: Dict[str, int] = {"generated": 0, "errors": 0}
+
+        if products is None:
+            # Fetch recently imported products from the database
+            async with get_connection() as db:
+                async with db.execute(
+                    "SELECT sku, title, category FROM products WHERE status = 'active' ORDER BY updated_at DESC LIMIT 20"
+                ) as cursor:
+                    rows = await cursor.fetchall()
+                products = [{"sku": row[0], "title": row[1], "category": row[2]} for row in rows]
+
+        if not products:
+            return stats
+
+        for product in products:
+            try:
+                sku: str = product.get("sku", "") or ""
+                title: str = product.get("title", "") or ""
+                category: str = product.get("category", "") or ""
+
+                if not sku or not title:
+                    continue
+
+                # Generate channel-specific content for each target channel
+                for channel in ["shopify", "amazon", "google_shopping"]:
+                    try:
+                        ai_result = await self.ai_engine.generate_channel_content(
+                            title=title,
+                            category=category,
+                            price=product.get("price", 0.0) or 0.0,
+                            channel_name=channel,
+                        )
+
+                        # Store in channel_content table
+                        async with get_connection() as db:
+                            await db.execute(
+                                """
+                                INSERT INTO channel_content (sku, channel_name, optimized_title, description_html, seo_keywords, image_prompt, is_published)
+                                VALUES (?, ?, ?, ?, ?, ?, 1)
+                                ON CONFLICT (sku, channel_name) DO UPDATE SET
+                                    optimized_title = excluded.optimized_title,
+                                    description_html = excluded.description_html,
+                                    seo_keywords = excluded.seo_keywords,
+                                    image_prompt = excluded.image_prompt,
+                                    is_published = 1,
+                                    created_at = CURRENT_TIMESTAMP
+                                """,
+                                (sku, channel, ai_result.get("optimized_title", title),
+                                 ai_result.get("description", ""),
+                                 json.dumps(ai_result.get("seo_keywords", [])),
+                                 ai_result.get("image_prompt", "")),
+                            )
+                            await db.commit()
+                        stats["generated"] += 1
+
+                    except Exception as e:
+                        logger.warning(f"Multi-channel AI generation failed for {sku}/{channel}: {e}")
+                        stats["errors"] += 1
+
+            except Exception as e:
+                logger.error(f"Multi-channel AI generation error for product: {e}")
+                stats["errors"] += 1
+
+        return stats
+
     # -------------------------------------------------------------------------
     # System Log utilities
     # -------------------------------------------------------------------------

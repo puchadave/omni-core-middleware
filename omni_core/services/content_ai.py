@@ -170,6 +170,79 @@ class ContentAIEngine:
             "meta_description": f"{title} - Entdecken Sie {category} online im Shop"[:160],
         }
 
+    async def generate_channel_content(
+        self,
+        title: str,
+        category: str,
+        price: float,
+        channel_name: str,
+    ) -> dict[str, Any]:
+        """
+        Generate plattformspezifische KI-Inhalte für einen bestimmten Vertriebskanal.
+
+        Jeder Kanal erhält einen angepassten Prompt:
+        - 'shopify': Emotional, story-lastig, fokiert auf Vorteile
+        - 'amazon': Faktenbasiert, keyword-optimiert, produkt-detailliert
+        - 'google_shopping': Präzise, Merchant Center konform, klar strukturiert
+
+        :param title: Original product title
+        :param category: Product category
+        :param price: Supplier price
+        :param channel_name: Target channel ('shopify', 'amazon', 'google_shopping')
+        :return: Dictionary with channel-optimized content
+        """
+        # Kanal-spezifische Prompt-Anpassung
+        if channel_name == "shopify":
+            channel_prompt = "Erzeuge emotionalen, story-lastigen Verkaufstext mit Fokus auf Lebensstil und Vorteile. "
+        elif channel_name == "amazon":
+            channel_prompt = "Erzeuge faktenbasierten, keyword-optimierten Text mit detaillierten Produktmerkmalen und Spezifikationen. "
+        elif channel_name == "google_shopping":
+            channel_prompt = "Erzeuge präzisen, Merchant Center konformen Text mit klarer Struktur und exakten Preisangaben. "
+        else:
+            channel_prompt = ""
+
+        system_prompt = (
+            f"Du bist ein E-Commerce AI-Experte für den {channel_name.upper()} Kanal. "
+            "Antworte stets mit gültigem JSON gemäß dem Schema:"
+            "{'optimized_title': '...', 'description': '...', 'seo_keywords': [...], "
+            "'image_prompt': '...'}."
+        )
+
+        user_prompt = f"""
+        Produkt-Daten:
+        - Titel: {title}
+        - Kategorie: {category}
+        - EK-Preis: {price} EUR
+
+        Optimiere den Text für den {channel_name.upper()} Vertriebskanal.
+        """
+
+        try:
+            response: dict[str, Any] = await self.omni_router.get_structured_response(
+                system_prompt, user_prompt, response_format={"type": "json_object"}
+            )
+
+            if isinstance(response, dict) and "optimized_title" in response:
+                return {
+                    "optimized_title": response.get("optimized_title", title),
+                    "description": response.get(
+                        "description", f"<p>{title} aus der Kategorie {category}</p>"
+                    ),
+                    "seo_keywords": response.get(
+                        "seo_keywords", [category, "Mode", "Online-Shop"]
+                    ),
+                    "image_prompt": response.get(
+                        "image_prompt",
+                        f"Professionelles Produktfoto von {title} auf Weißem Hintergrund",
+                    ),
+                }
+
+            return self._fallback_content(title, category)
+
+        except Exception as e:
+            logger.warning(f"Channel content generation failed for {channel_name}: {e}")
+            return self._fallback_content(title, category)
+
     # -------------------------------------------------------------------------
     # Trend & Pricing Analysis with Stock Buffer
     # -------------------------------------------------------------------------
