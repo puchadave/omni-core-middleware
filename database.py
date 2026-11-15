@@ -159,6 +159,214 @@ POSTGRES_SCHEMA: tuple[str, ...] = (
         error_message TEXT NOT NULL DEFAULT ''
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS shopware_connections (
+        id TEXT PRIMARY KEY,
+        shop_name TEXT NOT NULL,
+        shop_url TEXT NOT NULL,
+        shopware_version TEXT NOT NULL DEFAULT '6.0',
+        api_client_id TEXT NOT NULL,
+        api_client_secret_encrypted TEXT NOT NULL,
+        sales_channel_id TEXT NOT NULL DEFAULT '',
+        default_language TEXT NOT NULL DEFAULT 'de-DE',
+        default_currency TEXT NOT NULL DEFAULT 'EUR',
+        default_tax_rate NUMERIC(5,2) NOT NULL DEFAULT 19.00,
+        default_supplier TEXT NOT NULL DEFAULT '',
+        default_shipping_config_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+        is_active BOOLEAN NOT NULL DEFAULT TRUE,
+        last_health_check TIMESTAMPTZ,
+        last_health_status TEXT NOT NULL DEFAULT 'unknown',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS shopware_product_mappings (
+        id TEXT PRIMARY KEY,
+        connection_id TEXT NOT NULL REFERENCES shopware_connections(id) ON DELETE CASCADE,
+        matterhorn_field TEXT NOT NULL,
+        shopware_field TEXT NOT NULL,
+        mapping_type TEXT NOT NULL CHECK (mapping_type IN ('direct', 'transform', 'fallback', 'conditional', 'concatenate', 'clean', 'translate')),
+        mapping_config_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+        priority INTEGER NOT NULL DEFAULT 0,
+        is_active BOOLEAN NOT NULL DEFAULT TRUE,
+        version INTEGER NOT NULL DEFAULT 1,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE(connection_id, matterhorn_field, shopware_field, version)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS shopware_export_queue (
+        id TEXT PRIMARY KEY,
+        connection_id TEXT NOT NULL REFERENCES shopware_connections(id) ON DELETE CASCADE,
+        product_sku TEXT NOT NULL REFERENCES products(sku) ON DELETE CASCADE,
+        export_mode TEXT NOT NULL CHECK (export_mode IN ('publish', 'update', 'variant_update', 'price_update', 'stock_update', 'image_update', 'description_update', 'seo_update', 'category_update', 'full_sync')),
+        status TEXT NOT NULL CHECK (status IN ('pending', 'processing', 'validation', 'release_required', 'exporting', 'completed', 'error', 'retry')),
+        payload_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+        response_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+        error_message TEXT NOT NULL DEFAULT '',
+        retry_count INTEGER NOT NULL DEFAULT 0,
+        max_retries INTEGER NOT NULL DEFAULT 3,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        started_at TIMESTAMPTZ,
+        completed_at TIMESTAMPTZ
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS competitors (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        domain TEXT NOT NULL,
+        shop_url TEXT NOT NULL DEFAULT '',
+        marketplace TEXT NOT NULL DEFAULT '',
+        country TEXT NOT NULL DEFAULT 'DE',
+        currency TEXT NOT NULL DEFAULT 'EUR',
+        detected_categories_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+        detected_brands_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+        last_successful_research TIMESTAMPTZ,
+        products_found INTEGER NOT NULL DEFAULT 0,
+        average_price NUMERIC(12,2),
+        price_positioning TEXT NOT NULL DEFAULT 'unknown' CHECK (price_positioning IN ('cheap', 'average', 'expensive', 'unknown')),
+        availability_status TEXT NOT NULL DEFAULT 'unknown' CHECK (availability_status IN ('good', 'limited', 'poor', 'unknown')),
+        data_source TEXT NOT NULL DEFAULT '',
+        reliability_score NUMERIC(3,2) NOT NULL DEFAULT 0.0 CHECK (reliability_score >= 0 AND reliability_score <= 1.0),
+        is_active BOOLEAN NOT NULL DEFAULT TRUE,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS competitor_products (
+        id TEXT PRIMARY KEY,
+        competitor_id TEXT NOT NULL REFERENCES competitors(id) ON DELETE CASCADE,
+        source_url TEXT NOT NULL,
+        source_name TEXT NOT NULL DEFAULT '',
+        ean TEXT NOT NULL DEFAULT '',
+        sku TEXT NOT NULL DEFAULT '',
+        product_name TEXT NOT NULL DEFAULT '',
+        brand TEXT NOT NULL DEFAULT '',
+        category TEXT NOT NULL DEFAULT '',
+        price NUMERIC(12,2) NOT NULL DEFAULT 0,
+        shipping_cost NUMERIC(10,2) NOT NULL DEFAULT 0,
+        total_price NUMERIC(12,2) NOT NULL DEFAULT 0,
+        currency TEXT NOT NULL DEFAULT 'EUR',
+        availability TEXT NOT NULL DEFAULT '',
+        last_checked TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        data_source TEXT NOT NULL DEFAULT '',
+        match_score INTEGER NOT NULL DEFAULT 0 CHECK (match_score >= 0 AND match_score <= 100),
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS product_matches (
+        id TEXT PRIMARY KEY,
+        own_product_sku TEXT NOT NULL REFERENCES products(sku) ON DELETE CASCADE,
+        competitor_product_id TEXT NOT NULL REFERENCES competitor_products(id) ON DELETE CASCADE,
+        match_score INTEGER NOT NULL CHECK (match_score >= 0 AND match_score <= 100),
+        match_stage TEXT NOT NULL CHECK (match_stage IN ('exact_ean', 'sku_model', 'brand_name_attrs', 'image_similarity', 'semantic', 'manual')),
+        match_reason TEXT NOT NULL DEFAULT '',
+        ai_confirmed BOOLEAN NOT NULL DEFAULT FALSE,
+        ai_confidence NUMERIC(3,2),
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS competitor_price_history (
+        id BIGSERIAL PRIMARY KEY,
+        competitor_product_id TEXT NOT NULL REFERENCES competitor_products(id) ON DELETE CASCADE,
+        price NUMERIC(12,2) NOT NULL DEFAULT 0,
+        shipping_cost NUMERIC(10,2) NOT NULL DEFAULT 0,
+        currency TEXT NOT NULL DEFAULT 'EUR',
+        availability TEXT NOT NULL DEFAULT '',
+        recorded_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        data_source TEXT NOT NULL DEFAULT ''
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS monitoring_jobs (
+        id TEXT PRIMARY KEY,
+        competitor_id TEXT NOT NULL REFERENCES competitors(id) ON DELETE CASCADE,
+        competitor_product_id TEXT REFERENCES competitor_products(id),
+        interval_hours INTEGER NOT NULL CHECK (interval_hours IN (6, 12, 24, 168)),
+        next_run TIMESTAMPTZ NOT NULL,
+        last_run TIMESTAMPTZ,
+        last_price NUMERIC(12,2),
+        last_availability TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'paused', 'error', 'disabled')),
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS price_alerts (
+        id TEXT PRIMARY KEY,
+        alert_type TEXT NOT NULL CHECK (alert_type IN ('competitor_lower', 'competitor_higher', 'out_of_stock', 'new_competitor', 'price_above_market', 'margin_below_min', 'special_offer')),
+        own_product_sku TEXT REFERENCES products(sku) ON DELETE CASCADE,
+        competitor_id TEXT REFERENCES competitors(id) ON DELETE CASCADE,
+        competitor_product_id TEXT REFERENCES competitor_products(id) ON DELETE CASCADE,
+        threshold_value NUMERIC(12,2),
+        is_active BOOLEAN NOT NULL DEFAULT TRUE,
+        last_triggered TIMESTAMPTZ,
+        notification_channels_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS pricing_recommendations (
+        id TEXT PRIMARY KEY,
+        own_product_sku TEXT NOT NULL REFERENCES products(sku) ON DELETE CASCADE,
+        current_price NUMERIC(12,2) NOT NULL DEFAULT 0,
+        recommended_price NUMERIC(12,2) NOT NULL DEFAULT 0,
+        market_average NUMERIC(12,2) NOT NULL DEFAULT 0,
+        market_min NUMERIC(12,2) NOT NULL DEFAULT 0,
+        expected_margin NUMERIC(5,4) NOT NULL DEFAULT 0,
+        contribution_margin NUMERIC(5,4) NOT NULL DEFAULT 0,
+        price_deviation NUMERIC(5,4) NOT NULL DEFAULT 0,
+        strategy TEXT NOT NULL CHECK (strategy IN ('premium_positioning', 'market_average', 'competitive_pricing', 'margin_optimization', 'clearance')),
+        justification TEXT NOT NULL DEFAULT '',
+        data_quality TEXT NOT NULL DEFAULT '',
+        risk_indicator TEXT NOT NULL DEFAULT '',
+        is_approved BOOLEAN NOT NULL DEFAULT FALSE,
+        applied_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS research_runs (
+        id TEXT PRIMARY KEY,
+        query TEXT NOT NULL,
+        provider TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('running', 'completed', 'failed')),
+        products_found INTEGER NOT NULL DEFAULT 0,
+        matches_created INTEGER NOT NULL DEFAULT 0,
+        started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        completed_at TIMESTAMPTZ,
+        error_message TEXT NOT NULL DEFAULT ''
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS pricing_rules (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        rule_type TEXT NOT NULL CHECK (rule_type IN ('global', 'brand', 'category', 'product', 'sales_channel')),
+        target_entity_id TEXT NOT NULL DEFAULT '',
+        min_margin NUMERIC(5,4) NOT NULL DEFAULT 0,
+        target_margin NUMERIC(5,4),
+        markup_percent NUMERIC(5,2),
+        min_selling_price NUMERIC(12,2),
+        max_selling_price NUMERIC(12,2),
+        strategy TEXT NOT NULL DEFAULT 'market_average',
+        is_active BOOLEAN NOT NULL DEFAULT TRUE,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
 )
 
 SQLITE_SCHEMA = """
@@ -245,6 +453,189 @@ CREATE TABLE IF NOT EXISTS import_runs (
     errors INTEGER NOT NULL DEFAULT 0,
     status TEXT NOT NULL DEFAULT 'running' CHECK (status IN ('running', 'success', 'failed')),
     error_message TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS shopware_connections (
+    id TEXT PRIMARY KEY,
+    shop_name TEXT NOT NULL,
+    shop_url TEXT NOT NULL,
+    shopware_version TEXT NOT NULL DEFAULT '6.0',
+    api_client_id TEXT NOT NULL,
+    api_client_secret_encrypted TEXT NOT NULL,
+    sales_channel_id TEXT NOT NULL DEFAULT '',
+    default_language TEXT NOT NULL DEFAULT 'de-DE',
+    default_currency TEXT NOT NULL DEFAULT 'EUR',
+    default_tax_rate REAL NOT NULL DEFAULT 19.00,
+    default_supplier TEXT NOT NULL DEFAULT '',
+    default_shipping_config_json TEXT NOT NULL DEFAULT '{}',
+    is_active INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
+    last_health_check TEXT,
+    last_health_status TEXT NOT NULL DEFAULT 'unknown',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS shopware_product_mappings (
+    id TEXT PRIMARY KEY,
+    connection_id TEXT NOT NULL,
+    matterhorn_field TEXT NOT NULL,
+    shopware_field TEXT NOT NULL,
+    mapping_type TEXT NOT NULL CHECK (mapping_type IN ('direct', 'transform', 'fallback', 'conditional', 'concatenate', 'clean', 'translate')),
+    mapping_config_json TEXT NOT NULL DEFAULT '{}',
+    priority INTEGER NOT NULL DEFAULT 0,
+    is_active INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
+    version INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS shopware_export_queue (
+    id TEXT PRIMARY KEY,
+    connection_id TEXT NOT NULL,
+    product_sku TEXT NOT NULL,
+    export_mode TEXT NOT NULL CHECK (export_mode IN ('publish', 'update', 'variant_update', 'price_update', 'stock_update', 'image_update', 'description_update', 'seo_update', 'category_update', 'full_sync')),
+    status TEXT NOT NULL CHECK (status IN ('pending', 'processing', 'validation', 'release_required', 'exporting', 'completed', 'error', 'retry')),
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    response_json TEXT NOT NULL DEFAULT '{}',
+    error_message TEXT NOT NULL DEFAULT '',
+    retry_count INTEGER NOT NULL DEFAULT 0,
+    max_retries INTEGER NOT NULL DEFAULT 3,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    started_at TEXT,
+    completed_at TEXT
+);
+CREATE TABLE IF NOT EXISTS competitors (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    domain TEXT NOT NULL,
+    shop_url TEXT NOT NULL DEFAULT '',
+    marketplace TEXT NOT NULL DEFAULT '',
+    country TEXT NOT NULL DEFAULT 'DE',
+    currency TEXT NOT NULL DEFAULT 'EUR',
+    detected_categories_json TEXT NOT NULL DEFAULT '[]',
+    detected_brands_json TEXT NOT NULL DEFAULT '[]',
+    last_successful_research TEXT,
+    products_found INTEGER NOT NULL DEFAULT 0,
+    average_price REAL,
+    price_positioning TEXT NOT NULL DEFAULT 'unknown' CHECK (price_positioning IN ('cheap', 'average', 'expensive', 'unknown')),
+    availability_status TEXT NOT NULL DEFAULT 'unknown' CHECK (availability_status IN ('good', 'limited', 'poor', 'unknown')),
+    data_source TEXT NOT NULL DEFAULT '',
+    reliability_score REAL NOT NULL DEFAULT 0.0 CHECK (reliability_score >= 0 AND reliability_score <= 1.0),
+    is_active INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS competitor_products (
+    id TEXT PRIMARY KEY,
+    competitor_id TEXT NOT NULL,
+    source_url TEXT NOT NULL,
+    source_name TEXT NOT NULL DEFAULT '',
+    ean TEXT NOT NULL DEFAULT '',
+    sku TEXT NOT NULL DEFAULT '',
+    product_name TEXT NOT NULL DEFAULT '',
+    brand TEXT NOT NULL DEFAULT '',
+    category TEXT NOT NULL DEFAULT '',
+    price REAL NOT NULL DEFAULT 0,
+    shipping_cost REAL NOT NULL DEFAULT 0,
+    total_price REAL NOT NULL DEFAULT 0,
+    currency TEXT NOT NULL DEFAULT 'EUR',
+    availability TEXT NOT NULL DEFAULT '',
+    last_checked TEXT NOT NULL DEFAULT '',
+    data_source TEXT NOT NULL DEFAULT '',
+    match_score INTEGER NOT NULL DEFAULT 0 CHECK (match_score >= 0 AND match_score <= 100),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS product_matches (
+    id TEXT PRIMARY KEY,
+    own_product_sku TEXT NOT NULL,
+    competitor_product_id TEXT NOT NULL,
+    match_score INTEGER NOT NULL CHECK (match_score >= 0 AND match_score <= 100),
+    match_stage TEXT NOT NULL CHECK (match_stage IN ('exact_ean', 'sku_model', 'brand_name_attrs', 'image_similarity', 'semantic', 'manual')),
+    match_reason TEXT NOT NULL DEFAULT '',
+    ai_confirmed INTEGER NOT NULL DEFAULT 0 CHECK (ai_confirmed IN (0, 1)),
+    ai_confidence REAL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS competitor_price_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    competitor_product_id TEXT NOT NULL,
+    price REAL NOT NULL DEFAULT 0,
+    shipping_cost REAL NOT NULL DEFAULT 0,
+    currency TEXT NOT NULL DEFAULT 'EUR',
+    availability TEXT NOT NULL DEFAULT '',
+    recorded_at TEXT NOT NULL DEFAULT '',
+    data_source TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS monitoring_jobs (
+    id TEXT PRIMARY KEY,
+    competitor_id TEXT NOT NULL,
+    competitor_product_id TEXT,
+    interval_hours INTEGER NOT NULL CHECK (interval_hours IN (6, 12, 24, 168)),
+    next_run TEXT NOT NULL,
+    last_run TEXT,
+    last_price REAL,
+    last_availability TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'paused', 'error', 'disabled')),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS price_alerts (
+    id TEXT PRIMARY KEY,
+    alert_type TEXT NOT NULL CHECK (alert_type IN ('competitor_lower', 'competitor_higher', 'out_of_stock', 'new_competitor', 'price_above_market', 'margin_below_min', 'special_offer')),
+    own_product_sku TEXT,
+    competitor_id TEXT,
+    competitor_product_id TEXT,
+    threshold_value REAL,
+    is_active INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
+    last_triggered TEXT,
+    notification_channels_json TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS pricing_recommendations (
+    id TEXT PRIMARY KEY,
+    own_product_sku TEXT NOT NULL,
+    current_price REAL NOT NULL DEFAULT 0,
+    recommended_price REAL NOT NULL DEFAULT 0,
+    market_average REAL NOT NULL DEFAULT 0,
+    market_min REAL NOT NULL DEFAULT 0,
+    expected_margin REAL NOT NULL DEFAULT 0,
+    contribution_margin REAL NOT NULL DEFAULT 0,
+    price_deviation REAL NOT NULL DEFAULT 0,
+    strategy TEXT NOT NULL CHECK (strategy IN ('premium_positioning', 'market_average', 'competitive_pricing', 'margin_optimization', 'clearance')),
+    justification TEXT NOT NULL DEFAULT '',
+    data_quality TEXT NOT NULL DEFAULT '',
+    risk_indicator TEXT NOT NULL DEFAULT '',
+    is_approved INTEGER NOT NULL DEFAULT 0 CHECK (is_approved IN (0, 1)),
+    applied_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS research_runs (
+    id TEXT PRIMARY KEY,
+    query TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('running', 'completed', 'failed')),
+    products_found INTEGER NOT NULL DEFAULT 0,
+    matches_created INTEGER NOT NULL DEFAULT 0,
+    started_at TEXT NOT NULL,
+    completed_at TEXT,
+    error_message TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS pricing_rules (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    rule_type TEXT NOT NULL CHECK (rule_type IN ('global', 'brand', 'category', 'product', 'sales_channel')),
+    target_entity_id TEXT NOT NULL DEFAULT '',
+    min_margin REAL NOT NULL DEFAULT 0,
+    target_margin REAL,
+    markup_percent REAL,
+    min_selling_price REAL,
+    max_selling_price REAL,
+    strategy TEXT NOT NULL DEFAULT 'market_average',
+    is_active INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
 );
 """
 

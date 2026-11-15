@@ -1,63 +1,76 @@
-# Omni-Core ERP & BI Enterprise Edition
+# Omni-Core ERP & BI Enterprise Middleware
 
-## Sofortstart in unter 2 Minuten
+## Start in under two minutes
 
-Dieses Paket enthält alles für die sofortige Bereitstellung der Omni-Core E-Commerce Middleware als Enterprise ERP & BI Lösung.
+Prerequisite: Docker Desktop (Windows/macOS) or Docker Engine with Compose v2 (Linux, Proxmox, WSL).
 
-### Anforderungen
-- Docker & Docker Compose (v2.20+)
-- Mindestens 512MB RAM
-- Ports 5432 (PostgreSQL) und 8000 (Applikation) frei
+Linux, macOS, Proxmox or WSL:
 
-### Installation & Start (One-Click)
-
-#### Unter Linux/macOS/Proxmox VE (start.sh):
-```bash
+```sh
 chmod +x start.sh
 ./start.sh
 ```
 
-### Oder per Windows (start.bat):
-Doppelklick auf `start.bat`
+Windows:
 
-### Nach dem Start
-Das System ist sofort einsatzbereit:
-
-- **Webinterface (WaWi):** http://SERVER-IP:8000/admin/products
-- **API Health-Check:** http://localhost:8000/api/health
-- **PostgreSQL-Datenbank:** postgresql://omnicore:omnicore_pass@localhost:5432/omnicore
-
-### Standard-Zugangsdaten
-- **Datenbank-User:** omnicore
-- **Datenbank-Passwort:** omnicore_pass
-- **Datenbank-Name:** omnicore
-
-### Wichtige Pfade & Volumes
-- **Datenbank-Daten:** `pg_data` (persistent)
-- **Applikations-Daten:** `app_data` (Produktbilder, Logs, Reports)
-- **Konfigurations-Env-Variablen:** in `docker-compose.yml` und `start.sh`/`start.bat` editierbar
-
-### Zugriff via Docker CLI
-```bash
-# In den Logs sehen
-docker logs -f omni_core
-
- Datenbank neu starten:
-docker restart omni_db
-
-  Vollständiges Neustarten:
-  ./start.sh (bzw. start.bat)
+```bat
+start.bat
 ```
 
-### PCI-DSS & Security Hinweise
-- Ändern Sie die Standard-Passwörter in Produktion
-- Nutzen Sie ein eigenes Netzwerk statt `bridge`
-- Sichern Sie regelmäßig das `pg_data` Volume
-- Die Applikation läuft standardmäßig nur auf Port 8000
+The startup script generates a private `.env` with a random database password on first launch, builds the image, waits for PostgreSQL and verifies application health.
 
-### Fragen & Support
-Besuchen Sie die Dokumentation oder öffnen Sie ein Issue im GitHub-Repository.
+Open:
 
----
+- Dashboard: http://localhost:8000
+- API documentation: http://localhost:8000/docs
+- Health endpoint: http://localhost:8000/api/health
 
-**Willkommen bei Omni-Core ERP & BI Enterprise Edition!**
+## Included stack
+
+- `db`: PostgreSQL 15 Alpine, internal network only, persistent `pg_data` volume.
+- `omni-core`: FastAPI/Uvicorn/uvloop service, port 8000, persistent `app_data` volume.
+- `omni-net`: isolated Docker bridge network.
+
+The app waits for the database health check. Its own startup migration retries PostgreSQL connection establishment for up to 60 seconds and creates all required tables and JSONB GIN indexes.
+
+## Configuration
+
+To configure external integrations, either edit `.env` before startup or use the Settings page after the stack is running:
+
+```dotenv
+OMNIROUTE_URL=http://your-omniroute-host:port/v1
+OMNIROUTE_API_KEY=your-key
+MATTERHORN_API_TOKEN=your-token
+```
+
+`POSTGRES_PASSWORD` must be a strong unique secret for production. It is never committed: `.env` is ignored by Git and Docker build context.
+
+## Operations
+
+```sh
+# Follow application logs
+docker compose logs -f omni-core
+
+# Check runtime state
+docker compose ps
+curl http://localhost:8000/api/health
+
+# Stop without losing data
+docker compose down
+
+# Destructive reset: removes PostgreSQL and app volumes
+docker compose down -v
+```
+
+## Core guarantees
+
+- PostgreSQL production backend via `asyncpg`; SQLite WAL fallback when `DATABASE_URL` is absent.
+- Atomic inventory reservation and bundle recalculation prevent overselling.
+- Supplier stock is imported with a 10% safety buffer.
+- A bundle is active only when every component has stock; its quantity equals the minimum component quantity.
+- The in-process `asyncio.Queue` is bounded and processed by exactly one worker. It is intentionally not a durable queue; received orders are persisted before queueing.
+- No Redis, Celery, Node.js or frontend build chain is required.
+
+## Scope
+
+Omni-Core is an ERP/middleware control plane. It does not implement a public storefront, shopping cart, checkout or payment processing.

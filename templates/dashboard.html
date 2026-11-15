@@ -1,291 +1,185 @@
 <!DOCTYPE html>
-<html lang="de" data-theme="dark" class="dark">
+<html lang="de" class="dark">
 <head>
-    <meta charset="UTF-8"><title>Omni-Core ERP & BI Dashboard</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Omni-Core ERP & BI | Master Dashboard</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.3.0/chart.min.js" defer></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <style>
+        .live-dot { animation: pulse 2s infinite; }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+    </style>
 </head>
-<body class="bg-slate-950 text-slate-100 min-h-screen p-8">
-    <div class="max-w-7xl mx-auto">
+<body class="bg-gray-900 text-gray-100 min-h-screen" x-data="dashboard()" x-init="init()">
+    <nav class="bg-gray-800 border-b border-gray-700 sticky top-0 z-40">
+        <div class="container mx-auto px-4 py-3 flex items-center justify-between">
+            <a href="/" class="text-xl font-bold text-white">OMNI-CORE <span class="text-indigo-400">ERP & BI</span></a>
+            <div class="flex items-center space-x-4">
+                <a href="/" class="text-gray-300 hover:text-white">Dashboard</a>
+                <a href="/admin/products" class="text-gray-300 hover:text-white">Produkte</a>
+                <a href="/admin/orders" class="text-gray-300 hover:text-white">Bestellungen</a>
+                <a href="/admin/settings" class="text-gray-300 hover:text-white">Einstellungen</a>
+            </div>
+        </div>
+    </nav>
 
-        <!-- Header -->
-        <header class="border-b border-slate-800 mb-8">
-            <nav class="flex items-center justify-between flex-wrap gap-4">
-                <div class="flex items-center gap-3">
-                    <a href="#" class="text-2xl font-bold text-emerald-400">Omni-Core ERP</a>
-                    <span class="text-slate-400 text-sm">v2.1.0</span>
-                </div>
-                <div class="flex items-center gap-4">
-                    <a href="/api/health" class="text-slate-300 hover:text-emerald-400 underline text-sm" target="_blank">Health</a>
-                    <a href="/api/admin/system-logs" class="text-slate-300 hover:text-emerald-400 underline text-sm">Logs</a>
-                </div>
-            </nav>
+    <main class="container mx-auto px-4 py-6">
+        <header class="mb-8">
+            <h1 class="text-3xl font-bold text-white">Master Control Center</h1>
+            <p class="text-gray-400">Enterprise E-Commerce Middleware & BI Platform</p>
         </header>
 
-        <!-- KPI Cards Row -->
-        <section class="mb-8">
-            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-                <!-- Total Products -->
-                <div class="bg-slate-900 border border-slate-800 rounded-xl p-6 shadow-xl">
-                    <div class="flex items-baseline">
-                        <div class="text-4xl font-bold text-emerald-400" id="kpi-total-products">Lade...</div>
-                        <div class="text-slate-500 text-sm ml-2">Gesamtprodukte</div>
-                    </div>
+        <!-- Live Status Bar -->
+        <div class="bg-gray-800 rounded-lg p-4 mb-6 border border-gray-700">
+            <div class="flex items-center justify-between">
+                <div class="flex items-center space-x-4">
+                    <span class="flex h-3 w-3 relative">
+                        <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
+                        <span class="relative inline-flex rounded-full h-3 w-3 bg-green-500"></span>
+                    </span>
+                    <span class="text-sm font-medium">System Live</span>
                 </div>
-                <!-- Active Inventory Value -->
-                <div class="bg-slate-900 border border-slate-800 rounded-xl p-6 shadow-xl">
-                    <div class="flex items-baseline">
-                        <div class="text-4xl font-bold text-emerald-400" id="kpi-inventory-value">Lade...</div>
-                        <div class="text-slate-500 text-sm ml-2">Lagerwert (bepuffert)</div>
-                    </div>
+                <div class="text-sm text-gray-400" x-text="'Uptime: ' + uptime + 's | Queue: ' + queueSize + ' | DB: ' + dbType"></div>
+            </div>
+        </div>
+
+        <!-- KPI Cards -->
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
+            <div class="bg-gray-800 rounded-lg p-6 border border-gray-700">
+                <h3 class="text-sm font-medium text-gray-400 uppercase tracking-wider">OmniRoute Latenz</h3>
+                <div class="mt-2 flex items-baseline">
+                    <span class="text-3xl font-bold text-white" x-text="health.omniroute_latency_ms || 'N/A'">...</span>
+                    <span class="ml-2 text-sm text-gray-400">ms</span>
                 </div>
-                <!-- Gross Margin -->
-                <div class="bg-slate-900 border border-slate-800 rounded-xl p-6 shadow-xl">
-                    <div class="flex items-baseline">
-                        <div class="text-4xl font-bold text-emerald-400" id="kpi-margin-pct">Lade...</div>
-                        <div class="text-slate-500 text-sm ml-2">Brutto-Marge %</div>
-                    </div>
+                <div class="mt-2 text-sm" :class="health.omniroute_healthy ? 'text-green-400' : 'text-red-400'" x-text="health.omniroute_healthy ? 'Connected' : 'Disconnected'"></div>
+            </div>
+
+            <div class="bg-gray-800 rounded-lg p-6 border border-gray-700">
+                <h3 class="text-sm font-medium text-gray-400 uppercase tracking-wider">Produkte</h3>
+                <div class="mt-2 flex items-baseline">
+                    <span class="text-3xl font-bold text-white" x-text="stats.product_count">0</span>
                 </div>
-                <!-- Capital Locked -->
-                <div class="bg-slate-900 border border-slate-800 rounded-xl p-6 shadow-xl">
-                    <div class="flex items-baseline">
-                        <div class="text-4xl font-bold text-emerald-400" id="kpi-capital-locked">Lade...</div>
-                        <div class="text-slate-500 text-sm ml-2">Gebundenes Kapital</div>
-                    </div>
+                <div class="mt-2 text-sm text-gray-400" x-text="stats.active_product_count + ' aktiv'"></div>
+            </div>
+
+            <div class="bg-gray-800 rounded-lg p-6 border border-gray-700">
+                <h3 class="text-sm font-medium text-gray-400 uppercase tracking-wider">Offene Bestellungen</h3>
+                <div class="mt-2 flex items-baseline">
+                    <span class="text-3xl font-bold text-white" x-text="stats.pending_order_count">0</span>
+                </div>
+                <div class="mt-2 text-sm text-gray-400">In Bearbeitung</div>
+            </div>
+
+            <div class="bg-gray-800 rounded-lg p-6 border border-gray-700">
+                <h3 class="text-sm font-medium text-gray-400 uppercase tracking-wider">Fehler (24h)</h3>
+                <div class="mt-2 flex items-baseline">
+                    <span class="text-3xl font-bold text-white" x-text="stats.error_count">0</span>
+                </div>
+                <div class="mt-2 text-sm" :class="stats.error_count > 0 ? 'text-red-400' : 'text-green-400'" x-text="stats.error_count > 0 ? 'Aufmerksamkeit' : 'Alles klar'"></div>
+            </div>
+        </div>
+
+        <!-- Import Control -->
+        <div class="bg-gray-800 rounded-lg p-6 border border-gray-700 mb-6">
+            <h2 class="text-lg font-semibold text-white mb-4">Matterhorn Import</h2>
+            <div class="flex items-center space-x-4">
+                <button @click="startImport()" :disabled="importing" class="bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-600 text-white font-bold py-2 px-4 rounded transition-colors" x-text="importing ? 'Import läuft...' : 'Import starten'"></button>
+                <span x-show="importResult" class="text-sm text-gray-400" x-text="importResult"></span>
+            </div>
+            <div class="mt-4" x-show="importRuns.length">
+                <h3 class="text-sm font-medium text-gray-400 mb-2">Letzte Import-Läufe</h3>
+                <div class="space-y-1">
+                    <template x-for="run in importRuns" :key="run.id">
+                        <div class="flex items-center justify-between text-sm p-2 bg-gray-700 rounded">
+                            <span x-text="run.source"></span>
+                            <span :class="run.status === 'success' ? 'text-green-400' : run.status === 'failed' ? 'text-red-400' : 'text-yellow-400'" x-text="run.status"></span>
+                            <span x-text="run.imported + ' produkte'"></span>
+                            <span x-text="run.started_at"></span>
+                        </div>
+                    </template>
                 </div>
             </div>
-        </section>
+        </div>
 
-        <!-- Channel Performance Charts -->
-        <section class="mb-8">
-            <div class="grid grid-cols-2 gap-6">
-                <!-- Margin Distribution Chart -->
-                <div class="bg-slate-900 border border-slate-800 rounded-xl p-6 shadow-xl">
-                    <h3 class="text-slate-400 text-sm mb-4">Margen-Verteilung nach Kanal</h3>
-                    <canvas id="margin-chart"></canvas>
-                </div>
-                <!-- Revenue by Channel -->
-                <div class="bg-slate-900 border border-slate-800 rounded-xl p-6 shadow-xl">
-                    <h3 class="text-slate-400 text-sm mb-4">Umsatz nach Kanal</h3>
-                    <canvas id="revenue-chart"></canvas>
-                </div>
+        <!-- Marketplace Status -->
+        <div class="bg-gray-800 rounded-lg p-6 border border-gray-700 mb-6">
+            <h2 class="text-lg font-semibold text-white mb-4">Marktplatz-Verbindungen</h2>
+            <div class="grid grid-cols-2 md:grid-cols-5 gap-4">
+                <template x-for="marketplace in ['shopware', 'ebay', 'amazon', 'kaufland', 'etsy']" :key="marketplace">
+                    <div class="flex items-center space-x-2 p-3 bg-gray-700 rounded">
+                        <span class="capitalize text-sm" x-text="marketplace"></span>
+                        <span class="ml-auto" :class="marketplaces[marketplace] ? 'text-green-400' : 'text-red-400'">
+                            <svg x-show="marketplaces[marketplace]" class="w-5 h-5" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"></path></svg>
+                            <svg x-show="!marketplaces[marketplace]" class="w-5 h-5" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clip-rule="evenodd"></path></svg>
+                        </span>
+                    </div>
+                </template>
             </div>
-        </section>
+        </div>
 
-        <!-- BI Insights & AI Advisory Panel -->
-        <section class="bg-slate-900 border border-slate-800 rounded-xl p-6 shadow-xl mb-8">
-            <h3 class="text-slate-400 text-sm mb-4">BI Insights & AI Advisory</h3>
-            <div id="bi-insights" class="text-slate-300">
-                <p class="text-slate-500 text-sm">Klicken Sie auf "Daten aktualisieren", um Insights zu laden.</p>
+        <!-- Recent Logs -->
+        <div class="bg-gray-800 rounded-lg p-6 border border-gray-700">
+            <h2 class="text-lg font-semibold text-white mb-4">Letzte System-Logs</h2>
+            <div class="space-y-2 max-h-64 overflow-y-auto">
+                <template x-for="log in logs" :key="log.id">
+                    <div class="flex items-start space-x-3 p-2 bg-gray-700 rounded text-sm">
+                        <span x-text="log.created_at" class="text-gray-400 whitespace-nowrap"></span>
+                        <span :class="{'text-red-400': log.level === 'ERROR', 'text-yellow-400': log.level === 'WARNING', 'text-green-400': log.level === 'INFO'}" x-text="log.level"></span>
+                        <span x-text="log.event" class="font-medium"></span>
+                        <span x-text="log.message" class="flex-1"></span>
+                    </div>
+                </template>
             </div>
-        </section>
-
-        <!-- Action Buttons -->
-        <section class="mb-8">
-            <div class="flex flex-col sm:flex-row gap-3">
-                <button onclick="loadDashboardData()" class="bg-emerald-600 hover:bg-emerald-500 text-white font-medium py-3 px-6 rounded-lg transition-colors">
-                    Daten aktualisieren
-                </button>
-                <button onclick="exportExcel()" class="bg-slate-700 hover:bg-slate-600 text-white font-medium py-3 px-6 rounded-lg transition-colors">
-                    CSV exportieren
-                </button>
-            </div>
-        </section>
-
-    </div>
-
-    <!-- Flash Messages -->
-    <div id="flash-messages" class="fixed top-6 right-6 z-50 flex flex-col gap-2"></div>
+        </div>
+    </main>
 
     <script>
-        // Dashboard State
-        const dashboard = {
-            channelData: {
-                shopify: { margin: 0, revenue: 0 },
-                amazon: { margin: 0, revenue: 0 },
-                google: { margin: 0, revenue: 0 }
-            },
-            marginHistory: [],
-            init: async function() {
-                await this.loadDashboardData();
-                this.initCharts();
-                setInterval(() => this.loadDashboardData(), 60000); // Auto-refresh every minute
-            },
-            // Load all dashboard data via API
-            async loadDashboardData() {
-                try {
-                    // KPI Cards
-                    const kpiResponse = await fetch('/api/stats/overview');
-                    const kpiData = await kpiResponse.json();
-                    document.getElementById('kpi-total-products').textContent = kpiData.total_products;
-                    document.getElementById('kpi-inventory-value').textContent = 
-                        Number(kpiData.total_buffered_stock).toLocaleString() + ' Stk';
-                    document.getElementById('kpi-margin-pct').textContent = kpiData.ai_optimized_count > 0 ? 
-                        Math.round(Math.random() * 30 + 20) + '%' : '0%';
-                    document.getElementById('kpi-capital-locked').textContent = 
-                        Number(kpiData.total_buffered_stock * 45).toLocaleString() + ' €'; // Mock calculation
-                    
-                    // Channel Data
-                    const channelResponse = await fetch('/api/admin/products');
-                    const channelData = await channelResponse.json();
-                    const products = channelData.products || [];
-                    
-                    this.channelData = {
-                        shopify: { margin: 0, revenue: 0, count: 0 },
-                        amazon: { margin: 0, revenue: 0, count: 0 },
-                        google: { margin: 0, revenue: 0, count: 0 }
-                    };
-                    
-                    products.forEach(p => {
-                        const channel = p.category || 'unknown';
-                        if (this.channelData[channel]) {
-                            this.channelData[channel].count++;
-                            // Mock margin calculation based on retail price
-                            const retail = p.retail_price || 0;
-                            const margin = retail > 0 ? Math.round((retail - 25) / retail * 100) : 0;
-                            this.channelData[channel].margin = (this.channelData[channel].margin + margin) / 2;
-                            this.channelData[channel].revenue += retail;
-                        }
-                    });
-                    
-                    this.updateCharts();
-                    this.showInsights();
-                    
-                } catch (error) {
-                    console.error('Fehler beim Laden der Dashboard-Daten:', error);
-                    this.showFlash('Datenladen fehlgeschlagen', 'error');
-                }
-            },
-            // Initialize Chart.js charts
-            initCharts: function() {
-                // Margin Distribution Chart
-                const marginCtx = document.getElementById('margin-chart').getContext('2d');
-                this.marginChart = new Chart(marginCtx, {
-                    type: 'doughnut',
-                    data: {
-                        labels: ['Shopify', 'Amazon', 'Google Shopping'],
-                        datasets: [{
-                            data: [this.channelData.shopify.margin, this.channelData.amazon.margin, this.channelData.google.margin],
-                            backgroundColor: ['#3b82f6', '#10b981', '#f59e0b']
-                        }]
-                    },
-                    options: {
-                        responsive: true,
-                        plugins: {
-                            legend: { position: 'bottom' },
-                            tooltip: { enabled: true }
-                        }
+        function dashboard() {
+            return {
+                health: { omniroute_healthy: false, omniroute_latency_ms: null },
+                stats: { product_count: 0, active_product_count: 0, pending_order_count: 0, error_count: 0 },
+                logs: [],
+                importRuns: [],
+                marketplaces: { shopware: false, ebay: false, amazon: false, kaufland: false, etsy: false },
+                importing: false,
+                importResult: '',
+                uptime: {{ uptime }},
+                queueSize: {{ queue_size }},
+                dbType: '{{ "postgresql" if DATABASE_URL and DATABASE_URL.startswith("postgresql") else "sqlite" }}',
+                async init() {
+                    this.fetchData();
+                    setInterval(() => this.fetchData(), 5000);
+                },
+                async fetchData() {
+                    try {
+                        const health = await fetch('/api/health').then(r => r.json());
+                        this.health = health;
+                        const stats = await fetch('/api/stats').then(r => r.json());
+                        this.stats = stats;
+                        const logs = await fetch('/api/logs?limit=10').then(r => r.json());
+                        this.logs = logs;
+                        const runs = await fetch('/api/import-runs?limit=5').then(r => r.json());
+                        this.importRuns = runs;
+                    } catch (e) {
+                        console.error('Failed to fetch data:', e);
                     }
-                });
-
-                // Revenue Chart
-                const revenueCtx = document.getElementById('revenue-chart').getContext('2d');
-                this.revenueChart = new Chart(revenueCtx, {
-                    type: 'bar',
-                    data: {
-                        labels: ['Shopify', 'Amazon', 'Google Shopping'],
-                        datasets: [{
-                            label: 'Umsatz (€)',
-                            data: [this.channelData.shopify.revenue, this.channelData.amazon.revenue, this.channelData.google.revenue],
-                            backgroundColor: ['#3b82f6', '#10b981', '#f59e0b']
-                        }]
-                    },
-                    options: {
-                        responsive: true,
-                        plugins: {
-                            legend: { position: 'bottom' },
-                            tooltip: { enabled: true }
-                        }
+                },
+                async startImport() {
+                    this.importing = true;
+                    this.importResult = 'Import gestartet...';
+                    try {
+                        const res = await fetch('/api/import/matterhorn', { method: 'POST' });
+                        const data = await res.json();
+                        this.importResult = `Import abgeschlossen: ${data.result.imported} produkte, ${data.result.updated} geändert, ${data.result.errors} fehler`;
+                        this.fetchData();
+                    } catch (e) {
+                        this.importResult = 'Import fehlgeschlagen: ' + e.message;
                     }
-                });
-            },
-            updateCharts: function() {
-                if (this.marginChart) {
-                    this.marginChart.data.datasets.forEach((dataset, i) => {
-                        const channel = Object.keys(this.channelData)[i];
-                        dataset.data = [this.channelData[channel].margin];
-                    });
-                    this.marginChart.update();
+                    this.importing = false;
                 }
-                if (this.revenueChart) {
-                    this.revenueChart.data.datasets.forEach((dataset, i) => {
-                        const channel = Object.keys(this.channelData)[i];
-                        dataset.data = [this.channelData[channel].revenue];
-                    });
-                    this.revenueChart.update();
-                }
-            },
-            // Show BI insights panel
-            showInsights: function() {
-                const insightsDiv = document.getElementById('bi-insights');
-                const totalProducts = parseInt(document.getElementById('kpi-total-products').textContent) || 0;
-                const marginPct = parseInt(document.getElementById('kpi-margin-pct').textContent) || 0;
-                
-                let html = '';
-                if (totalProducts > 0) {
-                    html += `<p><strong>Produktanzahl:</strong> ${totalProducts} Artikel im System</p>`;
-                    html += `<p><strong>Durchschnittsmarge:</strong> ${marginPct}%</p>`;
-                    html += `<p><strong>AI-Empfehlung:</strong> Sortiment optimieren und Preise alle 2 Wochen anpassen</p>`;
-                } else {
-                    html += `<p>Keine Daten verfügbar. Klicken Sie auf "Daten aktualisieren".</p>`;
-                }
-                insightsDiv.innerHTML = html;
-            },
-            // Show flash messages
-            showFlash: function(message, type = 'info') {
-                const container = document.getElementById('flash-messages');
-                if (!container) return;
-                
-                const colors = {
-                    success: 'bg-emerald-100 text-emerald-800',
-                    error: 'bg-red-100 text-red-800',
-                    info: 'bg-slate-100 text-slate-800',
-                };
-                
-                const color = colors[type] || colors.info;
-                const div = document.createElement('div');
-                div.className = `p-3 rounded-lg ${color} transition-all`;
-                div.innerHTML = `<strong>${type.charAt(0).toUpperCase() + type.slice(1)}:</strong> ${message}`;
-                
-                container.appendChild(div);
-                
-                setTimeout(() => {
-                    div.style.transition = 'opacity 0.5s';
-                    div.style.opacity = '0';
-                    setTimeout(() => div.remove(), 500);
-                }, 5000);
-            },
-            // Export to CSV
-            exportExcel: function() {
-                // Collect data and create CSV
-                const data = [
-                    ['SKU', 'Titel', 'Kategorie', 'EK', 'VK', 'Puffer', 'Marge'],
-                    ...document.querySelectorAll('#products-table tr').length > 0 
-                        ? Array.from(document.querySelectorAll('#products-table tr')).slice(1).map(row => [
-                            row.cells[0].textContent,
-                            row.cells[1].textContent,
-                            row.cells[2].textContent,
-                            row.cells[3].textContent,
-                            row.cells[4].textContent,
-                            row.cells[5].textContent,
-                            row.cells[6].textContent
-                        ])
-                        : []
-                ];
-                
-                const csvContent = 'data:text/csv;charset=utf-8,' + data.map(row => row.map(cell => `"${cell}"`).join(',')).join('\n');
-                const encodedUri = encodeURI(csvContent);
-                const link = document.createElement('a');
-                link.setAttribute('href', encodedUri);
-                link.setAttribute('download', 'omni-core-erp-export.csv');
-                document.body.appendChild(link);
-                link.click();
-                document.body.removeChild(link);
             }
-        };
-
-        // Initialize on page load
-        document.addEventListener('DOMContentLoaded', () => dashboard.init());
+        }
     </script>
 </body>
 </html>

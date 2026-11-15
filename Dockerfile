@@ -1,48 +1,43 @@
-# Stage 1: Build dependencies
+# syntax=docker/dockerfile:1
+
 FROM python:3.11-alpine AS builder
 
-RUN apk add --no-cache --virtual=.build-deps \
+RUN apk add --no-cache --virtual .build-deps \
     gcc \
     musl-dev \
-    libpq-dev \
+    libffi-dev \
+    postgresql-dev \
     cargo \
-    pkgconfig \
     make
 
 WORKDIR /build
-
 COPY requirements.txt .
-
 RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
 
-# Stage 2: Runtime
-FROM python:3.11-alpine
+FROM python:3.11-alpine AS runtime
 
 RUN apk add --no-cache \
     libpq \
+    libffi \
     sqlite-libs \
     tzdata \
-    su-exec
+    wget
 
 WORKDIR /app
-
 COPY --from=builder /install /usr/local
+COPY . /app
 
-COPY . .
+RUN addgroup -S omnicore && adduser -S -G omnicore omnicore \
+    && mkdir -p /app/data \
+    && chown -R omnicore:omnicore /app
 
-RUN addgroup -S appgroup && adduser -S appuser -G appgroup \
-    && mkdir -p /app/data /app/logs \
-    && chown -R appuser:appgroup /app
-
-USER appuser
-
+USER omnicore
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     DATABASE_PATH=/app/data/middleware.db
 
 EXPOSE 8000
-
-HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
-    CMD ["python3", "-c", "import asyncio; from services.omniroute_client import OmniRouteClient; import os; base_url = os.getenv('OMNI_ROUTE_BASE_URL', 'http://host.docker.internal:20128'); api_key = os.getenv('OMNI_ROUTE_API_KEY', 'test-client'); client = OmniRouteClient(base_url, api_key); asyncio.run(client.check_health())"]
+HEALTHCHECK --interval=10s --timeout=3s --start-period=20s --retries=12 \
+    CMD wget -q -O /dev/null http://127.0.0.1:8000/api/health || exit 1
 
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1", "--loop", "uvloop"]

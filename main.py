@@ -51,6 +51,13 @@ from services.inventory_guard import InventoryGuard
 from services.matterhorn_importer import MatterhornUniversalImporter
 from services.omniroute_client import OmniRouteClient
 from services.pricing_engine import PricingEngine
+from services.shopware_connection_manager import ShopwareConnectionManager
+from services.shopware_mapping_engine import MappingEngine, FieldMapping, MAPPING_DIRECT, get_default_mappings
+from services.shopware_export_manager import ExportManager, ExportQueueItem
+from services.shopware_description_engine import DescriptionEngine, SEOCenter, DESCRIPTION_TEMPLATES
+from services.competitor_provider import provider_registry, SearchResult, ExampleProvider
+from services.competitor_matching import ProductMatchingEngine, classify_match_score, MatchResult
+from services.competitor_pricing import DynamicPricingEngine, PricingRule, STRATEGY_MARKET_AVERAGE
 from services.trend_engine import TrendEngine
 
 logging.basicConfig(
@@ -111,6 +118,15 @@ class AppRuntime:
         self.started_at = time.monotonic()
         self.omniroute_latency_ms: int | None = None
         self.omniroute_healthy = False
+        # Shopware integration
+        self.shopware_connections: dict[str, ShopwareConnectionManager] = {}
+        self.shopware_mapping_engines: dict[str, MappingEngine] = {}
+        self.shopware_export_manager: ExportManager | None = None
+        self.shopware_description_engine: DescriptionEngine | None = None
+        self.shopware_seo_center: SEOCenter | None = None
+        # Competitor intelligence
+        self.competitor_matching_engine: ProductMatchingEngine | None = None
+        self.competitor_pricing_engine: DynamicPricingEngine | None = None
 
     @property
     def uptime_seconds(self) -> int:
@@ -197,6 +213,16 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     await configure_omniroute()
     runtime.worker_task = asyncio.create_task(fulfillment_worker(), name="fulfillment-worker")
     runtime.trend_task = asyncio.create_task(trend_scheduler(), name="trend-scheduler")
+    # Initialize Shopware services
+    runtime.shopware_export_manager = ExportManager(
+        connection_manager=ShopwareConnectionManager("", "", ""),
+        mapping_engine=MappingEngine([]),
+    )
+    runtime.shopware_description_engine = DescriptionEngine()
+    runtime.shopware_seo_center = SEOCenter()
+    # Initialize Competitor Intelligence
+    runtime.competitor_matching_engine = ProductMatchingEngine()
+    runtime.competitor_pricing_engine = DynamicPricingEngine()
     await write_log("INFO", "application_started", "Omni-Core middleware started.")
     try:
         yield
@@ -681,4 +707,318 @@ async def integrations_health():
             "omni_route": {"healthy": True},
             "database": {"connected": True},
         },
+    }
+
+# ---------------------------------------------------------------------------
+# Shopware Integration API
+# ---------------------------------------------------------------------------
+
+from pydantic import BaseModel
+
+class ShopwareConnectionCreate(BaseModel):
+    shop_name: str
+    shop_url: str
+    shopware_version: str = "6.0"
+    api_client_id: str
+    api_client_secret: str
+    sales_channel_id: str = ""
+    default_language: str = "de-DE"
+    default_currency: str = "EUR"
+    default_tax_rate: float = 19.0
+    default_supplier: str = ""
+
+class ShopwareMappingCreate(BaseModel):
+    connection_id: str
+    matterhorn_field: str
+    shopware_field: str
+    mapping_type: str = MAPPING_DIRECT
+    mapping_config: dict = {}
+    priority: int = 0
+
+class ShopwareExportCreate(BaseModel):
+    connection_id: str
+    product_sku: str
+    export_mode: str = "publish"
+    payload: dict = {}
+
+@app.post("/api/shopware/connections")
+async def create_shopware_connection(payload: ShopwareConnectionCreate):
+    """Create a new Shopware connection."""
+    from uuid import uuid4
+    conn_id = str(uuid4())
+    cm = ShopwareConnectionManager(
+        shop_url=payload.shop_url,
+        client_id=payload.api_client_id,
+        client_secret=payload.api_client_secret,
+        api_version=payload.shopware_version,
+    )
+    runtime.shopware_connections[conn_id] = cm
+    runtime.shopware_mapping_engines[conn_id] = MappingEngine(
+        get_default_mappings(conn_id)
+    )
+    await write_log("INFO", "shopware_connection_created", f"Shopware connection {payload.shop_name} created.", {"connection_id": conn_id})
+    return {
+        "status": "ok",
+        "connection_id": conn_id,
+        "shop_name": payload.shop_name,
+    }
+
+@app.get("/api/shopware/connections")
+async def list_shopware_connections():
+    """List all Shopware connections."""
+    connections = []
+    for conn_id, cm in runtime.shopware_connections.items():
+        connections.append({
+            "id": conn_id,
+            "shop_url": cm.shop_url,
+            "api_version": cm.api_version,
+            "is_authenticated": cm.is_authenticated,
+            "request_count": cm.request_count,
+            "error_count": cm.error_count,
+        })
+    return {"status": "ok", "connections": connections}
+
+@app.post("/api/shopware/connections/{conn_id}/test")
+async def test_shopware_connection(conn_id: str):
+    """Test a Shopware connection."""
+    cm = runtime.shopware_connections.get(conn_id)
+    if not cm:
+        raise HTTPException(status_code=404, detail="Connection not found")
+    health = await cm.check_health()
+    return {"status": "ok", "connection_id": conn_id, "health": health}
+
+@app.post("/api/shopware/connections/{conn_id}/mappings")
+async def create_shopware_mapping(conn_id: str, payload: ShopwareMappingCreate):
+    """Create a field mapping for a Shopware connection."""
+    from uuid import uuid4
+    mapping = FieldMapping(
+        mapping_id=str(uuid4()),
+        connection_id=conn_id,
+        matterhorn_field=payload.matterhorn_field,
+        shopware_field=payload.shopware_field,
+        mapping_type=payload.mapping_type,
+        mapping_config=payload.mapping_config,
+        priority=payload.priority,
+    )
+    engine = runtime.shopware_mapping_engines.get(conn_id)
+    if engine:
+        engine.mappings.append(mapping)
+    await write_log("INFO", "shopware_mapping_created", f"Mapping {payload.matterhorn_field} -> {payload.shopware_field} created.", {"connection_id": conn_id})
+    return {"status": "ok", "mapping_id": mapping.mapping_id}
+
+@app.get("/api/shopware/connections/{conn_id}/mappings")
+async def list_shopware_mappings(conn_id: str):
+    """List field mappings for a Shopware connection."""
+    engine = runtime.shopware_mapping_engines.get(conn_id)
+    if not engine:
+        raise HTTPException(status_code=404, detail="Connection not found")
+    return {
+        "status": "ok",
+        "connection_id": conn_id,
+        "mappings": [m.to_dict() for m in engine.mappings],
+        "summary": engine.get_mapping_summary(),
+    }
+
+@app.post("/api/shopware/export")
+async def add_shopware_export(payload: ShopwareExportCreate):
+    """Add an item to the Shopware export queue."""
+    if not runtime.shopware_export_manager:
+        raise HTTPException(status_code=503, detail="Export manager not initialized")
+    queue_id = runtime.shopware_export_manager.add_to_queue(
+        connection_id=payload.connection_id,
+        product_sku=payload.product_sku,
+        export_mode=payload.export_mode,
+        payload=payload.payload,
+    )
+    return {"status": "ok", "queue_id": queue_id}
+
+@app.get("/api/shopware/export/queue")
+async def list_shopware_export_queue(status: str = None, limit: int = 100):
+    """List Shopware export queue items."""
+    if not runtime.shopware_export_manager:
+        raise HTTPException(status_code=503, detail="Export manager not initialized")
+    items = runtime.shopware_export_manager.list_queue(status=status, limit=limit)
+    return {"status": "ok", "queue": [i.to_dict() for i in items]}
+
+@app.get("/api/shopware/export/stats")
+async def shopware_export_stats():
+    """Get Shopware export queue statistics."""
+    if not runtime.shopware_export_manager:
+        raise HTTPException(status_code=503, detail="Export manager not initialized")
+    return {"status": "ok", "stats": runtime.shopware_export_manager.get_queue_stats()}
+
+@app.post("/api/shopware/export/process")
+async def process_shopware_export(max_items: int = 10):
+    """Process pending Shopware export queue items."""
+    if not runtime.shopware_export_manager:
+        raise HTTPException(status_code=503, detail="Export manager not initialized")
+    result = await runtime.shopware_export_manager.process_queue(max_items=max_items)
+    return {"status": "ok", "result": result}
+
+# ---------------------------------------------------------------------------
+# Shopware Description & SEO API
+# ---------------------------------------------------------------------------
+
+class ShopwareDescriptionRequest(BaseModel):
+    product_sku: str
+    template: str = "premium"
+    ai_enhance: bool = False
+
+@app.post("/api/shopware/description/generate")
+async def generate_shopware_description(payload: ShopwareDescriptionRequest):
+    """Generate a Shopware product description."""
+    product = await fetch_product(payload.product_sku)
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+    
+    from services.canonical_product_mapping import CanonicalProduct
+    cp = CanonicalProduct.from_matterhorn("matterhorn", product)
+    
+    engine = runtime.shopware_description_engine
+    if not engine:
+        raise HTTPException(status_code=503, detail="Description engine not initialized")
+    
+    result = engine.generate_description(cp, template_name=payload.template)
+    
+    if payload.ai_enhance and runtime.omniroute:
+        result = engine.enhance_with_ai(result, cp)
+    
+    return {"status": "ok", "description": result}
+
+@app.post("/api/shopware/seo/generate")
+async def generate_shopware_seo(payload: ShopwareDescriptionRequest):
+    """Generate SEO data for a Shopware product."""
+    product = await fetch_product(payload.product_sku)
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+    
+    from services.canonical_product_mapping import CanonicalProduct
+    cp = CanonicalProduct.from_matterhorn("matterhorn", product)
+    
+    seo_center = runtime.shopware_seo_center
+    if not seo_center:
+        raise HTTPException(status_code=503, detail="SEO center not initialized")
+    
+    result = seo_center.generate_seo_data(cp)
+    return {"status": "ok", "seo": result}
+
+# ---------------------------------------------------------------------------
+# Competitor Intelligence API
+# ---------------------------------------------------------------------------
+
+class CompetitorSearchRequest(BaseModel):
+    query: str
+    provider: str = "example"
+    limit: int = 10
+
+class CompetitorMatchRequest(BaseModel):
+    product_sku: str
+    competitor_ids: list[str] = []
+    ai_confirm: bool = False
+
+class CompetitorPriceRequest(BaseModel):
+    product_sku: str
+    supplier_price_netto: float
+    current_selling_price: float
+    market_prices: list[float] = []
+    brand: str = None
+    category: str = None
+
+@app.post("/api/competitor/search")
+async def competitor_search(payload: CompetitorSearchRequest):
+    """Search for competitor products."""
+    results = await provider_registry.search_all(payload.query, limit_per_provider=payload.limit)
+    all_results = []
+    for provider_id, provider_results in results.items():
+        for r in provider_results:
+            all_results.append(r.to_dict())
+    return {"status": "ok", "query": payload.query, "results": all_results}
+
+@app.post("/api/competitor/match")
+async def competitor_match(payload: CompetitorMatchRequest):
+    """Match a product against competitors."""
+    product = await fetch_product(payload.product_sku)
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+    
+    from services.canonical_product_mapping import CanonicalProduct
+    cp = CanonicalProduct.from_matterhorn("matterhorn", product)
+    
+    engine = runtime.competitor_matching_engine
+    if not engine:
+        raise HTTPException(status_code=503, detail="Matching engine not initialized")
+    
+    # Build competitor product list from search results or database
+    competitor_products = []
+    # Use search results if competitor_ids not specified
+    if not payload.competitor_ids:
+        search_results = await provider_registry.search_all(product.get("title", ""), limit_per_provider=5)
+        for provider_id, provider_results in search_results.items():
+            for r in provider_results:
+                competitor_products.append(r.to_dict())
+    
+    matches = engine.match(cp, competitor_products, ai_confirm=payload.ai_confirm)
+    return {
+        "status": "ok",
+        "product_sku": payload.product_sku,
+        "matches": [m.to_dict() for m in matches],
+    }
+
+@app.post("/api/competitor/price/calculate")
+async def competitor_price_calculate(payload: CompetitorPriceRequest):
+    """Calculate a dynamic price recommendation."""
+    engine = runtime.competitor_pricing_engine
+    if not engine:
+        raise HTTPException(status_code=503, detail="Pricing engine not initialized")
+    
+    result = engine.calculate_price(
+        own_product_sku=payload.product_sku,
+        supplier_price_netto=__import__("decimal").Decimal(str(payload.supplier_price_netto)),
+        current_selling_price=__import__("decimal").Decimal(str(payload.current_selling_price)),
+        market_prices=[__import__("decimal").Decimal(str(mp)) for mp in payload.market_prices],
+        brand=payload.brand,
+        category=payload.category,
+    )
+    return {"status": "ok", "pricing": result.to_dict()}
+
+@app.get("/api/competitor/providers")
+async def list_competitor_providers():
+    """List all registered research providers."""
+    providers = provider_registry.list()
+    return {
+        "status": "ok",
+        "providers": [
+            {
+                "provider_id": p.provider_id,
+                "name": p.name,
+                "status": p.status,
+                "rate_limit_per_second": p.rate_limit_per_second,
+            }
+            for p in providers
+        ],
+    }
+
+# ---------------------------------------------------------------------------
+# Dashboard Metrics Extension
+# ---------------------------------------------------------------------------
+
+@app.get("/api/stats/shopware")
+async def shopware_stats():
+    """Get Shopware integration statistics."""
+    return {
+        "status": "ok",
+        "connections": len(runtime.shopware_connections),
+        "mapping_engines": len(runtime.shopware_mapping_engines),
+        "export_stats": runtime.shopware_export_manager.get_queue_stats() if runtime.shopware_export_manager else {},
+    }
+
+@app.get("/api/stats/competitor")
+async def competitor_stats():
+    """Get Competitor Intelligence statistics."""
+    return {
+        "status": "ok",
+        "providers": len(provider_registry.providers),
+        "connected_providers": len(provider_registry.list_by_status("connected")),
+        "matching_engine": runtime.competitor_matching_engine is not None,
+        "pricing_engine": runtime.competitor_pricing_engine is not None,
     }

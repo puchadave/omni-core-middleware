@@ -1,4 +1,4 @@
-"""Matterhorn product importer."""
+"""Matterhorn product importer with -10% safety stock buffer."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional
 import httpx
 import xml.etree.ElementTree as ET
 
-from database import get_connection, set_setting, get_setting, upsert_product, refresh_all_bundle_stocks, write_log
+from database import upsert_product, refresh_all_bundle_stocks, write_log, start_import_run, finish_import_run, get_setting
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +51,7 @@ class MatterhornUniversalImporter:
         except httpx.HTTPStatusError as exc:
             logger.error("Matterhorn REST API error %s: %s", exc.response.status_code, exc)
             return []
-        except Exception as exc:  # pragma: no cover
+        except Exception as exc:
             logger.exception("Unexpected error fetching from Matterhorn REST API: %s", exc)
             return []
 
@@ -85,7 +85,7 @@ class MatterhornUniversalImporter:
 
     async def import_products(self, source: str = "matterhorn_xml") -> Dict[str, Any]:
         """Run a full import: fetch, apply buffer, persist with idempotent upserts."""
-        run_id = await self._start_run(source)
+        run_id = await start_import_run(source)
         imported = 0
         updated = 0
         errors = 0
@@ -117,20 +117,10 @@ class MatterhornUniversalImporter:
                     logger.error("Error importing product %s: %s", product.get("sku", "?"), exc)
             await refresh_all_bundle_stocks()
             await write_log("INFO", "import_complete", f"Matterhorn import finished: {imported} products, {updated} changed, {errors} errors")
-            await self._finish_run(run_id, imported, updated, errors, "")
+            await finish_import_run(run_id, imported=imported, updated=updated, errors=errors, error_message="")
             return {"imported": imported, "updated": updated, "errors": errors, "status": "success" if errors == 0 else "failed"}
         except Exception as exc:
             logger.exception("Matterhorn import run failed: %s", exc)
             await write_log("ERROR", "import_failed", f"Matterhorn import failed: {exc}")
-            await self._finish_run(run_id, imported, updated, errors, str(exc))
+            await finish_import_run(run_id, imported=imported, updated=updated, errors=errors, error_message=str(exc))
             return {"imported": imported, "updated": updated, "errors": errors, "status": "failed", "error": str(exc)}
-
-    async def _start_run(self, source: str) -> int:
-        """Register a new import run."""
-        from database import start_import_run
-        return await start_import_run(source)
-
-    async def _finish_run(self, run_id: int, imported: int, updated: int, errors: int, error_message: str) -> None:
-        """Mark an import run as finished."""
-        from database import finish_import_run
-        await finish_import_run(run_id, imported=imported, updated=updated, errors=errors, error_message=error_message)

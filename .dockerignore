@@ -1,20 +1,16 @@
-# Docker Ignore File for Omni-Core Middleware
-#
-# This file specifies intentionally untracked files that git should
-# ignore when building a docker image.
-
+# Keep Docker build context small and exclude local runtime data.
+.git/
+.github/
 __pycache__/
-*.pyc
-*.pyo
-*.pyd
-*.egg-info/
-*.egg/
-*.dist-info/
-*.wheel
+*.py[cod]
+*.db
+*.db-shm
+*.db-wal
+.venv/
 venv/
-env/
 .env
-.secret
+.env.*
+!.env.example
+.pytest_cache/
+htmlcov/
 *.log
-*.tmp
-docker-compose.override.yml
