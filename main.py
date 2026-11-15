@@ -67,6 +67,7 @@ from services.omniroute_model_registry import AIModel, ModelRegistry, RoutingRul
 from services.trend_engine import TrendEngine
 from services.event_bus import EventBus, get_event_bus, shutdown_event_bus
 from services.global_control_center import GlobalControlCenter
+from services.ai_agent_controller import AgentChatRequest, AgentConfirmRequest, chat_with_agent, ensure_agent_schema, execute_confirmed
 
 logging.basicConfig(
     level=logging.INFO,
@@ -231,6 +232,7 @@ async def trend_scheduler() -> None:
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     """Initialize storage, services and workers; cancel them cleanly on shutdown."""
     await init_db()
+    await ensure_agent_schema()
     await configure_omniroute()
     runtime.worker_task = asyncio.create_task(fulfillment_worker(), name="fulfillment-worker")
     runtime.trend_task = asyncio.create_task(trend_scheduler(), name="trend-scheduler")
@@ -353,6 +355,42 @@ async def orders_page(request: Request) -> HTMLResponse:
 async def settings_page(request: Request) -> HTMLResponse:
     """Render settings with database-masked secrets."""
     return templates.TemplateResponse("settings.html", {"request": request, "settings": await list_settings()})
+
+
+@app.get("/ai-agent", response_class=HTMLResponse)
+async def ai_agent_page(request: Request) -> HTMLResponse:
+    """Render the persistent Admin & Business Copilot drawer."""
+    return templates.TemplateResponse("ai_agent.html", {"request": request})
+
+
+@app.post("/api/ai-agent/chat")
+async def ai_agent_chat(request: Request, payload: AgentChatRequest) -> dict[str, Any]:
+    """Process a natural-language request through OmniRoute tool calling."""
+    actor = request.headers.get("X-Actor", "admin")
+    try:
+        return await chat_with_agent(payload.message, payload.conversation_id, actor)
+    except Exception as exc:
+        logger.exception("AI agent request failed")
+        raise HTTPException(status_code=502, detail=f"AI agent unavailable: {exc}") from exc
+
+
+@app.post("/api/ai-agent/actions/{action_id}/confirm")
+async def ai_agent_confirm(request: Request, action_id: str) -> dict[str, Any]:
+    """Execute one previously previewed write after explicit UI confirmation."""
+    actor = request.headers.get("X-Actor", "admin")
+    try:
+        result = await execute_confirmed(action_id, actor)
+        return {"status": "confirmed", "action_id": action_id, "result": result}
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post("/api/ai-agent/actions/{action_id}/cancel")
+async def ai_agent_cancel(action_id: str) -> dict[str, Any]:
+    """Cancel a pending AI agent action without executing it."""
+    from services.ai_agent_controller import _mark_action
+    await _mark_action(action_id, "cancelled")
+    return {"status": "cancelled", "action_id": action_id}
 
 
 @app.get("/api/health")
