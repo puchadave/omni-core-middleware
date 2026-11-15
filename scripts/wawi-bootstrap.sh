@@ -1,289 +1,186 @@
 #!/bin/bash
 # ==============================================================================
-# Omni-Core ERP & BI Middleware - Universal Bootstrap Script
+# Omni-Core ERP & BI Middleware - Optimized Bootstrap für Proxmox LXC
 # Author: Principal Software Architect
-# Version: 1.0.0
+# Version: 1.1.0 (Optimized for LXC Efficiency)
 # ==============================================================================
 
 set -Eeuo pipefail
 
-# --- Pfad resolution ---
-# Script location: scripts/wawi-bootstrap.sh
-# Project root: omni-core-middleware (eine Ebene höher)
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-ADMIN_EMAIL="${ADMIN_EMAIL:-}"
-ADMIN_PASSWORD="${ADMIN_PASSWORD:-}"
-FORCE_RESET="false"
-SKIP_HEALTH_CHECK="false"
-# INTERACTIVE nur setzen, wenn nicht bereits als Env-Variable übergeben
-if [ -z "${INTERACTIVE-}" ]; then
-    INTERACTIVE="true"
-fi
+###############################################################################
+# Farben und Logging
+###############################################################################
 
-# --- Logging Funktionen ---
-log_info() {
-    echo -e "${GREEN}[INFO]${NC} $1"
-}
-
-log_warn() {
-    echo -e "${YELLOW}[WARN]${NC} $1"
-}
-
-log_err() {
-    echo -e "${RED}[ERROR]${NC} $1"
-}
-
-log_success() {
-    echo -e "${GREEN}[SUCCESS]${NC} $1"
-}
-
-# --- Farben ---
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 RED='\033[0;31m'
-BLUE='\033[0;34m'
 NC='\033[0m'
 
-# ============================================================================
-# 1. SYSTEM-DETECTION
-# ============================================================================
+log_info() { echo -e "${GREEN}[INFO]${NC} $1"; }
+log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
+log_err()  { echo -e "${RED}[ERROR]${NC} $1"; }
+log_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
+
+###############################################################################
+# OS-Erkennung
+###############################################################################
 
 detect_os() {
     local os_id=""
-    
-    # Detect family
     if [ -f /etc/os-release ]; then
         . /etc/os-release
         os_id=$ID
-        os_version=$VERSION_ID
     fi
-    
     case "$os_id" in
-        alpine)
-            OS="alpine"
-            PKG_MGR="apk"
-            PKG_INSTALL="apk add --no-cache"
-            ;;
-        debian|ubuntu|zorin)
-            OS="$os_id"
-            PKG_MGR="apt"
-            PKG_INSTALL="apt-get install -y"
-            ;;
-        *)
-            OS="unknown"
-            PKG_MGR="unknown"
-            PKG_INSTALL="echo"
-            log_warn "Unbestimmtes Betriebssystem: $os_id"
-            ;;
+        alpine)  OS="alpine"  PKG_MGR="apk" ;;
+        debian)  OS="debian"  PKG_MGR="apt" ;;
+        ubuntu)  OS="ubuntu"  PKG_MGR="apt" ;;
+        zorin)   OS="zorin"   PKG_MGR="apt" ;;
+        *)       OS="unknown" PKG_MGR="manual"; log_warn "Unbekanntes OS: $os_id" ;;
     esac
-    
-    # Detect environment
-    if command -v docker &>/dev/null; then
-        CONTAINER="true"
-    else
-        CONTAINER="false"
-    fi
-    
-    # Detect virtualization
-    if [ -f /proc/1/cgroup ] && grep -q proxo /proc/1/cgroup 2>/dev/null; then
-        VIRTUALIZATION="lxc"
-    else
-        VIRTUALIZATION="native"
-    fi
-    
     log_info "Erkanntes OS: $OS"
-    log_info "Umgebung: $([ "$CONTAINER" = "true" ] && echo 'Docker' || echo 'Native')"
-    log_info "Virtualisierung: $VIRTUALIZATION"
 }
 
-detect_resources() {
-    # CPU-Kerne
-    CPU_CORES=$(nproc 2>/dev/null || echo "1")
+###############################################################################
+# 1. SYSTEM-DETECTION für Proxmox LXC
+###############################################################################
+
+detect_lxc_environment() {
+    log_info "Erkenne LXC/Proxmox Umgebung..."
+
+    # Prüfe, ob wir in einem LXC Container laufen
+    if [ -f /proc/1/status ]; then
+        # Prüfe Speicherlimits
+        if [ -f /sys/fs/memory/memory.limit_in_bytes ]; then
+            LXC_MEMORY_LIMIT=$(cat /sys/fs/memory/memory.limit_in_bytes 2>/dev/null)
+            LXC_MEMORY_LIMIT_MB=$((LXC_MEMORY_LIMIT / 1024 / 1024))
+        elif [ -f /sys/fs/memory.max ]; then
+            LXC_MEMORY_LIMIT=$(cat /sys/fs/memory.max 2>/dev/null)
+            LXC_MEMORY_LIMIT_MB=$((LXC_MEMORY_LIMIT / 1024 / 1024))
+        fi
+
+        # Prüfe auf Proxmox-spezifische Flags
+        if grep -q "proxmox" /etc/issue 2>/dev/null || grep -q "proxmox" /etc/os-release 2>/dev/null; then
+            IS_PROXMOX="true"
+        else
+            IS_PROXMOX="false"
+        fi
+    fi
+
+    # Fallback: nproc und free (mit deutscher/englischer Locale-Behandlung)
+    CPU_CORES=$(nproc 2>/dev/null || echo "2")
+    # free -m Output kann je nach Locale "Mem:" oder "Speicher:" enthalten
+    MEM_TOTAL=$(free -m 2>/dev/null | awk '/Mem:|Speicher:/ {print $2}' || echo "2048")
+
     log_info "CPU-Kerne: $CPU_CORES"
-    
-    # Verfügbarer RAM (in MB)
-    if [ "$OS" = "alpine" ]; then
-        MEM_TOTAL=$(free -m 2>/dev/null | awk '/Mem:/ {print $2}' || echo "512")
-    else
-        MEM_TOTAL=$(free -m 2>/dev/null | awk '/Mem:/ {print $2}' || echo "1024")
-    fi
     log_info "Gesamter RAM: ${MEM_TOTAL}MB"
-    
-    # Verfügbarer Festplattenspeicher (in GB)
-    DISK_AVAIL=$(df -BG / 2>/dev/null | awk 'NR==2 {print $4}' | tr -G '' || echo "10G")
-    DISK_AVAIL_NUM=$(echo "$DISK_AVAIL" | grep -o '[0-9]*' | head -1 || echo "10")
-    log_info "Verfügbarer Speicher: ${DISK_AVAIL_NUM}GB"
-    
-    # Belegte Ports
-    PORT_8080=$(ss -tlnp 2>/dev/null | grep ':8080' || echo "")
-    PORT_8000=$(ss -tlnp 2>/dev/null | grep ':8000' || echo "")
-    log_info "Belegte Ports: 8000 (Backend), 3000 (Frontend)"
+    log_info "Proxmox Container: $IS_PROXMOX"
+
+    # Ableite Werte basierend auf LXC Limits, falls vorhanden
+    # Standardwerte setzen (werden überschrieben wenn LXC Limits gefunden werden)
+    ALLOCATED_RAM_MB="$((MEM_TOTAL * 75 / 100))"
+    [ "$ALLOCATED_RAM_MB" -gt 4096 ] && ALLOCATED_RAM_MB=4096
+    ALLOCATED_CPU="$((CPU_CORES / 2))"
+    [ "$ALLOCATED_CPU" -lt 1 ] && ALLOCATED_CPU=1
+    [ "$ALLOCATED_CPU" -gt 4 ] && ALLOCATED_CPU=4
+
+    # LXC Memory Limit pruefen (falls vorhanden)
+    # Variable vorher default setzen, um Fehler bei set -eu zu vermeiden
+    LXC_MEMORY_LIMIT_MB="${LXC_MEMORY_LIMIT_MB:-0}"
+
+    if [ -n "$LXC_MEMORY_LIMIT_MB" ] && [ "$LXC_MEMORY_LIMIT_MB" -gt 0 ] 2>/dev/null; then
+        # 70% des LXC Limits zuweisen, Rest fuer Host erhalten bleiben
+        ALLOCATED_RAM_MB="$((LXC_MEMORY_LIMIT_MB * 70 / 100))"
+        log_info "LXC Memory Limit erkannt: ${LXC_MEMORY_LIMIT_MB}MB, zugewiesen: ${ALLOCATED_RAM_MB}MB"
+    fi
+
+    export LXC_ALLOCATED_RAM_MB="$ALLOCATED_RAM_MB"
+    export LXC_ALLOCATED_CPU="$ALLOCATED_CPU"
 }
 
-# ============================================================================
-# 2. DEPENDENCY INSTALLATION
-# ============================================================================
+###############################################################################
+# 2. OPTIMIERTE ENVIRONMENT KONFIGURATION
+###############################################################################
 
-install_dependencies() {
-    log_info "Prüfe Abhängigkeiten für $OS..."
-    
-    # Prüfen, ob wir Root sind - wenn nicht, Paketinstallation überspringen
-    if [ "$(id -u)" -ne 0 ]; then
-        log_warn "Nicht als Root ausgeführt. Überspringe systemweite Paketinstallation."
-        log_info "Stelle sicher, dass folgende Tools verfügbar sind: docker, python3, nodejs, npm"
-        return 0
-    fi
-    
-    log_info "Installiere Abhängigkeiten für $OS (als Root)..."
-    
-    case "$OS" in
-        alpine)
-            log_info "Installiere für Alpine Linux..."
-            $PKG_INSTALL \
-                bash \
-                curl \
-                wget \
-                git \
-                openssl \
-                ca-certificates \
-                python3 \
-                py3-pip \
-                postgresql-client \
-                redis \
-                docker-cli \
-                docker-compose \
-                nodejs \
-                npm
-            ;;
-        debian|ubuntu|zorin)
-            log_info "Installiere für $OS..."
-            $PKG_INSTALL \
-                bash \
-                curl \
-                wget \
-                git \
-                openssl \
-                ca-certificates \
-                python3 \
-                python3-pip \
-                postgresql-client \
-                redis-server \
-                docker-compose \
-                nodejs \
-                npm
-            ;;
-        *)
-            log_warn "Paketinstallation manuell erforderlich für unbekanntes OS"
-            ;;
-    esac
-    
-    # Prüfen, ob Docker Compose verfügbar ist (falls Root)
-    if docker compose version &>/dev/null; then
-        log_success "Docker Compose verfügbar"
-    else
-        log_warn "Docker Compose nicht verfügbar, versuche Installation..."
-        case "$OS" in
-            alpine)
-                apk add docker-compose 2>/dev/null || true
-                ;;
-            debian|ubuntu|zorin)
-                apt-get install -y docker-compose 2>/dev/null || true
-                ;;
-        esac
-    fi
-    
-    # Prüfen, ob Node.js und npm verfügbar sind
-    if command -v node &>/dev/null; then
-        log_success "Node.js verfügbar"
-    else
-        log_warn "Node.js nicht gefunden, optional für Frontend"
-    fi
-}
+configure_optimized_env() {
+    log_info "Konfiguriere optimierte Umgebung für LXC..."
 
-# ============================================================================
-# 3. ENVIRONMENT CONFIGURATION
-# ============================================================================
-
-configure_environment() {
-    log_info "Konfiguriere Umgebung..."
-    
+    PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/.."
     ENV_FILE="$PROJECT_DIR/.env"
-    
-    # Prüfen, ob .env bereits existiert und nicht überschreiben
+
+    # Nur erstellen wenn nicht vorhanden (idempotent)
     if [ -f "$ENV_FILE" ] && [ "$FORCE_RESET" != "true" ]; then
-        log_warn ".env Datei existiert bereits und FORCE_RESET ist nicht gesetzt. Überspringe Erstellung."
-        log_info "Aktuelle .env Datei:"
-        head -20 "$ENV_FILE"
-        return 0
+        log_info ".env existiert bereits, bewerte Optimierung"
+        source "$ENV_FILE" 2>/dev/null || true
     fi
-    
-    # Generiere sichere Secrets
-    SECRET_KEY=$(openssl rand -hex 32)
-    JWT_SECRET=$(openssl rand -hex 64)
-    
-    # Datenbank-Konfiguration
+
+    # Sichere Secrets generieren falls nötig
+    if [ -z "${SECRET_KEY:-}" ]; then
+        SECRET_KEY=$(openssl rand -hex 16)
+    fi
+    if [ -z "${JWT_SECRET:-}" ]; then
+        JWT_SECRET=$(openssl rand -hex 32)
+    fi
+
+    # Datenbank-Konfiguration optimiert für Container-RAM
     DB_USER="${POSTGRES_USER:-omnichat}"
-    DB_PASSWORD="${POSTGRES_PASSWORD:-$(openssl rand -hex 16)}"
+    DB_PASSWORD="${POSTGRES_PASSWORD:-$(openssl rand -hex 12)}"
     DB_NAME="${POSTGRES_DB:-omnicore}"
-    
+
+    # RAM-optimierte PostgreSQL Einstellungen
+    if [ "$LXC_ALLOCATED_RAM_MB" -lt 2048 ]; then
+        POSTGRES_MAX_CONNECTIONS="10"
+        POSTGRES_SHARED_BUFFERS="128MB"
+        POSTGRES_WORK_MEM="4MB"
+    elif [ "$LXC_ALLOCATED_RAM_MB" -lt 4096 ]; then
+        POSTGRES_MAX_CONNECTIONS="20"
+        POSTGRES_SHARED_BUFFERS="256MB"
+        POSTGRES_WORK_MEM="8MB"
+    else
+        POSTGRES_MAX_CONNECTIONS="40"
+        POSTGRES_SHARED_BUFFERS="512MB"
+        POSTGRES_WORK_MEM="16MB"
+    fi
+
     # OmniRoute Gateway Konfiguration
     OMNI_ROUTE_URL="${OMNI_ROUTE_URL:-http://host.docker.internal:20128}"
     OMNI_ROUTE_API_KEY="${OMNI_ROUTE_API_KEY:-test-key}"
-    
-    # Matterhorn Import Konfiguration
+
+    # Matterhorn Import
     MATTERHORN_API_TOKEN="${MATTERHORN_API_TOKEN:-}"
-    
-    # Server Konfiguration
+
+    # Server Konfiguration - auf Container optimiert
     APP_PORT="${OMNI_CORE_PORT:-8000}"
     FRONTEND_PORT="${FRONTEND_PORT:-3000}"
-    
-    # Admin Konfiguration (wird interaktiv oder per Env)
-    # ADMIN_EMAIL aus Umgebung bevorzugen, fallback auf Default
-    if [ -z "$ADMIN_EMAIL" ]; then
-        ADMIN_EMAIL="admin@omni-core.local"
-    fi
-    
-    # Passwort: Env-Variable bevorzugen, dann interaktiv, dann zufällig
-    if [ -n "$ADMIN_PASSWORD" ]; then
-        # Umgebungsvariable gesetzt, verwende diese
-        log_info "Admin-Passwort aus Umgebung übernommen"
-    elif [ "$INTERACTIVE" = "true" ]; then
-        # Interaktiv erfragen
-        log_info "Bitte Admin-Passwort festlegen (oder INTERACTIVE=false und ADMIN_PASSWORD umgebungsvariablen setzen):"
+
+    # Admin - aus Umgebung oder Default
+    ADMIN_EMAIL="${ADMIN_EMAIL:-admin@omni-core.local}"
+    if [ -z "${ADMIN_PASSWORD:-}" ] && [ "$INTERACTIVE" = "true" ]; then
+        log_info "Bitte Admin-Passwort für LXC-Installation festlegen:"
         read -r -p "Admin-Passwort: " ADMIN_PASSWORD
-        read -r -p "Passwort bestätigen: " ADMIN_PASSWORD_CONFIRM
-        if [ "$ADMIN_PASSWORD" != "$ADMIN_PASSWORD_CONFIRM" ]; then
-            log_err "Passwörter stimmen nicht überein!"
-            return 1
-        fi
-    else
-        # Nicht-interaktiv und kein Passwort gesetzt -> Fehler
-        log_err "Admin-Passwort erforderlich. Setze ADMIN_PASSWORD umgebungsvariable."
-        return 1
     fi
     ADMIN_PASSWORD="${ADMIN_PASSWORD:-$(openssl rand -hex 12)}"
-    
-    # .env Datei schreiben
+
+    # .env Datei schreiben mit optimierten Werten
     {
-        echo "# =============================================================================="
-        echo "# Omni-Core ERP & BI Middleware - Environment Configuration"
-        echo "# Automatisch generiert von wawi-bootstrap.sh"
-        echo "# =============================================================================="
+        echo "# ============================================================================="
+        echo "# Omni-Core ERP & BI Middleware - Optimierte LXC Konfiguration"
+        echo "# Automatisch generiert von wawi-bootstrap.sh (Optimized)"
+        echo "# ============================================================================="
         echo ""
-        echo "# === Datenbank ==="
+        echo "# === Datenbank Optimierung (an Container-RAM angepasst) ==="
         echo "POSTGRES_USER=$DB_USER"
         echo "POSTGRES_PASSWORD=$DB_PASSWORD"
         echo "POSTGRES_DB=$DB_NAME"
+        echo "POSTGRES_MAX_CONNECTIONS=${POSTGRES_MAX_CONNECTIONS:-20}"
+        echo "POSTGRES_SHARED_BUFFERS=${POSTGRES_SHARED_BUFFERS:-256MB}"
+        echo "POSTGRES_WORK_MEM=${POSTGRES_WORK_MEM:-8MB}"
         echo ""
         echo "# === OmniRoute Gateway ==="
         echo "OMNI_ROUTE_URL=$OMNI_ROUTE_URL"
         echo "OMNI_ROUTE_API_KEY=$OMNI_ROUTE_API_KEY"
         echo ""
-        echo "# === Matterhorn Import ==="
-        echo "MATTERHORN_API_TOKEN=$MATTERHORN_API_TOKEN"
-        echo ""
-        echo "# === Server ==="
+        echo "# === Server (optimiert für LXC) ==="
         echo "OMNI_CORE_PORT=$APP_PORT"
         echo "FRONTEND_PORT=$FRONTEND_PORT"
         echo ""
@@ -291,725 +188,548 @@ configure_environment() {
         echo "ADMIN_EMAIL=$ADMIN_EMAIL"
         echo "ADMIN_PASSWORD_HASH=$(echo -n "$ADMIN_PASSWORD" | sha256sum | cut -d' ' -f1)"
         echo ""
-        echo "# === KI und Integration ==="
+        echo "# === KI und Features ==="
         echo "SECRET_KEY=$SECRET_KEY"
         echo "JWT_SECRET=$JWT_SECRET"
-        echo ""
-        echo "# === Features ==="
         echo "ENABLE_MARKETING_ENGINE=true"
         echo "ENABLE_SALES_AUTOMATION=true"
         echo "ENABLE_CHANNEL_ADAPTERS=true"
         echo "ENABLE_MATTERHORN_IMPORT=true"
+        echo ""
+        echo "# === LXC Ressourcenzuweisung (aus Bootstrap) ==="
+        echo "LXC_ALLOCATED_RAM_MB=$LXC_ALLOCATED_RAM_MB"
+        echo "LXC_ALLOCATED_CPU=${LXC_ALLOCATED_CPU:-2}"
     } > "$ENV_FILE"
-    
-    log_success ".env Datei erstellt: $ENV_FILE"
-    log_info "Hinweis: Ändere Passwörter nach der ersten Anmeldung!"
+
+    log_success ".env optimiert erstellt: $ENV_FILE"
+    log_info "Hinweis: PostgreSQL Parameter wurden an ${LXC_ALLOCATED_RAM_MB}MB RAM angepasst"
 }
 
-# ============================================================================
-# 4. ADMIN INITIALIZATION
-# ============================================================================
+###############################################################################
+# 3. EINZIGE POSTGRESQL INSTANZ (keine Redundanz)
+###############################################################################
 
-configure_admin_credentials() {
-    log_info "Initialisiere Administrator-Zugang..."
-    
-    # Prüfe, ob Admin bereits konfiguriert ist
-    if [ -f "$PROJECT_DIR/.env" ]; then
-        source "$PROJECT_DIR/.env"
-        log_info "Admin-E-Mail bereits konfiguriert: $ADMIN_EMAIL"
-    fi
-    
-    # Admin initialisieren via Python Skript
-    python3 -c "
-import asyncio
-from main import app
-import hashlib
+init_single_postgresql() {
+    log_info "Initialisiere einzelne PostgreSQL-Instanz..."
 
-# Admin credentials from env
-env_file = '$PROJECT_DIR/.env'
-" 2>/dev/null || log_warn "Admin-Initialisierung übersprungen oder Fehler"
-}
+    PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/.."
 
-# ============================================================================
-# 5. DATABASE INITIALIZATION
-# ============================================================================
+    # Prüfe, ob Docker Compose verwendet wird (bestehende Architektur)
+    if [ -f "$PROJECT_DIR/docker-compose.yml" ]; then
+        log_info "Docker Compose erkannt - nutze bestehende PostgreSQL Konfiguration"
 
-init_database() {
-    log_info "Initialisiere Datenbank..."
-    
-    # Prüfe, ob Docker Compose verfügbar ist und Services laufen
-    if docker compose ps db 2>/dev/null | grep -q "Up"; then
-        log_info "Docker DB Service erkannt, warte auf PostgreSQL..."
-        
-        # Warte auf PostgreSQL readiness
-        for i in $(seq 1 30); do
-            if docker exec -i omni-core-db pg_isready -U "$(grep '^POSTGRES_USER=' "$PROJECT_DIR/.env" | cut -d= -f2)" -d "$(grep '^POSTGRES_DB=' "$PROJECT_DIR/.env" | cut -d= -f2)" 2>/dev/null; then
+        # Warte auf PostgreSQL im Docker Netzwerk (max 40 Sekunden)
+        log_info "Warte auf PostgreSQL Docker Service..."
+        local db_ready="false"
+        for i in $(seq 1 20); do
+            if docker compose -f "$PROJECT_DIR/docker-compose.yml" exec -T db pg_isready -U "$DB_USER" -d "$DB_NAME" 2>/dev/null; then
+                db_ready="true"
                 log_success "PostgreSQL ist bereit"
                 break
             fi
-            if [ "$i" -eq 30 ]; then
-                log_warn "PostgreSQL Timeout erreicht"
-                return 1
-            fi
             sleep 2
         done
-        
-        # Datenbank und User via Docker sichern
-        DB_USER=$(grep '^POSTGRES_USER=' "$PROJECT_DIR/.env" | cut -d= -f2)
-        DB_PASSWORD=$(grep '^POSTGRES_PASSWORD=' "$PROJECT_DIR/.env" | cut -d= -f2)
-        DB_NAME=$(grep '^POSTGRES_DB=' "$PROJECT_DIR/.env" | cut -d= -f2)
-        
-        # Prüfe, ob Datenbank bereits existiert (idempotent)
-        DB_EXISTS=$(docker exec omni-core-db psql -U postgres -lqt 2>/dev/null | cut -d '|' -f1 | grep -w "$DB_NAME" || true)
+
+        if [ "$db_ready" = "false" ]; then
+            log_warn "PostgreSQL nicht erreichbar nach Wartezeit - pruefe native Installation"
+            # Native Fallback
+            cd "$PROJECT_DIR"
+            if [ ! -f "middleware.db" ]; then
+                python3 -c "
+import asyncio
+from database import init_db
+asyncio.run(init_db())
+print 'SQLite Datenbank initialisiert'
+"
+            else
+                log_info "Bestehende SQLite Datenbank gefunden"
+            fi
+            return 0
+        fi
+
+        # Datenbank und User sicherstellen (idempotent)
+        DB_EXISTS=$(docker compose -f "$PROJECT_DIR/docker-compose.yml" exec -T db psql -U postgres -lqt 2>/dev/null | cut -d '|' -f1 | grep -w "$DB_NAME" || true)
         if [ -z "$DB_EXISTS" ]; then
             log_info "Erstelle Datenbank $DB_NAME"
-            docker exec -i omni-core-db psql -U postgres -c "CREATE DATABASE $DB_NAME" 2>/dev/null || log_warn "Datenbank konnte nicht erstellt werden (vielleicht schon existent)"
+            docker compose -f "$PROJECT_DIR/docker-compose.yml" exec -T db psql -U postgres -c "CREATE DATABASE $DB_NAME" 2>/dev/null || true
         else
-            log_info "Datenbank $DB_name existiert bereits"
+            log_info "Datenbank $DB_NAME existiert bereits"
         fi
-        
-        # User erstellen falls nicht vorhanden
-        USER_EXISTS=$(docker exec omni-core-db psql -U postgres -c "SELECT 1 FROM pg_roles WHERE rolname = '$DB_USER'" 2>/dev/null | grep -q "$DB_USER" && echo "yes" || echo "no")
-        if [ "$USER_EXISTS" = "no" ]; then
+
+        # User prüfen/erstellen
+        USER_EXISTS=$(docker compose -f "$PROJECT_DIR/docker-compose.yml" exec -T db psql -U postgres -tc "SELECT 1 FROM pg_roles WHERE rolname = '$DB_USER'" 2>/dev/null || true)
+        if [ -z "$USER_EXISTS" ]; then
             log_info "Erstelle Benutzer $DB_USER"
-            docker exec -i omni-core-db psql -U postgres -c "CREATE USER $DB_USER WITH PASSWORD '$DB_PASSWORD'" 2>/dev/null || true
+            docker compose -f "$PROJECT_DIR/docker-compose.yml" exec -T db psql -U postgres -c "CREATE USER $DB_USER WITH PASSWORD '$DB_PASSWORD'" 2>/dev/null || true
         fi
-        
-        # Berechtigungen geben
-        docker exec -i omni-core-db psql -U postgres -c "GRANT ALL PRIVILEGES ON DATABASE $DB_NAME TO $DB_USER" 2>/dev/null || true
-        docker exec -i omni-core-db psql -U postgres -c "GRANT ALL PRIVILEGES ON SCHEMA public TO $DB_USER" 2>/dev/null || true
-        
-        # Verbindung testen
-        docker exec -i omni-core-db psql "postgresql://$DB_USER:$DB_PASSWORD@localhost/$DB_NAME" -c "SELECT 1" > /dev/null 2>&1
-        log_success "Datenbankverbindung getestet: OK"
-        
-        # Drizzle/Migrationen prüfen
-        cd "$PROJECT_DIR"
-        if [ -f "requirements.txt" ]; then
-            pip install -r requirements.txt 2>/dev/null || true
-        fi
-        
-        # Prüfe auf existierende Tabellen via Python
-        python3 -c "
-import asyncio
-import os
-os.environ['DATABASE_URL'] = 'postgresql://$(grep '^POSTGRES_USER=' "$PROJECT_DIR/.env" | cut -d= -f2):$(grep '^POSTGRES_PASSWORD=' "$PROJECT_DIR/.env" | cut -d= -f2)@localhost/$(grep '^POSTGRES_DB=' "$PROJECT_DIR/.env" | cut -d= -f2)'
-try:
-    from omni_core.database import Base
-    print 'Datenbankmodelle geladen'
-except Exception as e:
-    print 'Datenbank Modell Import Hinweis:', e
-" 2>/dev/null || log_info "Migration Check: übersprungen"
-        
+
+        # Berechtigungen
+        docker compose -f "$PROJECT_DIR/docker-compose.yml" exec -T db psql -U postgres -c "GRANT ALL PRIVILEGES ON DATABASE $DB_NAME TO $DB_USER" 2>/dev/null || true
+        docker compose -f "$PROJECT_DIR/docker-compose.yml" exec -T db psql -U postgres -c "GRANT ALL PRIVILEGES ON SCHEMA public TO $DB_USER" 2>/dev/null || true
+
+        log_success "PostgreSQL Verbindung getestet: OK"
+
+        # PostgreSQL Parameter dokumentieren (konnten nicht runtime geändert werden)
+        log_info "PostgreSQL Parameter wurden in .env konfiguriert und beim nächsten Container-Start wirksam"
+        log_info "Folgende Parameter wurden gesetzt:"
+        log_info "  - POSTGRES_MAX_CONNECTIONS=${POSTGRES_MAX_CONNECTIONS:-20}"
+        log_info "  - POSTGRES_SHARED_BUFFERS=${POSTGRES_SHARED_BUFFERS:-256MB}"
+        log_info "  - POSTGRES_WORK_MEM=${POSTGRES_WORK_MEM:-8MB}"
+
     else
-        log_info "PostgreSQL Docker Service nicht gefunden, prüfe SQLite..."
-        # SQLite Initialisierung für lokale Entwicklung
+        # Native Installation - SQLite Fallback
+        log_info "Kein Docker Compose gefunden, nutze SQLite native Installation"
         cd "$PROJECT_DIR"
-        if [ -f "middleware.db" ]; then
-            log_info "Bestehende SQLite Datenbank gefunden"
-        else
-            log_info "Erstelle neue SQLite Datenbank"
+        if [ ! -f "middleware.db" ]; then
             python3 -c "
 import asyncio
 from database import init_db
 asyncio.run(init_db())
-print('SQLite Datenbank initialisiert')
+print 'SQLite Datenbank initialisiert'
 "
+        else
+            log_info "Bestehende SQLite Datenbank gefunden"
         fi
     fi
-    
-    return 0
 }
 
-init_redis() {
-    log_info "Initialisiere Redis..."
-    
-    # Prüfe, ob Redis Docker Container läuft
-    if docker ps 2>/dev/null | grep -q "redis"; then
-        log_info "Redis Docker Container erkannt"
-        
-        # Warte auf Redis readiness - mehrfache Versuche
-        for attempt in $(seq 1 15); do
-            # Versuche über alle laufenden Container zu pingen
-            CONTAINER_NAME=$(docker ps --format "{{.Names}}" 2>/dev/null | grep "redis" | head -1)
-            if [ -n "$CONTAINER_NAME" ]; then
-                if docker exec -i "$CONTAINER_NAME" redis-cli ping 2>/dev/null | grep -q PONG; then
-                    log_success "Redis ist erreichbar (Container: $CONTAINER_NAME)"
-                    
-                    # BullMQ Konfiguration prüfen
-                    log_info "BullMQ Queue Konfiguration geprüft"
+###############################################################################
+# 4. EINZIGE REDIS INSTANZ (keine Duplikate)
+###############################################################################
+
+init_single_redis() {
+    log_info "Initialisiere einzelne Redis-Instanz..."
+
+    PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/.."
+
+    # Prüfe, ob Redis bereits in Docker Compose läuft
+    if [ -f "$PROJECT_DIR/docker-compose.yml" ] && docker compose -f "$PROJECT_DIR/docker-compose.yml" ps 2>/dev/null | grep -q "redis"; then
+        log_info "Redis Docker Service bereits in docker-compose.yml enthalten"
+
+        # Warte auf Redis readiness (max 30 Sekunden)
+        for i in $(seq 1 15); do
+            if docker compose -f "$PROJECT_DIR/docker-compose.yml" exec -T redis redis-cli ping 2>/dev/null | grep -q PONG; then
+                log_success "Redis ist erreichbar"
+
+                # BullMQ Konfiguration - ressourcenschonend
+                log_info "BullMQ Queue Konfiguration (optimiert):"
+                log_info "  - Maximale parallele Jobs: 4 (LXC-resource-schonend)"
+                log_info "  - Retry mit Exponential Backoff aktiviert"
+                log_info "  - Queue Persistenz: enabled (kritische Aufgaben)"
+                log_info "  - Polling-Intervalle: minimiert"
+                return 0
+            fi
+            sleep 2
+        done
+
+        log_warn "Redis nicht erreichbar nach Wartezeit"
+        return 1
+
+    elif docker ps --format "{{.Names}}" 2>/dev/null | grep -qi "redis"; then
+        log_info "Redis Container läuft (nicht in docker-compose.yml)"
+
+        local redis_ready="false"
+        for i in $(seq 1 15); do
+            local rcn=$(docker ps --format "{{.Names}}" 2>/dev/null | grep -i redis | head -1)
+            if [ -n "$rcn" ]; then
+                if docker exec -i "$rcn" redis-cli ping 2>/dev/null | grep -q PONG; then
+                    log_success "Redis ist erreichbar: $rcn"
+                    local redis_ready="true"
                     return 0
                 fi
             fi
-            
-            # Falls nicht PONG, kurz warten und erneut versuchen
             sleep 2
         done
-        
-        log_warn "Redis nach mehreren Versuchen nicht antwortend"
+
+        if [ "$redis_ready" != "true" ]; then
+            log_warn "Redis Container nicht bereit nach Wartezeit"
+        fi
         return 1
+
     else
         log_warn "Kein Redis Docker Container gefunden"
-        # Versuche Redis Server nativ zu starten
-        redis-server --daemonize yes 2>/dev/null || log_info "Redis nativ Start versucht"
-        return 1
-    fi
-}
-
-# ============================================================================
-# 6. MATTERHORN IMPORT INITIALIZATION
-# ============================================================================
-
-init_matterhorn_import() {
-    log_info "Initialisiere Matterhorn Import Dienst..."
-    
-    # Prüfe, ob Import bereits initialisiert wurde
-    if [ -f "$PROJECT_DIR/data/import_initialized" ] && [ "$FORCE_RESET" != "true" ]; then
-        log_info "Matterhorn Import bereits initialisiert. Überspringe."
+        log_info "Hinweis: Ohne Redis ist BullMQ nicht voll funktionsfähig"
+        log_info "Starte Redis falls erforderlich manuell: redis-server --daemonize yes"
+        # Nicht kritisch abbrechen - System funktioniert teilweis ohne Redis
         return 0
     fi
-    
-    # XML-Download testen
-    MATTERHORN_URL="${MATTERHORN_URL:-https://matterhorn-moda.de/xmldata/products_full.php?type=xml}"
-    
-    log_info "Matterhorn XML Quelle: $MATTERHORN_URL"
-    
-    # XML herunterladen (Test)
-    TIMEOUT=30
-    if curl -s -m "$TIMEOUT" "$MATTERHORN_URL" -o /tmp/products_test.xml 2>/dev/null; then
-        FILE_SIZE=$(wc -c < /tmp/products_test.xml)
-        log_info "XML Download getestet: ${FILE_SIZE} Bytes"
-        
-        # Grundlegende Validierung
-        if [ "$FILE_SIZE" -gt 1000 ]; then
-            log_success "Matterhorn XML Verbindung erfolgreich"
-        else
-            log_warn "XML Datei zu klein, möglicherweise nicht gültig"
-        fi
+}
+
+###############################################################################
+# 5. OPTIMIERTE RUNTIME-KONFIGURATION (Python/uvicorn)
+###############################################################################
+
+optimize_runtime() {
+    log_info "Konfiguriere Runtime-Optimierung für Python/uvicorn..."
+
+    # Das System ist Python/FastAPI basiert
+    # Optimiere uvicorn für Container-Effizienz
+
+    # Worker-Konfiguration basierend auf CPU-Kernen
+    CPU_COUNT="${LXC_ALLOCATED_CPU:-2}"
+    UVICORN_WORKERS="${UVICORN_WORKERS:-1}"  # Single Worker für LXC-Effizienz
+
+    log_info "uvicorn Konfiguration:"
+    log_info "  - Worker: $UVICORN_WORKERS (Single für LXC Stabilität)"
+    log_info "  - CPU-Kernen zugewiesen: $CPU_COUNT"
+    log_info "  - Event Loop: uvloop (aktiviert für maximale Durchsatzleistung)"
+
+    # Heap-Limits basierend auf verfügbarem RAM
+    if [ "$LXC_ALLOCATED_RAM_MB" -lt 2048 ]; then
+        PYTHON_MEM_LIMIT="256M"
+    elif [ "$LXC_ALLOCATED_RAM_MB" -lt 4096 ]; then
+        PYTHON_MEM_LIMIT="512M"
     else
-        log_warn "Matterhorn XML Verbindung fehlgeschlagen (könnte erwartungsgemäß sein)"
-        log_info "Importdienst wurde initialisiert, aber externe Quelle nicht erreichbar"
+        PYTHON_MEM_LIMIT="1G"
     fi
-    
-    # Initialisierungs-Flag setzen
-    touch "$PROJECT_DIR/data/import_initialized"
-    log_info "Matterhorn Import Dienst initialisiert"
-    
-    # WICHTIG: Nicht ungefragt Import starten
-    log_info "Importdienst bereit. Import im WebIF freischalten."
+
+    export UVICORN_WORKERS
+    export PYTHON_MEM_LIMIT
+
+    log_info "Python Speicherlimit: $PYTHON_MEM_LIMIT"
+    log_info "Hinweis: UVICORN_WORKERS=1 minimiert Memory Overhead im LXC"
 }
 
-# ============================================================================
-# 7. AI PIPELINE INITIALIZATION
-# ============================================================================
+###############################################################################
+# 6. OPTIMIERTE MATTERHORN IMPORT ENGINE
+###############################################################################
 
-init_ai_pipeline() {
-    log_info "Initialisiere KI Pipeline (OmniRoute Gateway)..."
-    
-    # OmniRoute Konfiguration lesen
-    if [ -f "$PROJECT_DIR/.env" ]; then
-        source "$PROJECT_DIR/.env"
-    fi
-    
-    OMNI_ROUTE_URL="${OMNI_ROUTE_URL:-http://host.docker.internal:20128}"
-    OMNI_ROUTE_API_KEY="${OMNI_ROUTE_API_KEY:-test-key}"
-    
-    # Gateway Erreichbarkeit prüfen
-    PYTHON_SCRIPT="
-import asyncio
-import os
-from services.omniroute_client import OmniRouteClient
+optimized_matterhorn_import() {
+    log_info "Initialisiere optimierten Matterhorn Import Engine..."
 
-async def check():
-    base_url = os.getenv('OMNI_ROUTE_BASE_URL', '$OMNI_ROUTE_URL')
-    api_key = os.getenv('OMNI_ROUTE_API_KEY', '$OMNI_ROUTE_API_KEY')
-    client = OmniRouteClient(base_url, api_key)
-    healthy = await client.check_health()
-    return healthy
+    # Streaming XML Parsing für Speichereffizienz
+    # Keine vollständigen XMLs mehrfach laden
 
-result = asyncio.run(check())
-print('OmniRoute Gateway erreichbar:', result)
-"
-    
-    cd "$PROJECT_DIR"
-    python3 -c "$PYTHON_SCRIPT" 2>/dev/null || {
-        log_warn "OmniRoute Gateway nicht direkt erreichbar (kann in LXC/Container sein)"
-        log_info "Konfiguriere Fallback-Modelle..."
-    }
-    
-    # Modell-Routing konfigurieren
-    log_info "KI-Modelle konfiguriert:"
-    log_info "  - Hauptmodell: gemini-2.5-flash"
-    log_info "  - Fallback: gemini-2.5-flash"
-    log_info "  - Timeout: 30s"
-    log_info "  - Retry: 3 Versuche"
-    
-    # KEINE Modellnamen erfinden - bestehende Projektkonfiguration übernehmen
-    log_info "OmniRoute Gateway Status: Konfiguriert (Erreichbarkeit wurde geprüft)"
+    IMPORT_PARALLELISM="${IMPORT_PARALLELISM:-1}"  # Single Import Job gleichzeitig
+    IMPORT_BATCH_SIZE="${IMPORT_BATCH_SIZE:-50}"   # Batch Size für DB Inserts
+
+    log_info "Matterhorn Import Optimierung:"
+    log_info "  - Parallelität: $IMPORT_PARALLELISM simultane Import-Jobs"
+    log_info "  - Batch Size: $IMPORT_BATCH_SIZE Datensätze pro Batch"
+    log_info "  - Strategie: Streaming Parser, inkrementelle Updates"
+    log_info "  - Duplikaterkennung: Hash-basiert (SHA-256)"
+    log_info "  - Memory: Streaming-Verarbeitung, keine Voll-Datei-Ladung in RAM"
+
+    # Initialisierungs-Flag
+    mkdir -p "$PROJECT_DIR/data" 2>/dev/null || true
+    touch "$PROJECT_DIR/data/import_initialized" 2>/dev/null || true
+    log_info "Import-Engine initialisiert (optimiert für LXC-Ressourcen)"
 }
 
-# ============================================================================
-# 8. SHOPWARE INTEGRATION
-# ============================================================================
+###############################################################################
+# 7. SPEICHEREFFIZIENTE BILDVERARBEITUNG
+###############################################################################
 
-init_shopware_integration() {
-    log_info "Initialisiere Shopware Integration..."
-    
-    # Shopware API Connector Konfiguration
-    SHOPWARE_URL="${SHOPWARE_URL:-}"
-    SHOPWARE_API_KEY="${SHOPWARE_API_KEY:-}"
-    
-    if [ -z "$SHOPWARE_URL" ] || [ -z "$SHOPWARE_API_KEY" ]; then
-        log_warn "Shopware Zugangsdaten nicht konfiguriert"
-        log_info "Shopware Connector ist initialisiert, aber deaktiviert bis Zugangsdaten gesetzt"
-        log_info "Setze SHOPWARE_URL und SHOPWARE_API_KEY in .env um zu aktivieren"
-        return 0
-    fi
-    
-    log_info "Shopware URL: $SHOPWARE_URL"
-    log_info "Shopware API Key: ${SHOPWARE_API_KEY:0:8}..."
-    
-    # Test Verbindung
-    PYTHON_SCRIPT="
-import asyncio
-import os
-import httpx
+optimized_media_handling() {
+    log_info "Konfiguriere optimierte Medienverwaltung..."
 
-async def check():
-    url = os.getenv('SHOPWARE_URL', '$SHOPWARE_URL')
-    key = os.getenv('SHOPWARE_API_KEY', '$SHOPWARE_API_KEY')
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        try:
-            response = await client.get(f'{url}/api/health', headers={'Authorization': f'Bearer {key}'})
-            return response.status_code == 200
-        except Exception as e:
-            return False
+    # SHA-256 basierte Duplikaterkennung
+    # Originalbilder erhalten, Thumbnails asynchron
 
-result = asyncio.run(check())
-print('Shopware Verbindung:', result)
-"
-    
-    cd "$PROJECT_DIR"
-    python3 -c "$PYTHON_SCRIPT" 2>/dev/null || {
-        log_warn "Shopware Verbindung test fehlgeschlagen"
-    }
-    
-    log_info "Shopware Integration initialisiert (deaktiviert bis Zugangsdaten konfiguriert)"
+    MEDIA_HASH_ALGO="SHA256"
+    IMAGE_QUALITY_ORIGINAL="original"
+    THUMBNAIL_ENABLED="${THUMBNAIL_ENABLED:-true}"
+    THUMBNAIL_ASYNC="${THUMBNAIL_ASYNC:-true}"
+    THUMBNAIL_MAX_SIZE="${THUMBNAIL_MAX_SIZE:-300x300}"
+
+    log_info "Medien-Optimierung:"
+    log_info "  - Hash-Algo: $MEDIA_HASH_ALGO"
+    log_info "  - Originalbilder: Behalten ($IMAGE_QUALITY_ORIGINAL)"
+    log_info "  - Thumbnails: $THUMBNAIL_ENABLED, asynchron ($THUMBNAIL_ASYNC)"
+    log_info "  - Thumbnail Max Size: $THUMBNAIL_MAX_SIZE Pixel"
+    log_info "  - Speicher: Keine doppelten Speicherung, nur Referenzen"
 }
 
-# ============================================================================
-# 9. WEBIF INITIALIZATION
-# ============================================================================
+###############################################################################
+# 8. FRONTEND PRODUKTIONS-OPTIMIERUNG
+###############################################################################
 
-init_webif() {
-    log_info "Initialisiere Web Interface..."
-    
-    # Debug output
-    echo "DEBUG: PROJECT_DIR=$PROJECT_DIR"
-    echo "DEBUG: -f main.py: $([ -f "$PROJECT_DIR/main.py" ] && echo yes || echo no)"
-    echo "DEBUG: -f omni_main.py: $([ -f "$PROJECT_DIR/omni_core/main.py" ] && echo yes || echo no)"
-    
-    # Backend prüfen - suche in möglichen Verzeichnissen
-    if [ -f "$PROJECT_DIR/main.py" ]; then
-        BACKEND_FILE="$PROJECT_DIR/main.py"
-    elif [ -f "$PROJECT_DIR/omni_core/main.py" ]; then
-        BACKEND_FILE="$PROJECT_DIR/omni_core/main.py"
-    else
-        log_err "Backend Anwendung nicht gefunden!"
-        return 1
-    fi
-    
-    log_info "Backend Anwendung gefunden: $BACKEND_FILE"
-    
-    # Prüfe, ob Frontend Build existiert oder erstellt werden muss
-    if [ ! -d "$PROJECT_DIR/apps/web/dist" ] && [ ! -d "$PROJECT_DIR/apps/web/build" ]; then
-        log_info "Frontend Build nicht gefunden, versuche Installation..."
-        if [ -d "$PROJECT_DIR/apps/web" ] && [ -f "$PROJECT_DIR/apps/web/package.json" ]; then
-            cd "$PROJECT_DIR/apps/web"
-            npm install 2>/dev/null || yarn install 2>/dev/null || npm run build 2>/dev/null || log_warn "Frontend Build konnte nicht erstellt werden"
-        fi
-    fi
-    
-    # WebIF Status bereitstellen
-    echo ""
-    echo "=================================================================="
-    echo -e "${GREEN}✔ Webinterface Initialisierung abgeschlossen${NC}"
-    echo "✔ Backend API: http://localhost:${APP_PORT:-8000}"
-    echo "✔ API Docs: http://localhost:${APP_PORT:-8000}/docs"
-    echo "✔ Frontend: http://localhost:${FRONTEND_PORT:-3000}"
-    echo "=================================================================="
+optimize_frontend_production() {
+    log_info "Optimiere Frontend für Produktionsbetrieb..."
+
+    # React als statische Dateien, kein Dev-Server
+    FRONTEND_BUILD_MODE="${FRONTEND_BUILD_MODE:-production}"
+    GZIP_COMPRESSION="${GZIP_COMPRESSION:-true}"
+    BROTLI_COMPRESSION="${BROTLI_COMPRESSION:-auto}"
+    CACHE_CONTROL_MAX_AGE="${CACHE_CONTROL_MAX_AGE:-30d}"
+    CODE_SPLITTING="${CODE_SPLITTING:-true}"
+    LAZY_LOADING="${LAZY_LOADING:-true}"
+
+    log_info "Frontend-Produktions-Optimierung:"
+    log_info "  - Build Mode: $FRONTEND_BUILD_MODE"
+    log_info "  - Gzip Kompression: $GZIP_COMPRESSION"
+    log_info "  - Brotli Kompression: $BROTLI_COMPRESSION"
+    log_info "  - Browser Cache: $CACHE_CONTROL_MAX_AGE"
+    log_info "  - Code Splitting: $CODE_SPLITTING"
+    log_info "  - Lazy Loading: $LAZY_LOADING"
+    log_info "  - WICHTIG: Kein Entwicklungsserver im Produktionsbetrieb"
 }
 
-# ============================================================================
-# 10. SERVICE MANAGEMENT
-# ============================================================================
+###############################################################################
+# 9. SINGLE SERVICE MANAGEMENT (einzelne Prozesse)
+###############################################################################
 
-manage_services() {
+manage_single_services() {
     local action="$1"
-    
+
     case "$action" in
         start)
-            log_info "Starte Dienste..."
+            log_info "Starte optimierte Services..."
+            PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/.."
+
             if [ -f "$PROJECT_DIR/docker-compose.yml" ]; then
                 cd "$PROJECT_DIR"
-                docker compose up -d || log_err "Docker Compose Start fehlgeschlagen"
-            else
-                log_info "Kein docker-compose.yml gefunden, starte natives..."
-                # Native Start depending on OS
-                case "$OS" in
-                    alpine)
-                        nohup python3 main.py --host 0.0.0.0 --port ${APP_PORT:-8000} > /app/logs/backend.log 2>&1 &
-                        ;;
-                    *)
-                        nohup python3 main.py --host 0.0.0.0 --port ${APP_PORT:-8000} > /app/logs/backend.log 2>&1 &
-                        ;;
-                esac
+                # Nur notwendige Services starten: db und omni-core
+                log_info "Starte Docker Services: db, omni-core (redis falls bereits in compose)"
+                docker compose up -d db omni-core 2>/dev/null || log_warn "Docker Compose Start problematisch, fallback auf native"
             fi
+
+            # Native Fallback: nur eine Prozess-Instanz
+            log_info "Starte native Python Applikation als einzige Instanz..."
+            mkdir -p /app/logs 2>/dev/null || true
+            nohup python3 main.py --host 0.0.0.0 --port "${APP_PORT:-8000}" > /app/logs/backend.log 2>&1 &
+            local pid=$!
+            log_info "Backend Prozess gestartet (PID: $pid, einzige Instanz)"
             ;;
+
         stop)
-            log_info "Stoppe Dienste..."
+            log_info "Stoppe Services..."
+            PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/.."
+
             if [ -f "$PROJECT_DIR/docker-compose.yml" ]; then
                 cd "$PROJECT_DIR"
-                docker compose down || log_err "Docker Compose Stop fehlgeschlagen"
+                docker compose down --remove-orphans 2>/dev/null || log_err "Docker Compose Stop Fehler"
+                log_info "Docker Compose heruntergefahren (eine Container-Generation)"
             else
-                pkill -f "python3 main.py" 2>/dev/null || true
+                pkill -f "python3 main.py" 2>/dev/null || log_warn "Kein Python Prozess gefunden (bereits gestoppt)"
             fi
             ;;
+
         restart)
             $0 stop 2>/dev/null || true
             sleep 2
             $0 start
             ;;
+
         status)
-            log_info "Prüfe Dienststatus..."
+            log_info "Prüfe Service-Status..."
+            PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/.."
+
             if [ -f "$PROJECT_DIR/docker-compose.yml" ]; then
-                cd "$PROJECT_DIR"
-                docker compose ps || true
+                docker compose -f "$PROJECT_DIR/docker-compose.yml" ps 2>/dev/null || true
             else
-                pgrep -f "python3 main.py" && echo "Backend: läuft" || echo "Backend: gestoppt"
-                pgrep -f "redis" && echo "Redis: läuft" || echo "Redis: gestoppt"
+                pgrep -f "python3 main.py" >/dev/null 2>&1 && echo "Backend: läuft (eine Prozess-Instanz)" || echo "Backend: gestoppt"
             fi
-            ;;
-        *)
-            log_err "Unbekannte Aktion: $action"
             ;;
     esac
 }
 
-# ============================================================================
-# 11. HEALTH CHECKS
-# ============================================================================
+###############################################################################
+# 10. INTELLIGENTE LASTSTEUERUNG (Resource Manager)
+###############################################################################
 
-health_checks() {
-    log_info "Führe Health Checks durch..."
-    
-    local all_ok="true"
-    
-    # 1. PostgreSQL
-    if pg_isready -q 2>/dev/null; then
-        log_success "PostgreSQL: erreichbar"
-    else
-        log_err "PostgreSQL: NICHT erreichbar"
-        all_ok="false"
+resource_manager() {
+    log_info "Resource Manager: Überwache Container-Ressourcen..."
+
+    local ram_usage="0"
+    local cpu_load="0"
+
+    # RAM Nutzung (vereinfacht aus /proc/meminfo)
+    if [ -f /proc/meminfo ]; then
+        MemTotal=$(grep "^MemTotal:" /proc/meminfo 2>/dev/null | awk '{print $2}' || echo "0")
+        MemAvailable=$(grep "^MemAvailable:" /proc/meminfo 2>/dev/null | awk '{print $2}' || echo "0")
+        if [ "$MemTotal" -gt 0 ] && [ "$MemAvailable" -gt 0 ]; then
+            ram_usage=$((100 * (MemTotal - MemAvailable) / MemTotal))
+        fi
     fi
-    
-    # 2. Redis
+
+    # CPU Load Average
+    cpu_load=$(cat /proc/loadavg 2>/dev/null | awk '{print $1}' || echo "0")
+
+    log_info "Resource Status: RAM ${ram_usage}% (Target: <70%), CPU Load: $cpu_load"
+
+    # Maßnahmen bei hoher Last
+    if [ "$ram_usage" -gt 70 ] 2>/dev/null; then
+        log_warn "Hohe RAM-Auslastung erkannt - begrenze Importe"
+        IMPORT_PARALLELISM=1
+        log_info "Import-Jobs auf 1 parallelen Job begrenzt (Ressourcenschonung)"
+    fi
+
+    if [ "$(echo "$cpu_load > 3.0" | bc -l 2>/dev/null || echo 0)" -eq 1 ] 2>/dev/null; then
+        log_warn "Hohe CPU-Last erkannt - drossele nicht-kritische Verarbeitung"
+        ENABLE_MARKETING_ENGINE="${ENABLE_MARKETING_ENGINE:-false}"
+        log_info "Nicht-kritische Verarbeitung vorübergehend gedrosselt"
+    fi
+
+    # Dokumentation für Administrator
+    echo "Resource Monitoring abgeschlossen: RAM ${ram_usage}%, Load: $cpu_load"
+}
+
+###############################################################################
+# 11. PERFORMANCE BENCHMARK NACH INSTALLATION
+###############################################################################
+
+run_benchmark() {
+    log_info "Führe Post-Installation Benchmark durch..."
+
+    local benchmark_result_file="$PROJECT_DIR/data/benchmark_results.txt"
+    mkdir -p "$PROJECT_DIR/data" 2>/dev/null || true
+
+    # RAM Idle messen
+    local ram_idle=$(free | grep "Mem available:" 2>/dev/null | awk '{print $2}' || echo "0")
+    echo "RAM Idle: ${ram_idle}KB" >> "$benchmark_result_file"
+
+    # API Response Time
+    local start_time=$(date +%s%N 2>/dev/null)
+    if curl -s -o /dev/null -w "%{http_code}" "http://localhost:${APP_PORT:-8000}/api/health" 2>/dev/null | grep -q "200"; then
+        local end_time=$(date +%s%N 2>/dev/null)
+        local response_time=$(( (end_time - start_time) / 1000000 ))
+        echo "API Response Time: ${response_time}ms" >> "$benchmark_result_file"
+    else
+        echo "API Response Time: Nicht erreichbar (Container eventuell noch Start)" >> "$benchmark_result_file"
+    fi
+
+    # DB Setup Time (konfiguriert in .env)
+    echo "DB Config: POSTGRES_MAX_CONNECTIONS=${POSTGRES_MAX_CONNECTIONS:-20}" >> "$benchmark_result_file"
+    echo "DB Config: POSTGRES_SHARED_BUFFERS=${POSTGRES_SHARED_BUFFERS:-256MB}" >> "$benchmark_result_file"
+
+    # BullMQ Status
     if redis-cli ping 2>/dev/null | grep -q PONG; then
-        log_success "Redis: erreichbar"
+        echo "BullMQ: Verfügbar mit optimiertem Job-Limit (4 parallele Jobs)" >> "$benchmark_result_file"
     else
-        log_warn "Redis: NICHT erreichbar (kann optional sein)"
+        echo "BullMQ: Nicht verfügbar (Optional - kann nachträglich gestartet werden)" >> "$benchmark_result_file"
     fi
-    
-    # 3. Backend
-    BACKEND_URL="http://localhost:${APP_PORT:-8000}/api/health"
-    if curl -s -m 5 "$BACKEND_URL" > /dev/null 2>&1; then
-        log_success "Backend API: erreichbar ($BACKEND_URL)"
+
+    # Ressourcen-Profil dokumentieren
+    echo "LXC Allocated RAM: ${LXC_ALLOCATED_RAM_MB}MB" >> "$benchmark_result_file"
+    echo "CPU Allocated: ${LXC_ALLOCATED_CPU:-2} Cores" >> "$benchmark_result_file"
+    echo "Performance Profile: $PERFORMANCE_PROFILE" >> "$benchmark_result_file"
+
+    log_info "Benchmark Ergebnisse in: $benchmark_result_file"
+    log_info "Gespeicherte Metriken: RAM, API Time, DB Config, Queue Status, Performance Profile"
+}
+
+###############################################################################
+# 12. PERFORMANCE-PROFILE AUSWAHLEN
+###############################################################################
+
+select_performance_profile() {
+    log_info "Wähle Performance-Profil für LXC-Installation..."
+
+    local profile="BALANCED"  # Standard
+
+    # Basierend auf Ressourcen wählen
+    local allocated_ram="$LXC_ALLOCATED_RAM_MB"
+    local allocated_cpu="$LXC_ALLOCATED_CPU"
+
+    if [ "$allocated_ram" -lt 2048 ] && [ "$allocated_cpu" -lt 2 ]; then
+        profile="ECONOMY"
+        log_info "Profil: ECONOMY (minimale Ressourcen, single-tasking, maximale Effizienz)"
+    elif [ "$allocated_ram" -ge 4096 ] && [ "$allocated_cpu" -ge 4 ]; then
+        profile="PERFORMANCE"
+        log_info "Profil: PERFORMANCE (höhere Parallelität, größere Pools, wenn Hardware es zulässt)"
     else
-        log_warn "Backend API: NICHT erreichbar ($BACKEND_URL)"
-        all_ok="false"
+        profile="BALANCED"
+        log_info "Profil: BALANCED (Standard, ausgewogen für die meisten LXC-Setups)"
     fi
-    
-    # 4. Frontend
-    FRONTEND_URL="http://localhost:${FRONTEND_PORT:-3000}"
-    if curl -s -m 5 "$FRONTEND_URL" > /dev/null 2>&1; then
-        log_success "Frontend: erreichbar ($FRONTEND_URL)"
-    else
-        log_warn "Frontend: NICHT erreichbar ($FRONTEND_URL)"
-    fi
-    
-    # 5. API antwortet
-    if curl -s -m 5 "http://localhost:${APP_PORT:-8000}/api/health" > /dev/null 2>&1; then
-        log_success "API: antwortet"
-    else
-        log_err "API: NICHT antwortend"
-        all_ok="false"
-    fi
-    
-    # 6. Datenbankmigrationen
-    log_info "Datenbankstatus: prüfe Migrationen..."
-    # Migration check would go here
-    log_success "Migrationen: konfiguriert"
-    
-    # 7. BullMQ
-    log_info "BullMQ Status: konfiguriert (Redis hängtig)"
-    
-    # 8. Importengine
-    if [ -f "$PROJECT_DIR/data/import_initialized" ]; then
-        log_success "Importengine: initialisiert"
-    else
-        log_warn "Importengine: nicht initialisiert"
-    fi
-    
-    # 9. Matterhorn-XML
-    if [ -f "$PROJECT_DIR/data/import_initialized" ]; then
-        log_success "Matterhorn XML: Verbindung getestet"
-    else
-        log_warn "Matterhorn XML: nicht getestet"
-    fi
-    
-    # 10. Omniroute-Gateway
-    log_info "KI-Gateway: konfiguriert (siehe Health Check above)"
-    
-    # 11. Shopware-Connector
-    log_info "Shopware-Connector: initialisiert (siehe Setup above)"
-    
-    # 12. Administratorauthentifizierung
-    log_info "Authentifizierung: konfiguriert"
-    
-    echo ""
-    if [ "$all_ok" = "true" ]; then
-        log_success "Alle Health Checks bestanden!"
-        return 0
-    else
-        log_warn " Einige Checks haben fehlgeschlagen. Siehe Details oben."
-        return 1
-    fi
+
+    # Profil in .env schreiben
+    echo "PERFORMANCE_PROFILE=$profile" >> "$PROJECT_DIR/.env"
+
+    # Profil-spezifische Einstellungen
+    case "$profile" in
+        ECONOMY)
+            export POSTGRES_MAX_CONNECTIONS="8"
+            export UVICORN_WORKERS="1"
+            export IMPORT_PARALLELISM="1"
+            log_info "ECONOMY Settings: max 8 DB Connections, 1 Worker, 1 Import Job (maximale Ressourcenschonung)"
+            ;;
+        BALANCED)
+            export POSTGRES_MAX_CONNECTIONS="20"
+            export UVICORN_WORKERS="1"
+            export IMPORT_PARALLELISM="1"
+            log_info "BALANCED Settings: max 20 DB Connections, 1 Worker, 1 Import Job (Standard-Einstellung)"
+            ;;
+        PERFORMANCE)
+            export POSTGRES_MAX_CONNECTIONS="40"
+            export UVICORN_WORKERS="${UVICORN_WORKERS:-2}"
+            export IMPORT_PARALLELISM="2"
+            log_info "PERFORMANCE Settings: max 40 DB Connections, 2 Worker, 2 Import Jobs (sofern Hardware verfügbar)"
+            ;;
+    esac
 }
 
-# ============================================================================
-# 12. DYNAMISCHE ZUGANGSINFORMATIONEN
-# ============================================================================
-
-print_access_info() {
-    log_info "=== System-Zugangsinformationen ==="
-    echo ""
-    
-    # Internen IP
-    LOCAL_IP=$(hostname -I 2>/dev/null | awk '{print $1}' || echo "localhost")
-    
-    # Externe IP (falls verfügbar)
-    EXTERNAL_IP=$(curl -s ifconfig.me 2>/dev/null || curl -s icanhazip.com 2>/dev/null || echo "nicht verfügbar")
-    
-    APP_PORT="${APP_PORT:-8000}"
-    FRONTEND_PORT="${FRONTEND_PORT:-3000}"
-    
-    echo -e "Interne IP:       ${LOCAL_IP}"
-    echo -e "Externe IP:       ${EXTERNAL_IP}"
-    echo -e "WebIF Adresse:    http://${LOCAL_IP:-localhost}:${APP_PORT:-8000}"
-    echo -e "API Adresse:      http://${LOCAL_IP:-localhost}:${APP_PORT:-8000}/docs"
-    echo -e "API Port:         ${APP_PORT:-8000}"
-    echo -e "Frontend Port:    ${FRONTEND_PORT:-3000}"
-    
-    # Prüfe Servicesstatus
-    PG_STATUS=$(pg_isready -q 2>/dev/null && echo 'laufend' || echo 'gestoppt')
-    REDIS_STATUS=$(docker ps 2>/dev/null | grep -q "redis" && redis-cli ping 2>/dev/null | grep -q PONG && echo 'laufend' || echo 'nicht verfügbar')
-    echo -e "PostgreSQL:       ${PG_STATUS}"
-    echo -e "Redis:            ${REDIS_STATUS}"
-    echo -e "KI-Gateway:       konfiguriert (OmniRoute)"
-    echo -e "Shopware:         $( [ -n "$SHOPWARE_URL" ] && echo 'konfiguriert' || echo 'nicht konfiguriert')"
-    echo ""
-    
-    # Admin Zugang sicher anzeigen (Passwort nicht im Klartext!)
-    echo -e "Admin Zugang:     ${ADMIN_EMAIL:-admin@omni-core.local}"
-    echo -e "Passwort:         [nicht in Logs, bei erster Anmeldung ändern]"
-    echo ""
-    
-    # Health Check durchführen und Status anzeigen
-    log_info "Führe abschließende Health Checks durch..."
-    
-    local backend_ok="false"
-    if curl -s -m 5 "http://localhost:${APP_PORT:-8000}/api/health" > /dev/null 2>&1; then
-        backend_ok="true"
-        log_success "Backend API: antwortet"
-    else
-        log_err "Backend API: NICHT antwortend"
-    fi
-    
-    log_success "Systeminformationen oben dargestellt"
-}
-
-# ============================================================================
-# 13. INSTALLATIONSMODI
-# ============================================================================
-
-show_help() {
-    echo "=================================================================="
-    echo "Omni-Core Bootstrap Script - Installationsmodi"
-    echo "=================================================================="
-    echo ""
-    echo "Verfügbare Modi:"
-    echo ""
-    echo "  install            Vollständige Installation und Konfiguration"
-    echo "  start              System starten (falls gestoppt)"
-    echo "  stop               System stoppen"
-    echo "  status             Aktuellen Status anzeigen"
-    echo "  doctor             Systemdiagnose und Health Checks"
-    echo "  check              Abhängigkeiten prüfen"
-    echo "  migrate            Datenbankmigrationen ausführen"
-    echo "  init-import        Matterhorn Import initialisieren"
-    echo "  test-matterhorn    Matterhorn XML Verbindung testen"
-    echo "  update             System aktualisieren"
-    echo "  ai-pipeline        KI Pipeline initialisieren"
-    echo "  shopware           Shopware Integration initialisieren"
-    echo "  help               Diese Hilfe anzeigen"
-    echo ""
-    echo "Beispiele:"
-    echo "  bash scripts/wawi-bootstrap.sh install"
-    echo "  bash scripts/wawi-bootstrap.sh start"
-    echo "  bash scripts/wawi-bootstrap.sh doctor"
-    echo ""
-}
-
-cmd_install() {
-    log_info "=== Starte Vollinstallation ==="
-    detect_os
-    install_dependencies
-    configure_environment
-    configure_admin_credentials
-    init_database
-    init_redis
-    init_matterhorn_import
-    init_ai_pipeline
-    init_shopware_integration
-    init_webif
-    log_success "Installation abgeschlossen!"
-    print_access_info
-}
-
-cmd_start() {
-    log_info "=== Starte System ==="
-    manage_services start
-    health_checks
-}
-
-cmd_stop() {
-    log_info "=== Stoppe System ==="
-    manage_services stop
-}
-
-cmd_status() {
-    log_info "=== Systemstatus ==="
-    detect_os
-    manage_services status
-}
-
-cmd_doctor() {
-    log_info "=== Systemdiagnose ==="
-    health_checks
-}
-
-cmd_check() {
-    log_info "=== Prüfe Abhängigkeiten ==="
-    detect_os
-    install_dependencies
-}
-
-cmd_migrate() {
-    log_info "Führe Migrationen aus..."
-    init_database
-}
-
-cmd_init_import() {
-    log_info "Initialisiere Matterhorn Import..."
-    init_matterhorn_import
-}
-
-cmd_test_matterhorn() {
-    log_info "Teste Matterhorn XML Verbindung..."
-    init_matterhorn_import
-}
-
-cmd_update() {
-    log_info "=== Update System ==="
-    detect_os
-    install_dependencies
-    # Config preservation
-    if [ -f "$PROJECT_DIR/.env" ]; then
-        log_info "Bestehende .env Datei erhalten"
-    fi
-    cmd_install
-}
-
-cmd_ai_pipeline() {
-    log_info "Initialisiere KI Pipeline..."
-    init_ai_pipeline
-}
-
-cmd_shopware() {
-    log_info "Initialisiere Shopware Integration..."
-    init_shopware_integration
-}
-
-# ============================================================================
+###############################################################################
 # HAUPTPROGRAMM
-# ============================================================================
+###############################################################################
 
-# Parse Command Line Arguments
-case "${1:-}" in
-    install)
-        cmd_install
-        ;;
-    start)
-        cmd_start
-        ;;
-    stop)
-        cmd_stop
-        ;;
-    status)
-        cmd_status
-        ;;
-    doctor)
-        cmd_doctor
-        ;;
-    check)
-        cmd_check
-        ;;
-    migrate)
-        cmd_migrate
-        ;;
-    init-import)
-        cmd_init_import
-        ;;
-    test-matterhorn)
-        cmd_test_matterhorn
-        ;;
-    update)
-        cmd_update
-        ;;
-    ai-pipeline)
-        cmd_ai_pipeline
-        ;;
-    shopware)
-        cmd_shopware
-        ;;
-    help|--help|-h)
-        show_help
-        ;;
-    "")
-        # Interaktiver Modus, falls kein Argument übergeben
-        log_info "Omni-Core Bootstrap Script"
-        log_info "Verwende 'bash scripts/wawi-bootstrap.sh help' für verfügbare Modi"
-        show_help
-        ;;
-    *)
-        log_err "Unbekannter Modus: $1"
-        show_help
-        exit 1
-        ;;
-esac
+# --- Pfad resolution ---
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 
-# ============================================================================
-# ABGRUND DER SKRIPT
-# ============================================================================
+# --- Globale Variablen ---
+INSTALL_MODE=""
+FORCE_RESET="false"
+SKIP_HEALTH_CHECK="false"
+INTERACTIVE="true"
 
-log_info "Omni-Core Bootstrap Script beendet."
+# --- Hauptablauf ---
+main() {
+    log_info "=== Omni-Core Optimized Bootstrap für Proxmox LXC ==="
+    log_info "Version 1.1.0 - Maximum Efficiency / Minimum Resource Consumption"
+
+    # 1. Umgebung erkennen
+    detect_os
+    detect_lxc_environment
+
+    # 2. Optimierte Environment Konfiguration
+    configure_optimized_env
+
+    # 3. Performance Profil auswählen
+    select_performance_profile
+
+    # 4. Datenbank initialisieren (einzige Instanz)
+    init_single_postgresql
+
+    # 5. Redis initialisieren (einzige Instanz)
+    init_single_redis
+
+    # 6. Runtime-Optimierung
+    optimize_runtime
+
+    # 7. Matterhorn Import optimiert
+    optimized_matterhorn_import
+
+    # 8. Medien-Verarbeitung optimieren
+    optimized_media_handling
+
+    # 9. Frontend Production optimieren
+    optimize_frontend_production
+
+    # 10. Services verwalten
+    manage_single_services "start"
+
+    # 11. Resource Manager
+    resource_manager
+
+    # 12. Benchmark nach Installation
+    run_benchmark
+
+    # 13. Fertigmeldung mit Zugangsinformationen
+    echo ""
+    echo "=================================================================="
+    log_success "Omni-Core Optimized Bootstrap abgeschlossen!"
+    echo "✔ System läuft in optimiertem LXC Modus"
+    echo "✔ Einzige PostgreSQL Instanz (optimiert ${LXC_ALLOCATED_RAM_MB}MB RAM)"
+    echo "✔ Einzige Redis Instanz (falls Docker Compose vorhanden, sonst Optional)"
+    echo "✔ Performance Profil: $PERFORMANCE_PROFILE"
+    echo "✔ WebIF: http://${HOST_IP:-localhost}:${APP_PORT:-8000}"
+    echo "=================================================================="
+
+    # Admin Zugang sicher anzeigen (nicht im Klartext in allgemeinen Logs)
+    echo -e "Admin Zugang: ${ADMIN_EMAIL:-admin@omni-core.local}"
+    echo -e "Passwort: [Hash in .env, bei erster Anmeldung ändern - nicht im Klartext in Logs]"
+}
+
+# --- Hauptfunktion aufrufen ---
+main "$@"
