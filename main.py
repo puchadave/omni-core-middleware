@@ -50,6 +50,7 @@ from database import (
 )
 from services.asset_manager import create_asset_from_upload, get_asset, list_assets, update_asset, create_asset_version_from_upload, list_asset_versions
 from services.creative_studio import create_project, list_projects, get_project, update_project, create_job, list_jobs, get_job, update_job, generate_image_for_job, list_outputs, create_video_project, list_video_projects, create_video_scene, list_video_scenes, create_campaign, list_campaigns as list_creative_campaigns, get_campaign, update_campaign
+from services.video_studio import generate_storyboard
 from services.product_fidelity import evaluate_output_fidelity
 from services.agent_manager import (
     create_agent_profile, list_agent_profiles, get_agent_profile, update_agent_profile,
@@ -269,6 +270,13 @@ class ProductFidelityCheck(BaseModel):
     generated_image_url: str = Field(min_length=1, max_length=2048)
     model_id: str | None = None
     product_context: dict[str, Any] = Field(default_factory=dict)
+
+
+class VideoStoryboardRequest(BaseModel):
+    """Validated video storyboard request."""
+
+    prompt: str = Field(min_length=1, max_length=20000)
+    scene_count: int = Field(default=6, ge=1, le=20)
 
 
 class VideoProjectCreate(BaseModel):
@@ -691,6 +699,12 @@ async def agent_manager_page(request: Request) -> HTMLResponse:
 async def creative_studio_page(request: Request) -> HTMLResponse:
     """Render the AI Creative Studio."""
     return templates.TemplateResponse("creative_studio.html", {"request": request, "projects": await list_projects(limit=100), "jobs": await list_jobs(limit=100), "outputs": await list_outputs(limit=100), "campaigns": await list_creative_campaigns(limit=100)})
+
+
+@app.get("/admin/video-studio", response_class=HTMLResponse)
+async def video_studio_page(request: Request) -> HTMLResponse:
+    """Render video storyboard planning."""
+    return templates.TemplateResponse("video_studio.html", {"request": request, "projects": await list_video_projects(limit=100)})
 
 
 @app.get("/admin/photo-studio", response_class=HTMLResponse)
@@ -1356,6 +1370,18 @@ async def create_creative_video_scene_record(video_project_id: str, payload: Vid
             duration_seconds=payload.duration_seconds,
             status=payload.status,
         )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/creative/video-projects/{video_project_id}/storyboard")
+async def generate_video_storyboard(video_project_id: str, payload: VideoStoryboardRequest) -> list[dict[str, Any]]:
+    """Generate a reviewable video storyboard through OmniRoute."""
+    projects = await list_video_projects(limit=500)
+    if not any(project["id"] == video_project_id for project in projects):
+        raise HTTPException(status_code=404, detail="Video project not found")
+    try:
+        return await generate_storyboard(video_project_id, prompt=payload.prompt, runtime=runtime, scene_count=payload.scene_count)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
