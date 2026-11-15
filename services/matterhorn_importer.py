@@ -219,44 +219,164 @@ def _normalize_product(raw: dict[str, Any], *, source_system: str = "matterhorn"
         v = _first(r, *keys, default=default)
         return v
 
-    sku = str(get("sku","article_number","artnr","article_no","id","product_id","supplier_product_id","variant_sku", default="")).strip()
-    external_id = str(get("external_matterhorn_id","external_id","supplier_product_id","id","product_id", default=sku)).strip()
-    title = str(get("title","name","product_name","bezeichnung", default="")).strip()
-    description = str(get("description","raw_description","desc","beschreibung", default=""))
-    short_description = str(get("short_description","kurzbeschreibung", default=""))
+    def _unwrap(v):
+        # unwrap common CDATA/text containers from XML flattening
+        if isinstance(v, dict):
+            if set(v.keys()) <= {"_text",}:
+                return v.get("_text", "")
+            # prefer meaningful text if mixed
+            if "_text" in v and len(v) == 1:
+                return v.get("_text", "")
+        return v
+
+    def _as_text(v, default="") -> str:
+        v = _unwrap(v)
+        if v is None:
+            return str(default)
+        if isinstance(v, (str, int, float)):
+            return str(v).strip()
+        if isinstance(v, list):
+            for it in v:
+                t = _as_text(it, "")
+                if t:
+                    return t
+            return str(default)
+        if isinstance(v, dict):
+            for k in ("_text","value","#text","text"):
+                if k in v and v[k] not in (None, ""):
+                    return str(v[k]).strip()
+            # first scalar
+            for it in v.values():
+                t = _as_text(it, "")
+                if t:
+                    return t
+        return str(v).strip() if v not in ("", None) else str(default)
+
+    def _lower_map(obj: Any) -> dict[str, Any]:
+        return {str(k).lower(): v for k, v in obj.items()} if isinstance(obj, dict) else {}
+
+    sku = _as_text(get("sku","article_number","artnr","article_no","product_id","supplier_product_id","variant_sku","id","@id", default="")).strip()
+    external_id = _as_text(get("external_matterhorn_id","external_id","supplier_product_id","product_id","id","@id", default=sku)).strip()
+    if not sku and external_id:
+        sku = external_id
+    title = _as_text(get("title","name","product_name","bezeichnung", default="")).strip()
+    description = _as_text(get("description","raw_description","desc","beschreibung", default=""))
+    short_description = _as_text(get("short_description","kurzbeschreibung", default=""))
+
     category = get("category","kategorie","cat","category_path", default="")
-    if isinstance(category, list):
-        categories = category
-        category_str = str(category[0]) if category else ""
-    elif isinstance(category, str) and ("/" in category or ">" in category):
-        sep = "/" if "/" in category else ">"
-        categories = [c.strip() for c in category.split(sep) if c.strip()]
-        category_str = categories[-1] if categories else category
+    def _cat_collect(obj):
+        out=[]
+        if obj is None: return out
+        obj=_unwrap(obj)
+        if isinstance(obj, list):
+            for it in obj: out.extend(_cat_collect(it))
+        elif isinstance(obj, dict):
+            # <category id='26'><![CDATA[..]]></category> -> {_text/name}
+            for k in ("_text","name","title","path","category_path","#text","value"):
+                if k in obj and obj[k] not in (None, ""):
+                    out.extend(_cat_collect(obj[k]))
+                    return out
+            # attributes/nested
+            for k,v in obj.items():
+                if not str(k).startswith('@'):
+                    out.extend(_cat_collect(v))
+        elif isinstance(obj, str) and obj.strip():
+            out.append(obj.strip())
+        return out
+    cat_items = _cat_collect(category)
+    if cat_items:
+        # if path-like string present, prefer its segments
+        path_like = next((c for c in cat_items if "/" in c or ">" in c), None)
+        if path_like:
+            sep = "/" if "/" in path_like else ">"
+            categories = [c.strip() for c in path_like.split(sep) if c.strip()]
+        else:
+            categories = cat_items
+        category_str = categories[-1] if categories else ""
     else:
-        categories = [category] if category else []
-        category_str = str(category or "")
+        categories = []
+        category_str = ""
     extra_cats = get("categories", default=None)
     if isinstance(extra_cats, list) and extra_cats:
-        categories = extra_cats
+        categories = [_as_text(c) for c in extra_cats if _as_text(c)]
 
-    supplier_price = _to_float(get("supplier_price","purchase_price","ek","ekp","ek_price","price", default=0), 0.0)
+    # prices: support <prices><price currency="EUR">..</price></prices> or simple fields
+    supplier_price = _to_float(get("supplier_price","purchase_price","ek","ekp","ek_price", default=0), 0.0)
     sale_price = _to_float(get("sale_price","retail_price","uvp","vk", default=0), 0.0)
-    raw_stock = _to_int(get("stock","stock_quantity","quantity","qty","bestand","vorrat", default=0), 0)
+    currency = _as_text(get("currency", default="EUR") or "EUR")
+    prices_raw = get("prices","price", default=None)
+    def _price_collect(obj):
+        items=[]
+        if obj is None: return items
+        if isinstance(obj, list):
+            for it in obj: items.extend(_price_collect(it))
+        elif isinstance(obj, dict):
+            lk = _lower_map(obj)
+            if "price" in lk and ("currency" not in lk and "@currency" not in lk):
+                items.extend(_price_collect(lk.get("price")))
+            elif "currency" in lk or "@currency" in lk or "_text" in lk or "value" in lk or "#text" in lk:
+                cur = _as_text(obj.get("@currency") or obj.get("currency") or currency or "EUR")
+                amt = _as_text(obj.get("_text") or obj.get("value") or obj.get("#text") or obj.get("amount") or 0)
+                if amt != "":
+                    items.append((cur.upper(), _to_float(amt, 0.0)))
+            else:
+                # maybe {"EUR": 1.2} or nested
+                scalars = {k:v for k,v in obj.items() if not isinstance(v,(dict,list))}
+                nonscal = {k:v for k,v in obj.items() if isinstance(v,(dict,list))}
+                if scalars and not nonscal:
+                    for k,v in scalars.items():
+                        if str(k).startswith('@'): continue
+                        if str(k).lower() in {"type","kind","name"}: continue
+                        items.append((str(k).upper(), _to_float(v,0.0)))
+                for v in obj.values(): items.extend(_price_collect(v))
+        elif isinstance(obj, (str,int,float)) and str(obj).strip() != "":
+            items.append((currency.upper(), _to_float(obj, 0.0)))
+        return items
+    pitems = _price_collect(prices_raw)
+    if pitems:
+        chosen = next((amt for cur,amt in pitems if cur=="EUR" and amt>0), None)
+        if chosen is None:
+            chosen = next((amt for _,amt in pitems if amt>0), pitems[0][1])
+        if chosen and chosen>0:
+            if sale_price <= 0: sale_price = chosen
+            if supplier_price <= 0: supplier_price = chosen
+        if sale_price <= 0:
+            simple = _to_float(get("price", default=0), 0.0)
+            if simple>0: sale_price = simple
+    else:
+        simple = _to_float(get("price", default=0), 0.0)
+        if simple>0 and sale_price <= 0: sale_price = simple
+        if simple>0 and supplier_price <= 0: supplier_price = simple
+
+    raw_stock = _to_int(get("stock","stock_quantity","quantity","qty","bestand","vorrat","supplier_stock", default=0), 0)
     stock_quantity = _to_int(get("stock_quantity","stock","quantity","qty","bestand","vorrat", default=raw_stock), raw_stock)
-    ean = str(get("ean","gtin","barcode","upc", default="")).strip()
+    ean = _as_text(get("ean","gtin","barcode","upc", default="")).strip()
 
     images_raw = get("images","gallery","gallery_json","image_urls", default=None)
     images: list[Any] = []
-    main_image = str(get("main_image_url","image_url","image","img","bild","picture", default="")).strip()
+    main_image = _as_text(get("main_image_url","image_url","image","img","bild","picture", default="")).strip()
+    if main_image.lower() in {"none","null"}: main_image = ""
     def _collect_media(obj):
         if obj is None: return
         if isinstance(obj, list):
             for it in obj: _collect_media(it)
         elif isinstance(obj, dict):
-            if any(k in obj for k in ("url","src","image","image_url","_text")):
-                images.append(obj)
-            else:
-                for v in obj.values(): _collect_media(v)
+            lk = _lower_map(obj)
+            # direct url holders
+            for key in ("image_url","url","src","image","bild","picture","_text","value","#text"):
+                if key in lk and lk[key] not in (None, ""):
+                    val = lk[key]
+                    if isinstance(val, (list,dict)):
+                        _collect_media(val)
+                    elif str(val).strip():
+                        images.append(str(val).strip())
+                    # if we consumed image_url/src-like, don't recurse same scalar-only container redundantly
+                    if key in ("image_url","url","src","image","bild","picture"):
+                        return
+            # wrapper containers
+            for k,v in obj.items():
+                if str(k).startswith('@'): continue
+                _collect_media(v)
         elif isinstance(obj, str) and obj.strip():
             for sep in [",","|",";","\n"]:
                 if sep in obj:
@@ -264,24 +384,85 @@ def _normalize_product(raw: dict[str, Any], *, source_system: str = "matterhorn"
                     return
             images.append(obj.strip())
     _collect_media(images_raw)
-    if main_image and main_image not in [str(x.get("url") if isinstance(x,dict) else x) for x in images]:
+    # dedupe preserve order
+    seen_img=set(); norm_imgs=[]
+    for im in images:
+        u = str(im.get("url") if isinstance(im, dict) else im).strip()
+        if not u or u.lower() in {"none","null"}: continue
+        if u in seen_img: continue
+        seen_img.add(u); norm_imgs.append(u)
+    images = norm_imgs
+    if main_image and main_image not in images:
         images = [main_image] + images
+    if not main_image and images:
+        main_image = str(images[0].get("url") if isinstance(images[0], dict) else images[0])
 
-    variants_raw = get("variants","varianten", default=[])
+    variants_raw = get("variants","varianten","options","optionen", default=[])
     variants: list[dict[str, Any]] = []
     def _collect_vars(obj):
         if obj is None: return
         if isinstance(obj, list):
             for it in obj: _collect_vars(it)
         elif isinstance(obj, dict):
-            # wrapper like {"variant":[...]} or actual variant dict
             keys_lower = {str(k).lower() for k in obj.keys()}
-            if keys_lower & {"variant","item","row","productvariant"} and not ({"sku","variant_sku","ean","size","color"} & keys_lower):
+            # wrapper like {"option":[...]} / {"variant":[...]}
+            if keys_lower & {"variant","item","row","productvariant","option"} and not ({"sku","variant_sku","ean","stock","size","color","option_name","@id"} & keys_lower):
                 for v in obj.values(): _collect_vars(v)
             else:
                 variants.append(obj)
         # ignore scalars
     _collect_vars(variants_raw)
+
+    norm_variants = []
+    if variants:
+        for idx, v in enumerate(variants, start=1):
+            if not isinstance(v, dict): continue
+            vl = _lower_map(v)
+            v_id = _as_text(v.get("@id") or v.get("id") or v.get("external_id") or v.get("variant_id") or "")
+            v_sku = _as_text(v.get("sku") or v.get("variant_sku") or v.get("article_number") or v.get("artnr") or v_id or (f"{sku}-{idx}" if sku else ""))
+            opt_name = v.get("option_name") or v.get("name") or {}
+            opt_attrs = {}
+            if isinstance(opt_name, dict):
+                for ak,av in opt_name.items():
+                    if str(ak).startswith('@'):
+                        opt_attrs[str(ak)[1:]] = _as_text(av)
+                    elif str(ak).lower() in {"_text","value","#text"} and _as_text(av):
+                        opt_attrs["name"] = _as_text(av)
+            elif _as_text(opt_name):
+                opt_attrs["name"] = _as_text(opt_name)
+            # extra size-like attrs
+            for ak in ("size","groesse","color","farbe","length","width"):
+                if ak in vl and _as_text(vl[ak]):
+                    opt_attrs.setdefault(ak, _as_text(vl[ak]))
+            v_stock = _to_int(v.get("STOCK") or v.get("stock") or v.get("stock_quantity") or v.get("qty") or v.get("quantity") or 0, 0)
+            v_ean = _as_text(v.get("ean") or v.get("gtin") or v.get("barcode") or "")
+            v_price = _to_float(v.get("price") or v.get("supplier_price") or v.get("sale_price") or 0, 0.0)
+            if v_price <= 0: v_price = sale_price or supplier_price
+            norm_variants.append({
+                "sku": v_sku,
+                "external_matterhorn_id": v_id or v_sku,
+                "title": opt_attrs.get("name") or title,
+                "ean": v_ean,
+                "barcode": v_ean,
+                "supplier_price": v_price,
+                "sale_price": v_price,
+                "stock_quantity": v_stock,
+                "attributes_json": opt_attrs,
+                "raw_source_data_json": v,
+                "status": "active",
+            })
+        variants = norm_variants
+    else:
+        variants = []
+
+    # derive stock from variants if missing
+    if stock_quantity <= 0 and variants:
+        stock_quantity = sum(_to_int(v.get("stock_quantity",0),0) for v in variants)
+        raw_stock = stock_quantity
+
+    # derive ean from first variant if missing
+    if not ean and variants:
+        ean = _as_text(variants[0].get("ean") or "")
 
     attrs_in = get("attributes","properties","eigenschaften","merkmale", default=[])
     attributes: list[dict[str, Any]] = []
@@ -297,10 +478,9 @@ def _normalize_product(raw: dict[str, Any], *, source_system: str = "matterhorn"
     # dynamic/unmapped attributes (lossless capture)
     for k, v in r.items():
         lk = str(k).lower()
-        if lk in {x.lower() for x in KNOWN_PRODUCT_FIELDS}:
+        if lk in {x.lower() for x in KNOWN_PRODUCT_FIELDS} | {"@id", "prices", "images", "options", "optionen"}:
             continue
         if isinstance(v, (dict, list)):
-            # keep complex unmapped as attribute with json value
             attributes.append({"name": str(k), "value": json.dumps(v, ensure_ascii=False, default=str), "source_field": str(k), "extra_json": {"complex": True}})
         else:
             attributes.append({"name": str(k), "value": "" if v is None else str(v), "source_field": str(k), "is_filterable": True})
@@ -343,7 +523,7 @@ def _normalize_product(raw: dict[str, Any], *, source_system: str = "matterhorn"
         "height_cm": _to_float(get("height_cm","height", default=0), 0.0),
         "hs_code": str(get("hs_code", default="")),
         "country_of_origin": str(get("country_of_origin","herkunftsland", default="")),
-        "main_image_url": main_image or (str(images[0].get("url") if isinstance(images[0], dict) else images[0]) if images else ""),
+        "main_image_url": "" if str(main_image).lower() in {"none","null"} else (main_image or (str(images[0].get("url") if isinstance(images[0], dict) else images[0]) if images else "")),
         "gallery_json": images,
         "videos_json": (lambda v: v if isinstance(v,list) else ([v] if isinstance(v,dict) and v else list(v.values()) if isinstance(v,dict) else ([] if not v else [v])))(get("videos", default=[])),
         "documents_json": (lambda v: v if isinstance(v,list) else ([v] if isinstance(v,dict) and v else list(v.values()) if isinstance(v,dict) else ([] if not v else [v])))(get("documents", default=[])),
@@ -482,9 +662,10 @@ class MatterhornUniversalImporter:
             return {"status": "ok", "preview_id": preview_id if save else None, "feed_url": resolved_url, "summary": summary, "validation": validation, "items": sample, "source_hash": source_hash}
         except Exception as exc:
             logger.exception("Matterhorn preview failed")
-            await write_log("ERROR", "matterhorn_preview_failed", f"Preview failed: {exc}", {"feed_url": feed_url or filename or ""})
-            await _publish_import_event("matterhorn.preview_failed", {"feed_url": feed_url or filename or "", "error": str(exc)})
-            return {"status": "error", "feed_url": feed_url or filename or "", "error": str(exc), "summary": {}, "validation": {"status": "invalid", "errors": [{"issues": ["fetch_or_parse_failed"], "message": str(exc)}]}, "items": []}
+            emsg = str(exc) or exc.__class__.__name__
+            await write_log("ERROR", "matterhorn_preview_failed", f"Preview failed: {emsg}", {"feed_url": feed_url or filename or ""})
+            await _publish_import_event("matterhorn.preview_failed", {"feed_url": feed_url or filename or "", "error": emsg})
+            return {"status": "error", "feed_url": feed_url or filename or "", "error": emsg, "summary": {}, "validation": {"status": "invalid", "errors": [{"issues": ["fetch_or_parse_failed"], "message": emsg}]}, "items": []}
 
     async def import_products(self, source: str = "matterhorn_xml", *, feed_url: str | None = None, mode: str = "safe", dry_run: bool = False, preview_id: str | None = None, confirm_full_without_preview: bool = False, sync_rules: dict[str, Any] | None = None, content: str | bytes | None = None, filename: str | None = None, format_hint: str | None = None) -> Dict[str, Any]:
         mode = (mode or "safe").lower()
