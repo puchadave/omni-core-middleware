@@ -1,62 +1,53 @@
 {% extends "base.html" %}
-{% block title %}Bundle Studio | Omni-Core{% endblock %}
+{% block title %}Bundles | Omni-Core Admin{% endblock %}
 {% block content %}
-<div x-data="pageState()" x-init="loadAll()" class="space-y-4 max-w-7xl mx-auto">
+<div x-data="bundlePage()" x-init="load()" class="space-y-4 max-w-7xl mx-auto">
   <div class="flex flex-col md:flex-row md:items-end md:justify-between gap-3">
-    <div>
-      <h1 class="text-2xl md:text-3xl font-bold">Bundle Studio</h1>
-      <p class="text-slate-400">Bundle-Generierung, Bewertung und Freigabe.</p>
-    </div>
-    <button @click="loadAll()" class="bg-slate-700 hover:bg-slate-600 px-4 py-2 rounded text-sm">Aktualisieren</button>
+    <div><h1 class="text-2xl md:text-3xl font-bold">Bundle Studio</h1><p class="text-slate-400">Bundles erstellen, verwalten und Bestand/Intelligenz aus realen Produktdaten ableiten.</p></div>
+    <button @click="load()" class="btn btn-secondary">Aktualisieren</button>
   </div>
 
-  <template x-if="globalError"><div class="rounded border border-red-700 bg-red-900/30 p-3 text-sm text-red-200" x-text="globalError"></div></template>
-
   <div class="grid lg:grid-cols-2 gap-4">
-    <template x-for="ep in endpoints" :key="ep.url">
-      <div class="bg-slate-900 border border-slate-800 rounded-lg p-4">
-        <div class="flex items-center justify-between mb-2">
-          <h2 class="font-semibold" x-text="ep.label"></h2>
-          <span class="text-xs" :class="ep.state==='ok'?'text-emerald-400':(ep.state==='error'?'text-red-400':(ep.state==='empty'?'text-amber-400':'text-slate-400'))" x-text="ep.state"></span>
-        </div>
-        <div class="text-xs text-slate-500 mb-2" x-text="ep.url"></div>
-        <template x-if="ep.state==='loading'"><div class="text-sm text-slate-400">Lade…</div></template>
-        <template x-if="ep.state==='error'"><div class="text-sm text-red-300" x-text="ep.error"></div></template>
-        <template x-if="ep.state==='empty'"><div class="text-sm text-amber-300">Keine Daten / nicht konfiguriert oder leer.</div></template>
-        <template x-if="ep.state==='ok'"><pre class="text-xs bg-slate-950 border border-slate-800 rounded p-3 overflow-auto max-h-96" x-text="formatData(ep.data)"></pre></template>
-      </div>
-    </template>
+    <div class="card p-4 space-y-3">
+      <h2 class="font-semibold">Bundle anlegen / aktualisieren</h2>
+      <div><label class="label">Bundle-SKU *</label><input x-model="form.bundle_sku" class="input font-mono" placeholder="BUNDLE-001"></div>
+      <div><label class="label">Titel *</label><input x-model="form.title" class="input"></div>
+      <div><label class="label">Komponenten-SKUs (kommagetrennt) *</label><input x-model="form.componentsText" class="input font-mono" placeholder="SKU-A, SKU-B"></div>
+      <button @click="save()" class="btn btn-primary" :disabled="saving">Speichern</button>
+      <p class="text-xs text-slate-500">Der Bundle-Bestand wird serverseitig aus Komponenten berechnet.</p>
+    </div>
+    <div class="card p-4">
+      <h2 class="font-semibold mb-2">Bundle Intelligence</h2>
+      <template x-if="intelError"><div class="text-sm text-red-300" x-text="intelError"></div></template>
+      <pre class="text-xs bg-slate-950 border border-slate-800 rounded p-3 overflow-auto max-h-80" x-text="format(intel)"></pre>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="px-4 py-3 border-b border-slate-800 flex justify-between"><h2 class="font-semibold">Vorhandene Bundles</h2><span class="text-sm text-slate-400" x-text="items.length + ' Bundles'"></span></div>
+    <template x-if="error"><div class="p-4 text-red-300" x-text="error"></div></template>
+    <div class="table-wrap">
+      <table class="tbl">
+        <thead><tr><th>Bundle-SKU</th><th>Titel</th><th>Komponenten</th><th>Aktualisiert</th><th>Aktionen</th></tr></thead>
+        <tbody>
+          <template x-for="b in items" :key="b.bundle_sku||b.sku">
+            <tr>
+              <td class="font-mono text-xs" x-text="b.bundle_sku||b.sku"></td>
+              <td x-text="b.title||'—'"></td>
+              <td class="text-xs" x-text="components(b)"></td>
+              <td class="text-xs text-slate-400" x-text="fmtDate(b.updated_at)"></td>
+              <td><button class="text-red-400 hover:text-red-300" @click="remove(b)">Löschen</button></td>
+            </tr>
+          </template>
+          <tr x-show="!loading && items.length===0"><td colspan="5" class="p-6 text-center text-slate-400">Keine Bundles vorhanden.</td></tr>
+        </tbody>
+      </table>
+    </div>
   </div>
 </div>
 {% endblock %}
 {% block scripts %}
 <script>
-function pageState(){
-  return {
-    endpoints: [{url:'/api/bundles',label:'Bundles'},{url:'/api/bundles/intelligence',label:'Bundle Intelligence'}],
-    globalError: '',
-    supplier: 10, calcResult: null,
-    query: '', actionResult: null, busy: false,
-    q:'', status:'',
-    setKey:'', setVal:'', actionMsg:'', actionErr:false,
-    async loadAll(){ this.globalError=''; await Promise.all(this.endpoints.map(e=>this.loadEp(e))); },
-    async loadEp(ep){
-      ep.state='loading'; ep.error=''; ep.data=null;
-      try {
-        const d = await apiFetch(ep.url);
-        ep.data = d;
-        const empty = d==null || (Array.isArray(d) && d.length===0) || (typeof d==='object' && !Array.isArray(d) && Object.keys(d).length===0);
-        ep.state = empty ? 'empty' : 'ok';
-      } catch(e){ ep.state='error'; ep.error=e.message; }
-    },
-    formatData(d){ try{ return JSON.stringify(d, null, 2); }catch(_ ){ return String(d); } },
-    filteredProducts(){ const all = (this.endpoints.find(e=>e.url.startsWith('/api/products'))||{}).data||[]; const q=(this.q||'').toLowerCase(); return (Array.isArray(all)?all:[]).filter(p=>{ if(this.status && String(p.status)!==this.status) return false; if(!q) return true; return [p.sku,p.title,p.ai_title,p.category].some(v=>String(v||'').toLowerCase().includes(q)); }); },
-    orders(){ const all=(this.endpoints.find(e=>e.url.startsWith('/api/orders'))||{}).data||[]; return Array.isArray(all)?all:(all.items||[]); },
-    async calc(){ try{ this.calcResult=await apiFetch('/api/pricing/calculate',{method:'POST',body:JSON.stringify({supplier_price:Number(this.supplier||0)})}); }catch(e){ this.calcResult={error:e.message}; } },
-    async search(){ try{ this.actionResult=await apiFetch('/api/competitor/search',{method:'POST',body:JSON.stringify({query:this.query,limit:10})}); }catch(e){ this.actionResult={error:e.message}; } },
-    async runTrend(){ this.busy=true; try{ this.actionResult=await apiFetch('/api/ai/trend-analysis',{method:'POST'}); }catch(e){ this.actionResult={error:e.message}; } this.busy=false; },
-    async saveSetting(){ this.actionMsg=''; this.actionErr=false; try{ await apiFetch('/api/settings',{method:'POST',body:JSON.stringify({key:this.setKey,value:this.setVal})}); this.actionMsg='Gespeichert.'; await this.loadAll(); }catch(e){ this.actionErr=true; this.actionMsg='Fehler: '+e.message; } }
-  }
-}
+function bundlePage(){return{items:[],intel:null,loading:false,saving:false,error:'',intelError:'',form:{bundle_sku:'',title:'',componentsText:''},async load(){this.loading=true; this.error=''; this.intelError=''; try{const d=await apiFetch('/api/bundles'); this.items=Array.isArray(d)?d:(d.items||[]);}catch(e){this.error=e.message; this.items=[];} try{this.intel=await apiFetch('/api/bundles/intelligence');}catch(e){this.intelError=e.message; this.intel=null;} this.loading=false;},components(b){const c=b.component_skus_json||b.component_skus||b.components||[]; return Array.isArray(c)?c.join(', '):String(c||'—');},format(d){try{return JSON.stringify(d,null,2);}catch(_){return String(d||'—');}},async save(){const comps=this.form.componentsText.split(',').map(s=>s.trim()).filter(Boolean); if(!this.form.bundle_sku||!this.form.title||comps.length===0){toast('SKU, Titel und Komponenten erforderlich','error'); return;} this.saving=true; try{await apiFetch('/api/bundles',{method:'POST',body:JSON.stringify({bundle_sku:this.form.bundle_sku,title:this.form.title,component_skus:comps})}); toast('Bundle gespeichert','success'); this.form={bundle_sku:'',title:'',componentsText:''}; await this.load();}catch(e){toast(e.message,'error')} this.saving=false;},async remove(b){const sku=b.bundle_sku||b.sku; if(!sku||!confirm(`Bundle ${sku} löschen?`)) return; try{await apiFetch('/api/bundles/'+encodeURIComponent(sku),{method:'DELETE'}); toast('Bundle gelöscht','success'); await this.load();}catch(e){toast(e.message,'error')}}}}
 </script>
 {% endblock %}

@@ -50,6 +50,18 @@ def utc_now() -> str:
     """Return an ISO-8601 UTC timestamp suitable for both supported databases."""
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
+def _pg_ts(value: str | None):
+    """Convert ISO timestamp string to datetime for asyncpg TIMESTAMPTZ params."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value.replace('Z', '+00:00'))
+        except Exception:
+            return value
+    return value
+
+
 
 POSTGRES_SCHEMA: tuple[str, ...] = (
     """
@@ -999,6 +1011,7 @@ POSTGRES_SCHEMA: tuple[str, ...] = (
         error_message TEXT NOT NULL DEFAULT '',
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         finished_at TIMESTAMPTZ
+    )
     """,
     # ── Multi-Channel Connector Management Center ────────────────────────────
     """
@@ -1039,7 +1052,199 @@ POSTGRES_SCHEMA: tuple[str, ...] = (
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
+    """    ,
     """
+    CREATE TABLE IF NOT EXISTS crm_customers (
+        id TEXT PRIMARY KEY,
+        email TEXT NOT NULL DEFAULT '',
+        display_name TEXT NOT NULL DEFAULT '',
+        shopware_id TEXT NOT NULL DEFAULT '',
+        amazon_id TEXT NOT NULL DEFAULT '',
+        ebay_id TEXT NOT NULL DEFAULT '',
+        phone TEXT NOT NULL DEFAULT '',
+        metadata_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_crm_customers_email ON crm_customers(email)",
+    """
+    CREATE TABLE IF NOT EXISTS crm_threads (
+        id TEXT PRIMARY KEY,
+        customer_id TEXT NOT NULL,
+        channel TEXT NOT NULL CHECK (channel IN ('shopware','amazon','ebay','email','messenger')),
+        external_thread_id TEXT NOT NULL DEFAULT '',
+        subject TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','pending','resolved','closed')),
+        last_message_at TIMESTAMPTZ,
+        order_id TEXT NOT NULL DEFAULT '',
+        metadata_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE(channel, external_thread_id)
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_crm_threads_customer ON crm_threads(customer_id, updated_at DESC)",
+    """
+    CREATE TABLE IF NOT EXISTS crm_messages (
+        id TEXT PRIMARY KEY,
+        thread_id TEXT NOT NULL,
+        customer_id TEXT NOT NULL,
+        channel TEXT NOT NULL CHECK (channel IN ('shopware','amazon','ebay','email','messenger')),
+        direction TEXT NOT NULL CHECK (direction IN ('inbound','outbound')),
+        external_message_id TEXT NOT NULL DEFAULT '',
+        idempotency_key TEXT NOT NULL,
+        subject TEXT NOT NULL DEFAULT '',
+        body TEXT NOT NULL DEFAULT '',
+        sender TEXT NOT NULL DEFAULT '',
+        recipient TEXT NOT NULL DEFAULT '',
+        attachments_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+        sent_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        status TEXT NOT NULL DEFAULT 'received',
+        metadata_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE(channel, idempotency_key)
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_crm_messages_thread ON crm_messages(thread_id, sent_at ASC)",
+    """
+    CREATE TABLE IF NOT EXISTS crm_appointments (
+        id TEXT PRIMARY KEY,
+        customer_id TEXT,
+        thread_id TEXT,
+        order_id TEXT NOT NULL DEFAULT '',
+        title TEXT NOT NULL,
+        description TEXT NOT NULL DEFAULT '',
+        starts_at TIMESTAMPTZ NOT NULL,
+        ends_at TIMESTAMPTZ,
+        status TEXT NOT NULL DEFAULT 'scheduled' CHECK (status IN ('scheduled','confirmed','completed','cancelled','no_show')),
+        channel TEXT NOT NULL DEFAULT 'email',
+        location TEXT NOT NULL DEFAULT '',
+        metadata_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+        created_by TEXT NOT NULL DEFAULT '',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS ai_agent_actions (
+        id TEXT PRIMARY KEY,
+        actor TEXT NOT NULL DEFAULT '',
+        prompt TEXT NOT NULL DEFAULT '',
+        tool_name TEXT NOT NULL DEFAULT '',
+        args_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+        preview_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+        status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','confirmed','executed','cancelled','failed')),
+        requires_confirmation BOOLEAN NOT NULL DEFAULT TRUE,
+        result_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+        error_message TEXT NOT NULL DEFAULT '',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        executed_at TIMESTAMPTZ
+    )
+    """,
+    # ── Multimodal Creative Engine (foundation) ─────────────────────────
+    """
+    CREATE TABLE IF NOT EXISTS creative_projects (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        project_type TEXT NOT NULL DEFAULT 'general',
+        status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','planned','running','completed','failed','cancelled','review')),
+        brief TEXT NOT NULL DEFAULT '',
+        context_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+        created_by TEXT NOT NULL DEFAULT '',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS creative_jobs (
+        id TEXT PRIMARY KEY,
+        project_id TEXT REFERENCES creative_projects(id) ON DELETE SET NULL,
+        job_type TEXT NOT NULL DEFAULT 'image_generation',
+        capability TEXT NOT NULL DEFAULT 'image_generation',
+        status TEXT NOT NULL DEFAULT 'queued' CHECK (status IN ('queued','planning','running','polling','succeeded','failed','cancelled','review_required')),
+        provider_id TEXT NOT NULL DEFAULT '',
+        model_id TEXT NOT NULL DEFAULT '',
+        prompt TEXT NOT NULL DEFAULT '',
+        negative_prompt TEXT NOT NULL DEFAULT '',
+        input_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+        output_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+        cost_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+        error_message TEXT NOT NULL DEFAULT '',
+        requires_review BOOLEAN NOT NULL DEFAULT FALSE,
+        created_by TEXT NOT NULL DEFAULT '',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        started_at TIMESTAMPTZ,
+        completed_at TIMESTAMPTZ
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_creative_jobs_project ON creative_jobs(project_id, created_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_creative_jobs_status ON creative_jobs(status, created_at DESC)",
+    """
+    CREATE TABLE IF NOT EXISTS media_assets (
+        id TEXT PRIMARY KEY,
+        asset_type TEXT NOT NULL DEFAULT 'image' CHECK (asset_type IN ('image','video','audio','file')),
+        source_kind TEXT NOT NULL DEFAULT 'generated' CHECK (source_kind IN ('original','generated','edited','reference','upload')),
+        immutable_original BOOLEAN NOT NULL DEFAULT FALSE,
+        storage_path TEXT NOT NULL DEFAULT '',
+        url TEXT NOT NULL DEFAULT '',
+        sha256 TEXT NOT NULL DEFAULT '',
+        mime_type TEXT NOT NULL DEFAULT '',
+        width INTEGER,
+        height INTEGER,
+        duration_seconds DOUBLE PRECISION,
+        size_bytes BIGINT,
+        product_sku TEXT NOT NULL DEFAULT '',
+        model_profile_id TEXT NOT NULL DEFAULT '',
+        job_id TEXT REFERENCES creative_jobs(id) ON DELETE SET NULL,
+        parent_asset_id TEXT NOT NULL DEFAULT '',
+        metadata_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_media_assets_product ON media_assets(product_sku)",
+    "CREATE INDEX IF NOT EXISTS idx_media_assets_sha ON media_assets(sha256)",
+    "CREATE INDEX IF NOT EXISTS idx_media_assets_job ON media_assets(job_id)",
+    """
+    CREATE TABLE IF NOT EXISTS model_profiles (
+        id TEXT PRIMARY KEY,
+        slug TEXT NOT NULL UNIQUE,
+        display_name TEXT NOT NULL,
+        description TEXT NOT NULL DEFAULT '',
+        reference_images_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+        identity_profile_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+        body_profile_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+        style_profile_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+        preferred_locations_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+        preferred_perspectives_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+        posing_profiles_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+        prompt_templates_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+        rights_consent_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+        usage_allowed BOOLEAN NOT NULL DEFAULT TRUE,
+        active BOOLEAN NOT NULL DEFAULT TRUE,
+        history_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS product_fidelity_checks (
+        id TEXT PRIMARY KEY,
+        job_id TEXT REFERENCES creative_jobs(id) ON DELETE SET NULL,
+        output_asset_id TEXT NOT NULL DEFAULT '',
+        product_sku TEXT NOT NULL DEFAULT '',
+        original_asset_ids_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+        scores_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+        overall_score DOUBLE PRECISION NOT NULL DEFAULT 0,
+        verdict TEXT NOT NULL DEFAULT 'pending' CHECK (verdict IN ('pending','pass','fail','manual_review')),
+        critical_issues_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+        details_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_fidelity_job ON product_fidelity_checks(job_id)"
+
 
 )
 
@@ -1860,6 +2065,179 @@ CREATE TABLE IF NOT EXISTS connector_exports (
     error_message TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL
 );
 
+
+CREATE TABLE IF NOT EXISTS crm_customers (
+    id TEXT PRIMARY KEY,
+    email TEXT NOT NULL DEFAULT '',
+    display_name TEXT NOT NULL DEFAULT '',
+    shopware_id TEXT NOT NULL DEFAULT '',
+    amazon_id TEXT NOT NULL DEFAULT '',
+    ebay_id TEXT NOT NULL DEFAULT '',
+    phone TEXT NOT NULL DEFAULT '',
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_crm_customers_email ON crm_customers(email);
+CREATE TABLE IF NOT EXISTS crm_threads (
+    id TEXT PRIMARY KEY,
+    customer_id TEXT NOT NULL,
+    channel TEXT NOT NULL CHECK (channel IN ('shopware','amazon','ebay','email','messenger')),
+    external_thread_id TEXT NOT NULL DEFAULT '',
+    subject TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','pending','resolved','closed')),
+    last_message_at TEXT,
+    order_id TEXT NOT NULL DEFAULT '',
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(channel, external_thread_id)
+);
+CREATE TABLE IF NOT EXISTS crm_messages (
+    id TEXT PRIMARY KEY,
+    thread_id TEXT NOT NULL,
+    customer_id TEXT NOT NULL,
+    channel TEXT NOT NULL CHECK (channel IN ('shopware','amazon','ebay','email','messenger')),
+    direction TEXT NOT NULL CHECK (direction IN ('inbound','outbound')),
+    external_message_id TEXT NOT NULL DEFAULT '',
+    idempotency_key TEXT NOT NULL,
+    subject TEXT NOT NULL DEFAULT '',
+    body TEXT NOT NULL DEFAULT '',
+    sender TEXT NOT NULL DEFAULT '',
+    recipient TEXT NOT NULL DEFAULT '',
+    attachments_json TEXT NOT NULL DEFAULT '[]',
+    sent_at TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'received',
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    UNIQUE(channel, idempotency_key)
+);
+CREATE TABLE IF NOT EXISTS crm_appointments (
+    id TEXT PRIMARY KEY,
+    customer_id TEXT,
+    thread_id TEXT,
+    order_id TEXT NOT NULL DEFAULT '',
+    title TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    starts_at TEXT NOT NULL,
+    ends_at TEXT,
+    status TEXT NOT NULL DEFAULT 'scheduled' CHECK (status IN ('scheduled','confirmed','completed','cancelled','no_show')),
+    channel TEXT NOT NULL DEFAULT 'email',
+    location TEXT NOT NULL DEFAULT '',
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_by TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS ai_agent_actions (
+    id TEXT PRIMARY KEY,
+    actor TEXT NOT NULL DEFAULT '',
+    prompt TEXT NOT NULL DEFAULT '',
+    tool_name TEXT NOT NULL DEFAULT '',
+    args_json TEXT NOT NULL DEFAULT '{}',
+    preview_json TEXT NOT NULL DEFAULT '{}',
+    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','confirmed','executed','cancelled','failed')),
+    requires_confirmation INTEGER NOT NULL DEFAULT 1,
+    result_json TEXT NOT NULL DEFAULT '{}',
+    error_message TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    executed_at TEXT
+);
+
+
+-- ── Multimodal Creative Engine (foundation) ─────────────────────────────
+CREATE TABLE IF NOT EXISTS creative_projects (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    project_type TEXT NOT NULL DEFAULT 'general',
+    status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','planned','running','completed','failed','cancelled','review')),
+    brief TEXT NOT NULL DEFAULT '',
+    context_json TEXT NOT NULL DEFAULT '{}',
+    created_by TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS creative_jobs (
+    id TEXT PRIMARY KEY,
+    project_id TEXT,
+    job_type TEXT NOT NULL DEFAULT 'image_generation',
+    capability TEXT NOT NULL DEFAULT 'image_generation',
+    status TEXT NOT NULL DEFAULT 'queued' CHECK (status IN ('queued','planning','running','polling','succeeded','failed','cancelled','review_required')),
+    provider_id TEXT NOT NULL DEFAULT '',
+    model_id TEXT NOT NULL DEFAULT '',
+    prompt TEXT NOT NULL DEFAULT '',
+    negative_prompt TEXT NOT NULL DEFAULT '',
+    input_json TEXT NOT NULL DEFAULT '{}',
+    output_json TEXT NOT NULL DEFAULT '{}',
+    cost_json TEXT NOT NULL DEFAULT '{}',
+    error_message TEXT NOT NULL DEFAULT '',
+    requires_review INTEGER NOT NULL DEFAULT 0,
+    created_by TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    started_at TEXT,
+    completed_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_creative_jobs_project ON creative_jobs(project_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_creative_jobs_status ON creative_jobs(status, created_at DESC);
+CREATE TABLE IF NOT EXISTS media_assets (
+    id TEXT PRIMARY KEY,
+    asset_type TEXT NOT NULL DEFAULT 'image' CHECK (asset_type IN ('image','video','audio','file')),
+    source_kind TEXT NOT NULL DEFAULT 'generated' CHECK (source_kind IN ('original','generated','edited','reference','upload')),
+    immutable_original INTEGER NOT NULL DEFAULT 0,
+    storage_path TEXT NOT NULL DEFAULT '',
+    url TEXT NOT NULL DEFAULT '',
+    sha256 TEXT NOT NULL DEFAULT '',
+    mime_type TEXT NOT NULL DEFAULT '',
+    width INTEGER,
+    height INTEGER,
+    duration_seconds REAL,
+    size_bytes INTEGER,
+    product_sku TEXT NOT NULL DEFAULT '',
+    model_profile_id TEXT NOT NULL DEFAULT '',
+    job_id TEXT,
+    parent_asset_id TEXT NOT NULL DEFAULT '',
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_media_assets_product ON media_assets(product_sku);
+CREATE INDEX IF NOT EXISTS idx_media_assets_sha ON media_assets(sha256);
+CREATE INDEX IF NOT EXISTS idx_media_assets_job ON media_assets(job_id);
+CREATE TABLE IF NOT EXISTS model_profiles (
+    id TEXT PRIMARY KEY,
+    slug TEXT NOT NULL UNIQUE,
+    display_name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    reference_images_json TEXT NOT NULL DEFAULT '[]',
+    identity_profile_json TEXT NOT NULL DEFAULT '{}',
+    body_profile_json TEXT NOT NULL DEFAULT '{}',
+    style_profile_json TEXT NOT NULL DEFAULT '{}',
+    preferred_locations_json TEXT NOT NULL DEFAULT '[]',
+    preferred_perspectives_json TEXT NOT NULL DEFAULT '[]',
+    posing_profiles_json TEXT NOT NULL DEFAULT '[]',
+    prompt_templates_json TEXT NOT NULL DEFAULT '[]',
+    rights_consent_json TEXT NOT NULL DEFAULT '{}',
+    usage_allowed INTEGER NOT NULL DEFAULT 1,
+    active INTEGER NOT NULL DEFAULT 1,
+    history_json TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS product_fidelity_checks (
+    id TEXT PRIMARY KEY,
+    job_id TEXT,
+    output_asset_id TEXT NOT NULL DEFAULT '',
+    product_sku TEXT NOT NULL DEFAULT '',
+    original_asset_ids_json TEXT NOT NULL DEFAULT '[]',
+    scores_json TEXT NOT NULL DEFAULT '{}',
+    overall_score REAL NOT NULL DEFAULT 0,
+    verdict TEXT NOT NULL DEFAULT 'pending' CHECK (verdict IN ('pending','pass','fail','manual_review')),
+    critical_issues_json TEXT NOT NULL DEFAULT '[]',
+    details_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_fidelity_job ON product_fidelity_checks(job_id);
+
 """
 
 
@@ -1938,6 +2316,36 @@ async def init_db() -> None:
             async with conn.transaction():
                 for statement in POSTGRES_SCHEMA:
                     await conn.execute(statement)
+            # idempotent compatibility migrations for evolved schemas
+            compat = [
+                "ALTER TABLE matterhorn_feeds ADD COLUMN IF NOT EXISTS feed_url TEXT",
+                "ALTER TABLE matterhorn_feeds ADD COLUMN IF NOT EXISTS auth_header TEXT NOT NULL DEFAULT ''",
+                "ALTER TABLE matterhorn_feeds ADD COLUMN IF NOT EXISTS last_imported_at TIMESTAMPTZ",
+                "ALTER TABLE matterhorn_feeds ADD COLUMN IF NOT EXISTS last_status TEXT NOT NULL DEFAULT ''",
+                "UPDATE matterhorn_feeds SET feed_url = COALESCE(feed_url, url) WHERE (feed_url IS NULL OR feed_url='') AND COALESCE(url,'') <> ''",
+                "ALTER TABLE matterhorn_mappings ADD COLUMN IF NOT EXISTS feed_id TEXT NOT NULL DEFAULT ''",
+                "ALTER TABLE matterhorn_mappings ADD COLUMN IF NOT EXISTS transform TEXT NOT NULL DEFAULT 'direct'",
+                "ALTER TABLE matterhorn_mappings ADD COLUMN IF NOT EXISTS priority INTEGER NOT NULL DEFAULT 0",
+                "ALTER TABLE matterhorn_mappings ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE",
+                "ALTER TABLE matterhorn_mappings ADD COLUMN IF NOT EXISTS config_json JSONB NOT NULL DEFAULT '{}'::jsonb",
+                "ALTER TABLE matterhorn_config ADD COLUMN IF NOT EXISTS value_json JSONB",
+                "UPDATE matterhorn_config SET value_json = jsonb_build_object('value', value) WHERE value_json IS NULL",
+                """CREATE TABLE IF NOT EXISTS matterhorn_import_previews (
+                    id TEXT PRIMARY KEY,
+                    feed_url TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL DEFAULT 'created',
+                    summary_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    items_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    validation_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    source_hash TEXT NOT NULL DEFAULT '',
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )""",
+            ]
+            for stmt in compat:
+                try:
+                    await conn.execute(stmt)
+                except Exception:
+                    pass
         logger.info("PostgreSQL schema migration complete.")
         return
 
@@ -2330,6 +2738,22 @@ async def update_order_status(order_id: str, status: str, *, tracking_number: st
         await db.execute("UPDATE orders SET status=?, tracking_number=?, tracking_url=?, last_error=?, updated_at=? WHERE order_id=?", (status, tracking_number, tracking_url, error, utc_now(), order_id))
         await db.commit()
 
+
+
+
+async def fetch_order(order_id: str) -> dict[str, Any] | None:
+    """Fetch a single order by id (best-effort, backend-neutral)."""
+    if not order_id:
+        return None
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT * FROM orders WHERE order_id = $1", order_id)
+        return dict(row) if row else None
+    async with get_connection() as db:
+        cur = await db.execute("SELECT * FROM orders WHERE order_id = ?", (order_id,))
+        row = await cur.fetchone(); await cur.close()
+        return dict(row) if row else None
 
 async def list_orders(limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
     """Return orders with bounded pagination."""
@@ -3259,7 +3683,7 @@ async def iam_create_session(*, session_id: str, user_id: str, session_token_has
         async with pool.acquire() as conn:
             await conn.execute(
                 "INSERT INTO iam_sessions(id,user_id,session_token_hash,ip_address,user_agent,expires_at,revoked,created_at,last_seen_at) VALUES ($1,$2,$3,$4,$5,$6,FALSE,NOW(),NOW())",
-                session_id, user_id, session_token_hash, ip_address, user_agent, expires_at,
+                session_id, user_id, session_token_hash, ip_address, user_agent, _pg_ts(expires_at),
             )
             row = await conn.fetchrow("SELECT * FROM iam_sessions WHERE id=$1", session_id)
         return dict(row) if row else {"id": session_id}
@@ -3333,7 +3757,7 @@ async def job_create(*, job_type: str, payload: dict[str, Any] | None = None, ru
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
                 "INSERT INTO jobs(id,type,status,payload_json,result_json,error_message,attempts,max_attempts,run_at,created_by,correlation_id,created_at,updated_at) VALUES ($1,$2,'pending',$3::jsonb,'{}'::jsonb,'',0,$4,$5,$6,$7,NOW(),NOW()) RETURNING *",
-                jid, job_type, payload_json, max_attempts, run_at_val, created_by, correlation_id,
+                jid, job_type, payload_json, max_attempts, _pg_ts(run_at_val), created_by, correlation_id,
             )
         return dict(row) if row else {"id": jid}
     async with get_connection() as db:
@@ -3385,6 +3809,7 @@ async def job_update(job_id: str, **fields: Any) -> bool:
         sets=[]; vals=[]; i=1
         for k,v in fields.items():
             if k in {"payload_json","result_json"} and not isinstance(v,str): v=json.dumps(v,ensure_ascii=False,default=str)
+            if k in {"run_at","locked_at","started_at","finished_at","created_at","updated_at"}: v=_pg_ts(v)
             sets.append(f"{k}=${i}"); vals.append(v); i+=1
         sets.append("updated_at=NOW()")
         vals.append(job_id)
@@ -3509,30 +3934,57 @@ async def matterhorn_get_config() -> dict[str, Any]:
     if uses_postgres():
         pool = await get_pg_pool()
         async with pool.acquire() as conn:
-            rows = await conn.fetch("SELECT key, value_json FROM matterhorn_config")
-        return {r['key']: (r['value_json'] if isinstance(r['value_json'], dict) else json.loads(r['value_json'] or '{}')) for r in rows}
+            cols = {r['column_name'] for r in await conn.fetch("SELECT column_name FROM information_schema.columns WHERE table_name='matterhorn_config'")}
+            if 'value_json' in cols:
+                rows = await conn.fetch("SELECT key, value_json FROM matterhorn_config")
+                out = {}
+                for r in rows:
+                    v = r['value_json']
+                    if isinstance(v, str):
+                        try: v = json.loads(v)
+                        except Exception: v = {}
+                    out[r['key']] = v or {}
+                return out
+            else:
+                rows = await conn.fetch("SELECT key, value FROM matterhorn_config")
+                return {r['key']: {"value": r['value']} for r in rows}
     async with get_connection() as db:
-        cur = await db.execute("SELECT key, value_json FROM matterhorn_config")
-        rows = await cur.fetchall(); await cur.close()
-        out={}
-        for r in rows:
-            d=dict(r); v=d.get('value_json')
-            if isinstance(v,str):
-                try: v=json.loads(v)
-                except Exception: v={}
-            out[d['key']]=v or {}
-        return out
+        try:
+            cur = await db.execute("SELECT key, value_json FROM matterhorn_config")
+            rows = await cur.fetchall(); await cur.close()
+            out={}
+            for r in rows:
+                d=dict(r); v=d.get('value_json')
+                if isinstance(v,str):
+                    try: v=json.loads(v)
+                    except Exception: v={}
+                out[d['key']]=v or {}
+            return out
+        except Exception:
+            cur = await db.execute("SELECT key, value FROM matterhorn_config")
+            rows = await cur.fetchall(); await cur.close()
+            return {dict(r)['key']: {"value": dict(r).get('value')} for r in rows}
 
 
 async def matterhorn_set_config(key: str, value: dict[str, Any]) -> None:
     now = utc_now(); vj=json.dumps(value, ensure_ascii=False, default=str)
+    plain = str(value.get('value','') if isinstance(value, dict) else value)
     if uses_postgres():
         pool = await get_pg_pool()
         async with pool.acquire() as conn:
-            await conn.execute("INSERT INTO matterhorn_config(key,value_json,updated_at) VALUES ($1,$2::jsonb,NOW()) ON CONFLICT(key) DO UPDATE SET value_json=EXCLUDED.value_json, updated_at=NOW()", key, vj)
+            cols = {r['column_name'] for r in await conn.fetch("SELECT column_name FROM information_schema.columns WHERE table_name='matterhorn_config'")}
+            if 'value_json' in cols and 'value' in cols:
+                await conn.execute("INSERT INTO matterhorn_config(key,value,value_json,updated_at) VALUES ($1,$2,$3::jsonb,NOW()) ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value,value_json=EXCLUDED.value_json,updated_at=NOW()", key, plain, vj)
+            elif 'value_json' in cols:
+                await conn.execute("INSERT INTO matterhorn_config(key,value_json,updated_at) VALUES ($1,$2::jsonb,NOW()) ON CONFLICT(key) DO UPDATE SET value_json=EXCLUDED.value_json,updated_at=NOW()", key, vj)
+            else:
+                await conn.execute("INSERT INTO matterhorn_config(key,value,updated_at) VALUES ($1,$2,NOW()) ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value,updated_at=NOW()", key, plain)
         return
     async with get_connection() as db:
-        await db.execute("INSERT INTO matterhorn_config(key,value_json,updated_at) VALUES (?,?,?) ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json, updated_at=excluded.updated_at", (key, vj, now))
+        try:
+            await db.execute("INSERT INTO matterhorn_config(key,value_json,updated_at) VALUES (?,?,?) ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json, updated_at=excluded.updated_at", (key, vj, now))
+        except Exception:
+            await db.execute("INSERT INTO matterhorn_config(key,value,updated_at) VALUES (?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at", (key, plain, now))
         await db.commit()
 
 
@@ -3541,34 +3993,72 @@ async def matterhorn_list_feeds() -> list[dict[str, Any]]:
         pool = await get_pg_pool()
         async with pool.acquire() as conn:
             rows = await conn.fetch("SELECT * FROM matterhorn_feeds ORDER BY updated_at DESC")
-        return [dict(r) for r in rows]
+        out = [dict(r) for r in rows]
+        for f in out:
+            if not f.get('feed_url') and f.get('url'): f['feed_url'] = f.get('url')
+            if 'url' not in f and f.get('feed_url'): f['url'] = f.get('feed_url')
+        return out
     async with get_connection() as db:
         cur = await db.execute("SELECT * FROM matterhorn_feeds ORDER BY updated_at DESC")
         rows = await cur.fetchall(); await cur.close()
-        return [dict(r) for r in rows]
+        out = [dict(r) for r in rows]
+        for f in out:
+            if not f.get('feed_url') and f.get('url'): f['feed_url'] = f.get('url')
+        return out
 
 
 async def matterhorn_upsert_feed(feed: dict[str, Any]) -> dict[str, Any]:
     import uuid as _uuid
     fid = str(feed.get('id') or _uuid.uuid4())
     now = utc_now(); cfg=json.dumps(feed.get('config_json') or feed.get('config') or {}, ensure_ascii=False, default=str)
-    enabled = feed.get('enabled', True)
+    enabled = bool(feed.get('enabled', True))
+    name = feed.get('name') or 'Feed'
+    feed_url = feed.get('feed_url') or feed.get('url') or ''
+    feed_type = feed.get('feed_type') or 'xml'
+    auth_header = feed.get('auth_header') or ''
     if uses_postgres():
         pool = await get_pg_pool()
         async with pool.acquire() as conn:
-            await conn.execute("""INSERT INTO matterhorn_feeds(id,name,feed_url,feed_type,enabled,config_json,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6::jsonb,NOW(),NOW())
-                ON CONFLICT(id) DO UPDATE SET name=EXCLUDED.name, feed_url=EXCLUDED.feed_url, feed_type=EXCLUDED.feed_type, enabled=EXCLUDED.enabled, config_json=EXCLUDED.config_json, updated_at=NOW()""",
-                fid, feed.get('name') or 'Feed', feed.get('feed_url') or '', feed.get('feed_type') or 'xml', bool(enabled), cfg)
+            # detect schema columns
+            cols = {r['column_name'] for r in await conn.fetch("SELECT column_name FROM information_schema.columns WHERE table_name='matterhorn_feeds'")}
+            has_url = 'url' in cols
+            has_feed_url = 'feed_url' in cols
+            has_auth = 'auth_header' in cols
+            if has_url and has_feed_url:
+                await conn.execute("""INSERT INTO matterhorn_feeds(id,name,url,feed_url,feed_type,enabled,auth_header,config_json,created_at,updated_at)
+                    VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,NOW(),NOW())
+                    ON CONFLICT(id) DO UPDATE SET name=EXCLUDED.name,url=EXCLUDED.url,feed_url=EXCLUDED.feed_url,feed_type=EXCLUDED.feed_type,enabled=EXCLUDED.enabled,auth_header=EXCLUDED.auth_header,config_json=EXCLUDED.config_json,updated_at=NOW()""",
+                    fid, name, feed_url, feed_url, feed_type, enabled, auth_header, cfg)
+            elif has_url:
+                await conn.execute("""INSERT INTO matterhorn_feeds(id,name,url,feed_type,enabled,auth_header,config_json,created_at,updated_at)
+                    VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,NOW(),NOW())
+                    ON CONFLICT(id) DO UPDATE SET name=EXCLUDED.name,url=EXCLUDED.url,feed_type=EXCLUDED.feed_type,enabled=EXCLUDED.enabled,auth_header=EXCLUDED.auth_header,config_json=EXCLUDED.config_json,updated_at=NOW()""",
+                    fid, name, feed_url, feed_type, enabled, auth_header, cfg)
+            else:
+                await conn.execute("""INSERT INTO matterhorn_feeds(id,name,feed_url,feed_type,enabled,config_json,created_at,updated_at)
+                    VALUES ($1,$2,$3,$4,$5,$6::jsonb,NOW(),NOW())
+                    ON CONFLICT(id) DO UPDATE SET name=EXCLUDED.name,feed_url=EXCLUDED.feed_url,feed_type=EXCLUDED.feed_type,enabled=EXCLUDED.enabled,config_json=EXCLUDED.config_json,updated_at=NOW()""",
+                    fid, name, feed_url, feed_type, enabled, cfg)
             row = await conn.fetchrow("SELECT * FROM matterhorn_feeds WHERE id=$1", fid)
-        return dict(row) if row else {"id": fid}
+        d = dict(row) if row else {"id": fid}
+        if not d.get('feed_url') and d.get('url'): d['feed_url']=d.get('url')
+        return d
     async with get_connection() as db:
-        await db.execute("""INSERT INTO matterhorn_feeds(id,name,feed_url,feed_type,enabled,config_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)
-            ON CONFLICT(id) DO UPDATE SET name=excluded.name, feed_url=excluded.feed_url, feed_type=excluded.feed_type, enabled=excluded.enabled, config_json=excluded.config_json, updated_at=excluded.updated_at""",
-            (fid, feed.get('name') or 'Feed', feed.get('feed_url') or '', feed.get('feed_type') or 'xml', 1 if enabled else 0, cfg, now, now))
+        # try new schema, fallback old
+        try:
+            await db.execute("""INSERT INTO matterhorn_feeds(id,name,feed_url,feed_type,enabled,config_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)
+                ON CONFLICT(id) DO UPDATE SET name=excluded.name, feed_url=excluded.feed_url, feed_type=excluded.feed_type, enabled=excluded.enabled, config_json=excluded.config_json, updated_at=excluded.updated_at""",
+                (fid, name, feed_url, feed_type, 1 if enabled else 0, cfg, now, now))
+        except Exception:
+            await db.execute("""INSERT INTO matterhorn_feeds(id,name,url,feed_type,enabled,config_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)
+                ON CONFLICT(id) DO UPDATE SET name=excluded.name, url=excluded.url, feed_type=excluded.feed_type, enabled=excluded.enabled, config_json=excluded.config_json, updated_at=excluded.updated_at""",
+                (fid, name, feed_url, feed_type, 1 if enabled else 0, cfg, now, now))
         await db.commit()
         cur = await db.execute("SELECT * FROM matterhorn_feeds WHERE id=?", (fid,))
         row = await cur.fetchone(); await cur.close()
-        return dict(row) if row else {"id": fid}
+        d = dict(row) if row else {"id": fid}
+        if not d.get('feed_url') and d.get('url'): d['feed_url']=d.get('url')
+        return d
 
 
 async def matterhorn_delete_feed(feed_id: str) -> bool:
@@ -3576,7 +4066,7 @@ async def matterhorn_delete_feed(feed_id: str) -> bool:
         pool = await get_pg_pool()
         async with pool.acquire() as conn:
             res = await conn.execute("DELETE FROM matterhorn_feeds WHERE id=$1", feed_id)
-        return res.endswith('1')
+        return str(res).endswith('1')
     async with get_connection() as db:
         cur = await db.execute("DELETE FROM matterhorn_feeds WHERE id=?", (feed_id,))
         await db.commit(); ok=cur.rowcount>0; await cur.close(); return ok
@@ -3587,7 +4077,10 @@ async def matterhorn_list_mappings() -> list[dict[str, Any]]:
         pool = await get_pg_pool()
         async with pool.acquire() as conn:
             rows = await conn.fetch("SELECT * FROM matterhorn_mappings ORDER BY updated_at DESC")
-        return [dict(r) for r in rows]
+        out=[dict(r) for r in rows]
+        for m in out:
+            if 'enabled' not in m and 'is_active' in m: m['enabled']=m.get('is_active')
+        return out
     async with get_connection() as db:
         cur = await db.execute("SELECT * FROM matterhorn_mappings ORDER BY updated_at DESC")
         rows = await cur.fetchall(); await cur.close()
@@ -3598,19 +4091,34 @@ async def matterhorn_upsert_mapping(mapping: dict[str, Any]) -> dict[str, Any]:
     import uuid as _uuid
     mid = str(mapping.get('id') or _uuid.uuid4())
     now = utc_now(); cfg=json.dumps(mapping.get('config_json') or mapping.get('config') or {}, ensure_ascii=False, default=str)
-    enabled = mapping.get('enabled', True)
+    enabled = bool(mapping.get('enabled', mapping.get('is_active', True)))
+    feed_id = mapping.get('feed_id') or ''
+    source_field = mapping.get('source_field') or ''
+    target_field = mapping.get('target_field') or ''
+    transform = mapping.get('transform') or 'direct'
+    priority = int(mapping.get('priority') or 0)
     if uses_postgres():
         pool = await get_pg_pool()
         async with pool.acquire() as conn:
-            await conn.execute("""INSERT INTO matterhorn_mappings(id,source_field,target_field,transform,enabled,config_json,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6::jsonb,NOW(),NOW())
-                ON CONFLICT(id) DO UPDATE SET source_field=EXCLUDED.source_field, target_field=EXCLUDED.target_field, transform=EXCLUDED.transform, enabled=EXCLUDED.enabled, config_json=EXCLUDED.config_json, updated_at=NOW()""",
-                mid, mapping.get('source_field') or '', mapping.get('target_field') or '', mapping.get('transform') or '', bool(enabled), cfg)
+            cols = {r['column_name'] for r in await conn.fetch("SELECT column_name FROM information_schema.columns WHERE table_name='matterhorn_mappings'")}
+            if 'feed_id' in cols:
+                await conn.execute("""INSERT INTO matterhorn_mappings(id,feed_id,source_field,target_field,transform,enabled,config_json,priority,is_active,created_at,updated_at)
+                    VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9,NOW(),NOW())
+                    ON CONFLICT(id) DO UPDATE SET feed_id=EXCLUDED.feed_id,source_field=EXCLUDED.source_field,target_field=EXCLUDED.target_field,transform=EXCLUDED.transform,enabled=EXCLUDED.enabled,config_json=EXCLUDED.config_json,priority=EXCLUDED.priority,is_active=EXCLUDED.is_active,updated_at=NOW()""",
+                    mid, feed_id, source_field, target_field, transform, enabled, cfg, priority, enabled)
+            else:
+                await conn.execute("""INSERT INTO matterhorn_mappings(id,source_field,target_field,transform,enabled,config_json,created_at,updated_at)
+                    VALUES ($1,$2,$3,$4,$5,$6::jsonb,NOW(),NOW())
+                    ON CONFLICT(id) DO UPDATE SET source_field=EXCLUDED.source_field,target_field=EXCLUDED.target_field,transform=EXCLUDED.transform,enabled=EXCLUDED.enabled,config_json=EXCLUDED.config_json,updated_at=NOW()""",
+                    mid, source_field, target_field, transform, enabled, cfg)
             row = await conn.fetchrow("SELECT * FROM matterhorn_mappings WHERE id=$1", mid)
-        return dict(row) if row else {"id": mid}
+        d=dict(row) if row else {"id": mid}
+        if 'enabled' not in d and 'is_active' in d: d['enabled']=d.get('is_active')
+        return d
     async with get_connection() as db:
         await db.execute("""INSERT INTO matterhorn_mappings(id,source_field,target_field,transform,enabled,config_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)
-            ON CONFLICT(id) DO UPDATE SET source_field=excluded.source_field, target_field=excluded.target_field, transform=excluded.transform, enabled=excluded.enabled, config_json=excluded.config_json, updated_at=excluded.updated_at""",
-            (mid, mapping.get('source_field') or '', mapping.get('target_field') or '', mapping.get('transform') or '', 1 if enabled else 0, cfg, now, now))
+            ON CONFLICT(id) DO UPDATE SET source_field=excluded.source_field,target_field=excluded.target_field,transform=excluded.transform,enabled=excluded.enabled,config_json=excluded.config_json,updated_at=excluded.updated_at""",
+            (mid, source_field, target_field, transform, 1 if enabled else 0, cfg, now, now))
         await db.commit()
         cur = await db.execute("SELECT * FROM matterhorn_mappings WHERE id=?", (mid,))
         row = await cur.fetchone(); await cur.close()
@@ -3622,7 +4130,7 @@ async def matterhorn_delete_mapping(mapping_id: str) -> bool:
         pool = await get_pg_pool()
         async with pool.acquire() as conn:
             res = await conn.execute("DELETE FROM matterhorn_mappings WHERE id=$1", mapping_id)
-        return res.endswith('1')
+        return str(res).endswith('1')
     async with get_connection() as db:
         cur = await db.execute("DELETE FROM matterhorn_mappings WHERE id=?", (mapping_id,))
         await db.commit(); ok=cur.rowcount>0; await cur.close(); return ok
@@ -4001,3 +4509,598 @@ async def connector_export_list(connector_id: str | None = None, limit: int = 50
         rows = await cur.fetchall()
         await cur.close()
         return [dict(r) for r in rows]
+
+
+async def delete_product(sku: str) -> bool:
+    """Delete a product by SKU. Returns True if deleted."""
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            res = await conn.execute("DELETE FROM products WHERE sku = $1", sku)
+        return res.endswith("1")
+    async with get_connection() as db:
+        cur = await db.execute("DELETE FROM products WHERE sku = ?", (sku,))
+        await db.commit()
+        ok = cur.rowcount > 0
+        await cur.close()
+        return ok
+
+
+async def delete_bundle(bundle_sku: str) -> bool:
+    """Delete a bundle definition (product row remains managed separately if needed)."""
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            res = await conn.execute("DELETE FROM bundles WHERE bundle_sku = $1", bundle_sku)
+        return res.endswith("1")
+    async with get_connection() as db:
+        cur = await db.execute("DELETE FROM bundles WHERE bundle_sku = ?", (bundle_sku,))
+        await db.commit()
+        ok = cur.rowcount > 0
+        await cur.close()
+        return ok
+
+
+# ── CRM / Omnichannel Communication helpers ──────────────────────────────
+
+async def crm_upsert_customer(data: dict[str, Any]) -> dict[str, Any]:
+    import uuid as _uuid
+    cid = str(data.get('id') or _uuid.uuid4())
+    now = utc_now()
+    email = str(data.get('email') or '').strip().lower()
+    name = str(data.get('display_name') or data.get('name') or email or 'Kunde')
+    meta = json.dumps(data.get('metadata_json') or data.get('metadata') or {}, ensure_ascii=False, default=str)
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO crm_customers(id,email,display_name,shopware_id,amazon_id,ebay_id,phone,metadata_json,created_at,updated_at)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,NOW(),NOW())
+                   ON CONFLICT(id) DO UPDATE SET email=EXCLUDED.email,display_name=EXCLUDED.display_name,shopware_id=EXCLUDED.shopware_id,amazon_id=EXCLUDED.amazon_id,ebay_id=EXCLUDED.ebay_id,phone=EXCLUDED.phone,metadata_json=EXCLUDED.metadata_json,updated_at=NOW()""",
+                cid, email, name, str(data.get('shopware_id') or ''), str(data.get('amazon_id') or ''), str(data.get('ebay_id') or ''), str(data.get('phone') or ''), meta)
+            row = await conn.fetchrow("SELECT * FROM crm_customers WHERE id=$1", cid)
+        return dict(row) if row else {"id": cid}
+    async with get_connection() as db:
+        await db.execute(
+            """INSERT INTO crm_customers(id,email,display_name,shopware_id,amazon_id,ebay_id,phone,metadata_json,created_at,updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(id) DO UPDATE SET email=excluded.email,display_name=excluded.display_name,shopware_id=excluded.shopware_id,amazon_id=excluded.amazon_id,ebay_id=excluded.ebay_id,phone=excluded.phone,metadata_json=excluded.metadata_json,updated_at=excluded.updated_at""",
+            (cid,email,name,str(data.get('shopware_id') or ''),str(data.get('amazon_id') or ''),str(data.get('ebay_id') or ''),str(data.get('phone') or ''),meta,now,now))
+        await db.commit(); cur=await db.execute("SELECT * FROM crm_customers WHERE id=?", (cid,)); row=await cur.fetchone(); await cur.close()
+        return dict(row) if row else {"id": cid}
+
+
+async def crm_get_customer(*, customer_id: str | None = None, email: str | None = None, channel: str | None = None, external_id: str | None = None) -> dict[str, Any] | None:
+    if customer_id:
+        if uses_postgres():
+            pool = await get_pg_pool()
+            async with pool.acquire() as conn:
+                row = await conn.fetchrow("SELECT * FROM crm_customers WHERE id=$1", customer_id)
+            return dict(row) if row else None
+        async with get_connection() as db:
+            cur=await db.execute("SELECT * FROM crm_customers WHERE id=?", (customer_id,)); row=await cur.fetchone(); await cur.close(); return dict(row) if row else None
+    if email:
+        em = email.strip().lower()
+        if uses_postgres():
+            pool = await get_pg_pool()
+            async with pool.acquire() as conn:
+                row = await conn.fetchrow("SELECT * FROM crm_customers WHERE lower(email)=$1 LIMIT 1", em)
+            return dict(row) if row else None
+        async with get_connection() as db:
+            cur=await db.execute("SELECT * FROM crm_customers WHERE lower(email)=? LIMIT 1", (em,)); row=await cur.fetchone(); await cur.close(); return dict(row) if row else None
+    if channel and external_id:
+        col = {"shopware":"shopware_id","amazon":"amazon_id","ebay":"ebay_id"}.get(channel)
+        if col:
+            if uses_postgres():
+                pool = await get_pg_pool()
+            async with pool.acquire() as conn:
+                row = await conn.fetchrow(f"SELECT * FROM crm_customers WHERE {col}=$1 LIMIT 1", external_id)
+                return dict(row) if row else None
+            async with get_connection() as db:
+                cur=await db.execute(f"SELECT * FROM crm_customers WHERE {col}=? LIMIT 1", (external_id,)); row=await cur.fetchone(); await cur.close(); return dict(row) if row else None
+    return None
+
+
+async def crm_list_customers(limit: int = 100, query: str | None = None) -> list[dict[str, Any]]:
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            if query:
+                q=f"%{query.lower()}%"; rows = await conn.fetch("SELECT * FROM crm_customers WHERE lower(email) LIKE $1 OR lower(display_name) LIKE $1 ORDER BY updated_at DESC LIMIT $2", q, limit)
+            else:
+                rows = await conn.fetch("SELECT * FROM crm_customers ORDER BY updated_at DESC LIMIT $1", limit)
+        return [dict(r) for r in rows]
+    async with get_connection() as db:
+        if query:
+            q=f"%{query.lower()}%"; cur=await db.execute("SELECT * FROM crm_customers WHERE lower(email) LIKE ? OR lower(display_name) LIKE ? ORDER BY updated_at DESC LIMIT ?", (q,q,limit))
+        else:
+            cur=await db.execute("SELECT * FROM crm_customers ORDER BY updated_at DESC LIMIT ?", (limit,))
+        rows=await cur.fetchall(); await cur.close(); return [dict(r) for r in rows]
+
+
+async def crm_upsert_thread(data: dict[str, Any]) -> dict[str, Any]:
+    import uuid as _uuid
+    tid = str(data.get('id') or _uuid.uuid4())
+    now = utc_now(); meta = json.dumps(data.get('metadata_json') or data.get('metadata') or {}, ensure_ascii=False, default=str)
+    channel = str(data.get('channel') or 'email'); ext = str(data.get('external_thread_id') or tid)
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            existing = await conn.fetchrow("SELECT id FROM crm_threads WHERE channel=$1 AND external_thread_id=$2", channel, ext)
+            if existing: tid = str(existing['id'])
+            await conn.execute(
+                """INSERT INTO crm_threads(id,customer_id,channel,external_thread_id,subject,status,last_message_at,order_id,metadata_json,created_at,updated_at)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,NOW(),NOW())
+                   ON CONFLICT(id) DO UPDATE SET customer_id=EXCLUDED.customer_id,subject=EXCLUDED.subject,status=EXCLUDED.status,last_message_at=EXCLUDED.last_message_at,order_id=EXCLUDED.order_id,metadata_json=EXCLUDED.metadata_json,updated_at=NOW()""",
+                tid, str(data.get('customer_id') or ''), channel, ext, str(data.get('subject') or ''), str(data.get('status') or 'open'), _pg_ts(data.get('last_message_at')) if data.get('last_message_at') else None, str(data.get('order_id') or ''), meta)
+            row = await conn.fetchrow("SELECT * FROM crm_threads WHERE id=$1", tid)
+        return dict(row) if row else {"id": tid}
+    async with get_connection() as db:
+        cur=await db.execute("SELECT id FROM crm_threads WHERE channel=? AND external_thread_id=?", (channel,ext)); ex=await cur.fetchone(); await cur.close()
+        if ex: tid = ex['id'] if isinstance(ex,dict) or hasattr(ex,'keys') else ex[0]
+        await db.execute(
+            """INSERT INTO crm_threads(id,customer_id,channel,external_thread_id,subject,status,last_message_at,order_id,metadata_json,created_at,updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(id) DO UPDATE SET customer_id=excluded.customer_id,subject=excluded.subject,status=excluded.status,last_message_at=excluded.last_message_at,order_id=excluded.order_id,metadata_json=excluded.metadata_json,updated_at=excluded.updated_at""",
+            (tid,str(data.get('customer_id') or ''),channel,ext,str(data.get('subject') or ''),str(data.get('status') or 'open'),data.get('last_message_at'),str(data.get('order_id') or ''),meta,now,now))
+        await db.commit(); cur=await db.execute("SELECT * FROM crm_threads WHERE id=?", (tid,)); row=await cur.fetchone(); await cur.close(); return dict(row) if row else {"id": tid}
+
+
+async def crm_get_thread(*, thread_id: str | None = None, channel: str | None = None, external_thread_id: str | None = None) -> dict[str, Any] | None:
+    if thread_id:
+        if uses_postgres():
+            pool = await get_pg_pool()
+            async with pool.acquire() as conn:
+                row = await conn.fetchrow("SELECT * FROM crm_threads WHERE id=$1", thread_id)
+            return dict(row) if row else None
+        async with get_connection() as db:
+            cur=await db.execute("SELECT * FROM crm_threads WHERE id=?", (thread_id,)); row=await cur.fetchone(); await cur.close(); return dict(row) if row else None
+    if channel and external_thread_id:
+        if uses_postgres():
+            pool = await get_pg_pool()
+            async with pool.acquire() as conn:
+                row = await conn.fetchrow("SELECT * FROM crm_threads WHERE channel=$1 AND external_thread_id=$2", channel, external_thread_id)
+            return dict(row) if row else None
+        async with get_connection() as db:
+            cur=await db.execute("SELECT * FROM crm_threads WHERE channel=? AND external_thread_id=?", (channel, external_thread_id)); row=await cur.fetchone(); await cur.close(); return dict(row) if row else None
+    return None
+
+
+async def crm_list_threads(limit: int = 100, channel: str | None = None, status: str | None = None, customer_id: str | None = None) -> list[dict[str, Any]]:
+    if uses_postgres():
+        pool = await get_pg_pool(); clauses=[]; args=[]; i=1
+        if channel: clauses.append(f"channel=${i}"); args.append(channel); i+=1
+        if status: clauses.append(f"status=${i}"); args.append(status); i+=1
+        if customer_id: clauses.append(f"customer_id=${i}"); args.append(customer_id); i+=1
+        where = (" WHERE "+" AND ".join(clauses)) if clauses else ""
+        q = f"SELECT * FROM crm_threads{where} ORDER BY COALESCE(last_message_at, updated_at) DESC LIMIT ${i}"; args.append(limit)
+        async with pool.acquire() as conn: rows = await conn.fetch(q, *args)
+        return [dict(r) for r in rows]
+    async with get_connection() as db:
+        clauses=[]; args=[]
+        if channel: clauses.append("channel=?"); args.append(channel)
+        if status: clauses.append("status=?"); args.append(status)
+        if customer_id: clauses.append("customer_id=?"); args.append(customer_id)
+        where = (" WHERE "+" AND ".join(clauses)) if clauses else ""
+        q = f"SELECT * FROM crm_threads{where} ORDER BY COALESCE(last_message_at, updated_at) DESC LIMIT ?"; args.append(limit)
+        cur=await db.execute(q, tuple(args)); rows=await cur.fetchall(); await cur.close(); return [dict(r) for r in rows]
+
+
+async def crm_add_message(data: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    """Insert message idempotently. Returns (message, created)."""
+    import uuid as _uuid
+    mid = str(data.get('id') or _uuid.uuid4()); now = utc_now()
+    att = data.get('attachments_json'); meta = data.get('metadata_json')
+    if isinstance(att,(list,dict)): att=json.dumps(att,ensure_ascii=False,default=str)
+    if isinstance(meta,(list,dict)): meta=json.dumps(meta,ensure_ascii=False,default=str)
+    idem = str(data.get('idempotency_key') or _uuid.uuid4()); channel=str(data.get('channel') or 'email')
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT * FROM crm_messages WHERE channel=$1 AND idempotency_key=$2", channel, idem)
+            if row: return dict(row), False
+            await conn.execute(
+                """INSERT INTO crm_messages(id,thread_id,customer_id,channel,direction,external_message_id,idempotency_key,subject,body,sender,recipient,attachments_json,sent_at,status,metadata_json,created_at)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13,$14,$15::jsonb,NOW())""",
+                mid, str(data.get('thread_id') or ''), str(data.get('customer_id') or ''), channel, str(data.get('direction') or 'inbound'), str(data.get('external_message_id') or ''), idem, str(data.get('subject') or ''), str(data.get('body') or ''), str(data.get('sender') or ''), str(data.get('recipient') or ''), att or '[]', _pg_ts(data.get('sent_at') or now), str(data.get('status') or 'received'), meta or '{}')
+            await conn.execute("UPDATE crm_threads SET last_message_at=$1, updated_at=NOW() WHERE id=$2", _pg_ts(data.get('sent_at') or now), str(data.get('thread_id') or ''))
+            row = await conn.fetchrow("SELECT * FROM crm_messages WHERE id=$1", mid)
+        return (dict(row) if row else {"id": mid}), True
+    async with get_connection() as db:
+        cur=await db.execute("SELECT * FROM crm_messages WHERE channel=? AND idempotency_key=?", (channel,idem)); row=await cur.fetchone(); await cur.close()
+        if row: return dict(row), False
+        await db.execute(
+            """INSERT INTO crm_messages(id,thread_id,customer_id,channel,direction,external_message_id,idempotency_key,subject,body,sender,recipient,attachments_json,sent_at,status,metadata_json,created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (mid,str(data.get('thread_id') or ''),str(data.get('customer_id') or ''),channel,str(data.get('direction') or 'inbound'),str(data.get('external_message_id') or ''),idem,str(data.get('subject') or ''),str(data.get('body') or ''),str(data.get('sender') or ''),str(data.get('recipient') or ''),att or '[]',data.get('sent_at') or now,str(data.get('status') or 'received'),meta or '{}',now))
+        await db.execute("UPDATE crm_threads SET last_message_at=?, updated_at=? WHERE id=?", (data.get('sent_at') or now, now, str(data.get('thread_id') or '')))
+        await db.commit(); cur=await db.execute("SELECT * FROM crm_messages WHERE id=?", (mid,)); row=await cur.fetchone(); await cur.close()
+        return (dict(row) if row else {"id": mid}), True
+
+
+async def crm_list_messages(*, thread_id: str | None = None, limit: int = 200) -> list[dict[str, Any]]:
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            if thread_id: rows = await conn.fetch("SELECT * FROM crm_messages WHERE thread_id=$1 ORDER BY sent_at ASC LIMIT $2", thread_id, limit)
+            else: rows = await conn.fetch("SELECT * FROM crm_messages ORDER BY sent_at DESC LIMIT $1", limit)
+        return [dict(r) for r in rows]
+    async with get_connection() as db:
+        if thread_id: cur=await db.execute("SELECT * FROM crm_messages WHERE thread_id=? ORDER BY sent_at ASC LIMIT ?", (thread_id,limit))
+        else: cur=await db.execute("SELECT * FROM crm_messages ORDER BY sent_at DESC LIMIT ?", (limit,))
+        rows=await cur.fetchall(); await cur.close(); return [dict(r) for r in rows]
+
+
+async def crm_create_appointment(data: dict[str, Any]) -> dict[str, Any]:
+    import uuid as _uuid
+    aid = str(data.get('id') or _uuid.uuid4()); now = utc_now(); meta=json.dumps(data.get('metadata_json') or data.get('metadata') or {}, ensure_ascii=False, default=str)
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO crm_appointments(id,customer_id,thread_id,order_id,title,description,starts_at,ends_at,status,channel,location,metadata_json,created_by,created_at,updated_at)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13,NOW(),NOW())""",
+                aid, data.get('customer_id'), data.get('thread_id'), str(data.get('order_id') or ''), str(data.get('title') or 'Termin'), str(data.get('description') or ''), _pg_ts(data.get('starts_at') or now), _pg_ts(data.get('ends_at')) if data.get('ends_at') else None, str(data.get('status') or 'scheduled'), str(data.get('channel') or 'email'), str(data.get('location') or ''), meta, str(data.get('created_by') or ''))
+            row = await conn.fetchrow("SELECT * FROM crm_appointments WHERE id=$1", aid)
+        return dict(row) if row else {"id": aid}
+    async with get_connection() as db:
+        await db.execute(
+            """INSERT INTO crm_appointments(id,customer_id,thread_id,order_id,title,description,starts_at,ends_at,status,channel,location,metadata_json,created_by,created_at,updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (aid,data.get('customer_id'),data.get('thread_id'),str(data.get('order_id') or ''),str(data.get('title') or 'Termin'),str(data.get('description') or ''),data.get('starts_at') or now,data.get('ends_at'),str(data.get('status') or 'scheduled'),str(data.get('channel') or 'email'),str(data.get('location') or ''),meta,str(data.get('created_by') or ''),now,now))
+        await db.commit(); cur=await db.execute("SELECT * FROM crm_appointments WHERE id=?", (aid,)); row=await cur.fetchone(); await cur.close(); return dict(row) if row else {"id": aid}
+
+
+async def crm_list_appointments(limit: int = 100, customer_id: str | None = None) -> list[dict[str, Any]]:
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            if customer_id: rows = await conn.fetch("SELECT * FROM crm_appointments WHERE customer_id=$1 ORDER BY starts_at ASC LIMIT $2", customer_id, limit)
+            else: rows = await conn.fetch("SELECT * FROM crm_appointments ORDER BY starts_at DESC LIMIT $1", limit)
+        return [dict(r) for r in rows]
+    async with get_connection() as db:
+        if customer_id: cur=await db.execute("SELECT * FROM crm_appointments WHERE customer_id=? ORDER BY starts_at ASC LIMIT ?", (customer_id,limit))
+        else: cur=await db.execute("SELECT * FROM crm_appointments ORDER BY starts_at DESC LIMIT ?", (limit,))
+        rows=await cur.fetchall(); await cur.close(); return [dict(r) for r in rows]
+
+
+# ── AI agent action / audit helpers ──────────────────────────────────────
+
+async def agent_action_create(data: dict[str, Any]) -> dict[str, Any]:
+    import uuid as _uuid
+    aid = str(data.get('id') or _uuid.uuid4()); now = utc_now()
+    args = json.dumps(data.get('args_json') or data.get('args') or {}, ensure_ascii=False, default=str)
+    prev = json.dumps(data.get('preview_json') or data.get('preview') or {}, ensure_ascii=False, default=str)
+    resj = json.dumps(data.get('result_json') or data.get('result') or {}, ensure_ascii=False, default=str)
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            await conn.execute("INSERT INTO ai_agent_actions(id,actor,prompt,tool_name,args_json,preview_json,status,requires_confirmation,result_json,error_message,created_at) VALUES ($1,$2,$3,$4,$5::jsonb,$6::jsonb,$7,$8,$9::jsonb,$10,NOW())", aid, str(data.get('actor') or ''), str(data.get('prompt') or ''), str(data.get('tool_name') or ''), args, prev, str(data.get('status') or 'pending'), bool(data.get('requires_confirmation', True)), resj, str(data.get('error_message') or ''))
+            row = await conn.fetchrow("SELECT * FROM ai_agent_actions WHERE id=$1", aid)
+        return dict(row) if row else {"id": aid}
+    async with get_connection() as db:
+        await db.execute("INSERT INTO ai_agent_actions(id,actor,prompt,tool_name,args_json,preview_json,status,requires_confirmation,result_json,error_message,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)", (aid,str(data.get('actor') or ''),str(data.get('prompt') or ''),str(data.get('tool_name') or ''),args,prev,str(data.get('status') or 'pending'),1 if data.get('requires_confirmation',True) else 0,resj,str(data.get('error_message') or ''),now))
+        await db.commit(); cur=await db.execute("SELECT * FROM ai_agent_actions WHERE id=?", (aid,)); row=await cur.fetchone(); await cur.close(); return dict(row) if row else {"id": aid}
+
+
+async def agent_action_get(action_id: str) -> dict[str, Any] | None:
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn: row = await conn.fetchrow("SELECT * FROM ai_agent_actions WHERE id=$1", action_id)
+        return dict(row) if row else None
+    async with get_connection() as db:
+        cur=await db.execute("SELECT * FROM ai_agent_actions WHERE id=?", (action_id,)); row=await cur.fetchone(); await cur.close(); return dict(row) if row else None
+
+
+async def agent_action_update(action_id: str, **fields: Any) -> dict[str, Any] | None:
+    if not fields: return await agent_action_get(action_id)
+    now = utc_now()
+    if uses_postgres():
+        sets=[]; vals=[]; i=1
+        for k,v in fields.items():
+            if k in {'args_json','preview_json','result_json'} and not isinstance(v,str): v=json.dumps(v,ensure_ascii=False,default=str)
+            if k=='executed_at': v=_pg_ts(v)
+            sets.append(f"{k}=${i}"); vals.append(v); i+=1
+        vals.append(action_id)
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(f"UPDATE ai_agent_actions SET {', '.join(sets)} WHERE id=${i}", *vals)
+            row = await conn.fetchrow("SELECT * FROM ai_agent_actions WHERE id=$1", action_id)
+        return dict(row) if row else None
+    async with get_connection() as db:
+        sets=[]; vals=[]
+        for k,v in fields.items():
+            if k in {'args_json','preview_json','result_json'} and not isinstance(v,str): v=json.dumps(v,ensure_ascii=False,default=str)
+            if k=='requires_confirmation': v=1 if v else 0
+            sets.append(f"{k}=?"); vals.append(v)
+        vals.append(action_id)
+        await db.execute(f"UPDATE ai_agent_actions SET {', '.join(sets)} WHERE id=?", tuple(vals)); await db.commit()
+        cur=await db.execute("SELECT * FROM ai_agent_actions WHERE id=?", (action_id,)); row=await cur.fetchone(); await cur.close(); return dict(row) if row else None
+
+
+# ── Multimodal Creative Engine helpers ───────────────────────────────────
+
+async def creative_project_upsert(data: dict[str, Any]) -> dict[str, Any]:
+    import uuid as _uuid
+    pid = str(data.get("id") or _uuid.uuid4())
+    now = utc_now()
+    ctx = json.dumps(data.get("context_json") or data.get("context") or {}, ensure_ascii=False, default=str)
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO creative_projects(id,name,project_type,status,brief,context_json,created_by,created_at,updated_at)
+                   VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7,NOW(),NOW())
+                   ON CONFLICT(id) DO UPDATE SET name=EXCLUDED.name,project_type=EXCLUDED.project_type,status=EXCLUDED.status,
+                   brief=EXCLUDED.brief,context_json=EXCLUDED.context_json,updated_at=NOW()""",
+                pid, str(data.get("name") or "Projekt"), str(data.get("project_type") or "general"), str(data.get("status") or "draft"),
+                str(data.get("brief") or ""), ctx, str(data.get("created_by") or ""))
+            row = await conn.fetchrow("SELECT * FROM creative_projects WHERE id=$1", pid)
+        return dict(row) if row else {"id": pid}
+    async with get_connection() as db:
+        await db.execute(
+            """INSERT INTO creative_projects(id,name,project_type,status,brief,context_json,created_by,created_at,updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(id) DO UPDATE SET name=excluded.name,project_type=excluded.project_type,status=excluded.status,
+               brief=excluded.brief,context_json=excluded.context_json,updated_at=excluded.updated_at""",
+            (pid, str(data.get("name") or "Projekt"), str(data.get("project_type") or "general"), str(data.get("status") or "draft"),
+             str(data.get("brief") or ""), ctx, str(data.get("created_by") or ""), now, now))
+        await db.commit(); cur = await db.execute("SELECT * FROM creative_projects WHERE id=?", (pid,)); row = await cur.fetchone(); await cur.close()
+        return dict(row) if row else {"id": pid}
+
+
+async def creative_project_list(limit: int = 100) -> list[dict[str, Any]]:
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("SELECT * FROM creative_projects ORDER BY updated_at DESC LIMIT $1", limit)
+        return [dict(r) for r in rows]
+    async with get_connection() as db:
+        cur = await db.execute("SELECT * FROM creative_projects ORDER BY updated_at DESC LIMIT ?", (limit,))
+        rows = await cur.fetchall(); await cur.close(); return [dict(r) for r in rows]
+
+
+async def creative_job_create(data: dict[str, Any]) -> dict[str, Any]:
+    import uuid as _uuid
+    jid = str(data.get("id") or _uuid.uuid4()); now = utc_now()
+    inp = json.dumps(data.get("input_json") or data.get("input") or {}, ensure_ascii=False, default=str)
+    out = json.dumps(data.get("output_json") or data.get("output") or {}, ensure_ascii=False, default=str)
+    cost = json.dumps(data.get("cost_json") or data.get("cost") or {}, ensure_ascii=False, default=str)
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO creative_jobs(id,project_id,job_type,capability,status,provider_id,model_id,prompt,negative_prompt,input_json,output_json,cost_json,error_message,requires_review,created_by,created_at,updated_at,started_at,completed_at)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11::jsonb,$12::jsonb,$13,$14,$15,NOW(),NOW(),$16,$17)""",
+                jid, data.get("project_id"), str(data.get("job_type") or "image_generation"), str(data.get("capability") or "image_generation"),
+                str(data.get("status") or "queued"), str(data.get("provider_id") or ""), str(data.get("model_id") or ""),
+                str(data.get("prompt") or ""), str(data.get("negative_prompt") or ""), inp, out, cost,
+                str(data.get("error_message") or ""), bool(data.get("requires_review", False)), str(data.get("created_by") or ""),
+                _pg_ts(data.get("started_at")), _pg_ts(data.get("completed_at")))
+            row = await conn.fetchrow("SELECT * FROM creative_jobs WHERE id=$1", jid)
+        return dict(row) if row else {"id": jid}
+    async with get_connection() as db:
+        await db.execute(
+            """INSERT INTO creative_jobs(id,project_id,job_type,capability,status,provider_id,model_id,prompt,negative_prompt,input_json,output_json,cost_json,error_message,requires_review,created_by,created_at,updated_at,started_at,completed_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (jid, data.get("project_id"), str(data.get("job_type") or "image_generation"), str(data.get("capability") or "image_generation"),
+             str(data.get("status") or "queued"), str(data.get("provider_id") or ""), str(data.get("model_id") or ""),
+             str(data.get("prompt") or ""), str(data.get("negative_prompt") or ""), inp, out, cost,
+             str(data.get("error_message") or ""), 1 if data.get("requires_review") else 0, str(data.get("created_by") or ""),
+             now, now, data.get("started_at"), data.get("completed_at")))
+        await db.commit(); cur = await db.execute("SELECT * FROM creative_jobs WHERE id=?", (jid,)); row = await cur.fetchone(); await cur.close()
+        return dict(row) if row else {"id": jid}
+
+
+async def creative_job_update(job_id: str, **fields: Any) -> dict[str, Any] | None:
+    if not fields:
+        return await creative_job_get(job_id)
+    now = utc_now()
+    if uses_postgres():
+        sets=[]; vals=[]; i=1
+        for k,v in fields.items():
+            if k in {"input_json","output_json","cost_json"} and not isinstance(v,str): v=json.dumps(v,ensure_ascii=False,default=str)
+            if k in {"started_at","completed_at"}: v=_pg_ts(v)
+            sets.append(f"{k}=${i}"); vals.append(v); i+=1
+        sets.append(f"updated_at=${i}"); vals.append(now); i+=1
+        vals.append(job_id)
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(f"UPDATE creative_jobs SET {', '.join(sets)} WHERE id=${i}", *vals)
+            row = await conn.fetchrow("SELECT * FROM creative_jobs WHERE id=$1", job_id)
+        return dict(row) if row else None
+    async with get_connection() as db:
+        sets=[]; vals=[]
+        for k,v in fields.items():
+            if k in {"input_json","output_json","cost_json"} and not isinstance(v,str): v=json.dumps(v,ensure_ascii=False,default=str)
+            if k=="requires_review": v=1 if v else 0
+            sets.append(f"{k}=?"); vals.append(v)
+        sets.append("updated_at=?"); vals.append(now); vals.append(job_id)
+        await db.execute(f"UPDATE creative_jobs SET {', '.join(sets)} WHERE id=?", tuple(vals))
+        await db.commit(); cur = await db.execute("SELECT * FROM creative_jobs WHERE id=?", (job_id,)); row = await cur.fetchone(); await cur.close()
+        return dict(row) if row else None
+
+
+async def creative_job_get(job_id: str) -> dict[str, Any] | None:
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT * FROM creative_jobs WHERE id=$1", job_id)
+        return dict(row) if row else None
+    async with get_connection() as db:
+        cur = await db.execute("SELECT * FROM creative_jobs WHERE id=?", (job_id,)); row = await cur.fetchone(); await cur.close(); return dict(row) if row else None
+
+
+async def creative_job_list(limit: int = 100, project_id: str | None = None) -> list[dict[str, Any]]:
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            if project_id:
+                rows = await conn.fetch("SELECT * FROM creative_jobs WHERE project_id=$1 ORDER BY created_at DESC LIMIT $2", project_id, limit)
+            else:
+                rows = await conn.fetch("SELECT * FROM creative_jobs ORDER BY created_at DESC LIMIT $1", limit)
+        return [dict(r) for r in rows]
+    async with get_connection() as db:
+        if project_id:
+            cur = await db.execute("SELECT * FROM creative_jobs WHERE project_id=? ORDER BY created_at DESC LIMIT ?", (project_id, limit))
+        else:
+            cur = await db.execute("SELECT * FROM creative_jobs ORDER BY created_at DESC LIMIT ?", (limit,))
+        rows = await cur.fetchall(); await cur.close(); return [dict(r) for r in rows]
+
+
+async def media_asset_create(data: dict[str, Any]) -> dict[str, Any]:
+    import uuid as _uuid
+    aid = str(data.get("id") or _uuid.uuid4()); now = utc_now()
+    meta = json.dumps(data.get("metadata_json") or data.get("metadata") or {}, ensure_ascii=False, default=str)
+    immutable = bool(data.get("immutable_original", False))
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO media_assets(id,asset_type,source_kind,immutable_original,storage_path,url,sha256,mime_type,width,height,duration_seconds,size_bytes,product_sku,model_profile_id,job_id,parent_asset_id,metadata_json,created_at)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17::jsonb,NOW())""",
+                aid, str(data.get("asset_type") or "image"), str(data.get("source_kind") or "generated"), immutable,
+                str(data.get("storage_path") or ""), str(data.get("url") or ""), str(data.get("sha256") or ""),
+                str(data.get("mime_type") or ""), data.get("width"), data.get("height"), data.get("duration_seconds"), data.get("size_bytes"),
+                str(data.get("product_sku") or ""), str(data.get("model_profile_id") or ""), data.get("job_id"),
+                str(data.get("parent_asset_id") or ""), meta)
+            row = await conn.fetchrow("SELECT * FROM media_assets WHERE id=$1", aid)
+        return dict(row) if row else {"id": aid}
+    async with get_connection() as db:
+        await db.execute(
+            """INSERT INTO media_assets(id,asset_type,source_kind,immutable_original,storage_path,url,sha256,mime_type,width,height,duration_seconds,size_bytes,product_sku,model_profile_id,job_id,parent_asset_id,metadata_json,created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (aid, str(data.get("asset_type") or "image"), str(data.get("source_kind") or "generated"), 1 if immutable else 0,
+             str(data.get("storage_path") or ""), str(data.get("url") or ""), str(data.get("sha256") or ""),
+             str(data.get("mime_type") or ""), data.get("width"), data.get("height"), data.get("duration_seconds"), data.get("size_bytes"),
+             str(data.get("product_sku") or ""), str(data.get("model_profile_id") or ""), data.get("job_id"),
+             str(data.get("parent_asset_id") or ""), meta, now))
+        await db.commit(); cur = await db.execute("SELECT * FROM media_assets WHERE id=?", (aid,)); row = await cur.fetchone(); await cur.close()
+        return dict(row) if row else {"id": aid}
+
+
+async def media_asset_list(limit: int = 200, product_sku: str | None = None, job_id: str | None = None) -> list[dict[str, Any]]:
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            if product_sku:
+                rows = await conn.fetch("SELECT * FROM media_assets WHERE product_sku=$1 ORDER BY created_at DESC LIMIT $2", product_sku, limit)
+            elif job_id:
+                rows = await conn.fetch("SELECT * FROM media_assets WHERE job_id=$1 ORDER BY created_at DESC LIMIT $2", job_id, limit)
+            else:
+                rows = await conn.fetch("SELECT * FROM media_assets ORDER BY created_at DESC LIMIT $1", limit)
+        return [dict(r) for r in rows]
+    async with get_connection() as db:
+        if product_sku:
+            cur = await db.execute("SELECT * FROM media_assets WHERE product_sku=? ORDER BY created_at DESC LIMIT ?", (product_sku, limit))
+        elif job_id:
+            cur = await db.execute("SELECT * FROM media_assets WHERE job_id=? ORDER BY created_at DESC LIMIT ?", (job_id, limit))
+        else:
+            cur = await db.execute("SELECT * FROM media_assets ORDER BY created_at DESC LIMIT ?", (limit,))
+        rows = await cur.fetchall(); await cur.close(); return [dict(r) for r in rows]
+
+
+async def model_profile_upsert(data: dict[str, Any]) -> dict[str, Any]:
+    import uuid as _uuid
+    pid = str(data.get("id") or _uuid.uuid4()); now = utc_now()
+    slug = str(data.get("slug") or "").strip().lower() or pid
+    def jd(v, d):
+        return json.dumps(v if v is not None else d, ensure_ascii=False, default=str)
+    fields = (
+        pid, slug, str(data.get("display_name") or slug.title()), str(data.get("description") or ""),
+        jd(data.get("reference_images_json") or data.get("reference_images"), []),
+        jd(data.get("identity_profile_json") or data.get("identity_profile"), {}),
+        jd(data.get("body_profile_json") or data.get("body_profile"), {}),
+        jd(data.get("style_profile_json") or data.get("style_profile"), {}),
+        jd(data.get("preferred_locations_json") or data.get("preferred_locations"), []),
+        jd(data.get("preferred_perspectives_json") or data.get("preferred_perspectives"), []),
+        jd(data.get("posing_profiles_json") or data.get("posing_profiles"), []),
+        jd(data.get("prompt_templates_json") or data.get("prompt_templates"), []),
+        jd(data.get("rights_consent_json") or data.get("rights_consent"), {}),
+        bool(data.get("usage_allowed", True)), bool(data.get("active", True)),
+        jd(data.get("history_json") or data.get("history"), []),
+    )
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO model_profiles(id,slug,display_name,description,reference_images_json,identity_profile_json,body_profile_json,style_profile_json,preferred_locations_json,preferred_perspectives_json,posing_profiles_json,prompt_templates_json,rights_consent_json,usage_allowed,active,history_json,created_at,updated_at)
+                   VALUES ($1,$2,$3,$4,$5::jsonb,$6::jsonb,$7::jsonb,$8::jsonb,$9::jsonb,$10::jsonb,$11::jsonb,$12::jsonb,$13::jsonb,$14,$15,$16::jsonb,NOW(),NOW())
+                   ON CONFLICT(slug) DO UPDATE SET display_name=EXCLUDED.display_name,description=EXCLUDED.description,reference_images_json=EXCLUDED.reference_images_json,identity_profile_json=EXCLUDED.identity_profile_json,body_profile_json=EXCLUDED.body_profile_json,style_profile_json=EXCLUDED.style_profile_json,preferred_locations_json=EXCLUDED.preferred_locations_json,preferred_perspectives_json=EXCLUDED.preferred_perspectives_json,posing_profiles_json=EXCLUDED.posing_profiles_json,prompt_templates_json=EXCLUDED.prompt_templates_json,rights_consent_json=EXCLUDED.rights_consent_json,usage_allowed=EXCLUDED.usage_allowed,active=EXCLUDED.active,history_json=EXCLUDED.history_json,updated_at=NOW()""",
+                *fields)
+            row = await conn.fetchrow("SELECT * FROM model_profiles WHERE slug=$1", slug)
+        return dict(row) if row else {"id": pid, "slug": slug}
+    async with get_connection() as db:
+        await db.execute(
+            """INSERT INTO model_profiles(id,slug,display_name,description,reference_images_json,identity_profile_json,body_profile_json,style_profile_json,preferred_locations_json,preferred_perspectives_json,posing_profiles_json,prompt_templates_json,rights_consent_json,usage_allowed,active,history_json,created_at,updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(slug) DO UPDATE SET display_name=excluded.display_name,description=excluded.description,reference_images_json=excluded.reference_images_json,identity_profile_json=excluded.identity_profile_json,body_profile_json=excluded.body_profile_json,style_profile_json=excluded.style_profile_json,preferred_locations_json=excluded.preferred_locations_json,preferred_perspectives_json=excluded.preferred_perspectives_json,posing_profiles_json=excluded.posing_profiles_json,prompt_templates_json=excluded.prompt_templates_json,rights_consent_json=excluded.rights_consent_json,usage_allowed=excluded.usage_allowed,active=excluded.active,history_json=excluded.history_json,updated_at=excluded.updated_at""",
+            (pid, slug, fields[2], fields[3], fields[4], fields[5], fields[6], fields[7], fields[8], fields[9], fields[10], fields[11], fields[12], 1 if fields[13] else 0, 1 if fields[14] else 0, fields[15], now, now))
+        await db.commit(); cur = await db.execute("SELECT * FROM model_profiles WHERE slug=?", (slug,)); row = await cur.fetchone(); await cur.close()
+        return dict(row) if row else {"id": pid, "slug": slug}
+
+
+async def model_profile_list(limit: int = 200) -> list[dict[str, Any]]:
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("SELECT * FROM model_profiles ORDER BY display_name ASC LIMIT $1", limit)
+        return [dict(r) for r in rows]
+    async with get_connection() as db:
+        cur = await db.execute("SELECT * FROM model_profiles ORDER BY display_name ASC LIMIT ?", (limit,))
+        rows = await cur.fetchall(); await cur.close(); return [dict(r) for r in rows]
+
+
+async def model_profile_get(slug: str) -> dict[str, Any] | None:
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT * FROM model_profiles WHERE slug=$1", slug)
+        return dict(row) if row else None
+    async with get_connection() as db:
+        cur = await db.execute("SELECT * FROM model_profiles WHERE slug=?", (slug,)); row = await cur.fetchone(); await cur.close(); return dict(row) if row else None
+
+
+async def fidelity_check_create(data: dict[str, Any]) -> dict[str, Any]:
+    import uuid as _uuid
+    fid = str(data.get("id") or _uuid.uuid4()); now = utc_now()
+    def jd(v,d): return json.dumps(v if v is not None else d, ensure_ascii=False, default=str)
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO product_fidelity_checks(id,job_id,output_asset_id,product_sku,original_asset_ids_json,scores_json,overall_score,verdict,critical_issues_json,details_json,created_at)
+                   VALUES ($1,$2,$3,$4,$5::jsonb,$6::jsonb,$7,$8,$9::jsonb,$10::jsonb,NOW())""",
+                fid, data.get("job_id"), str(data.get("output_asset_id") or ""), str(data.get("product_sku") or ""),
+                jd(data.get("original_asset_ids_json") or data.get("original_asset_ids"), []),
+                jd(data.get("scores_json") or data.get("scores"), {}), float(data.get("overall_score") or 0),
+                str(data.get("verdict") or "pending"),
+                jd(data.get("critical_issues_json") or data.get("critical_issues"), []),
+                jd(data.get("details_json") or data.get("details"), {}))
+            row = await conn.fetchrow("SELECT * FROM product_fidelity_checks WHERE id=$1", fid)
+        return dict(row) if row else {"id": fid}
+    async with get_connection() as db:
+        await db.execute(
+            """INSERT INTO product_fidelity_checks(id,job_id,output_asset_id,product_sku,original_asset_ids_json,scores_json,overall_score,verdict,critical_issues_json,details_json,created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+            (fid, data.get("job_id"), str(data.get("output_asset_id") or ""), str(data.get("product_sku") or ""),
+             jd(data.get("original_asset_ids_json") or data.get("original_asset_ids"), []),
+             jd(data.get("scores_json") or data.get("scores"), {}), float(data.get("overall_score") or 0),
+             str(data.get("verdict") or "pending"),
+             jd(data.get("critical_issues_json") or data.get("critical_issues"), []),
+             jd(data.get("details_json") or data.get("details"), {}), now))
+        await db.commit(); cur = await db.execute("SELECT * FROM product_fidelity_checks WHERE id=?", (fid,)); row = await cur.fetchone(); await cur.close()
+        return dict(row) if row else {"id": fid}
+
+
+async def fidelity_check_list(limit: int = 200, job_id: str | None = None) -> list[dict[str, Any]]:
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            if job_id: rows = await conn.fetch("SELECT * FROM product_fidelity_checks WHERE job_id=$1 ORDER BY created_at DESC LIMIT $2", job_id, limit)
+            else: rows = await conn.fetch("SELECT * FROM product_fidelity_checks ORDER BY created_at DESC LIMIT $1", limit)
+        return [dict(r) for r in rows]
+    async with get_connection() as db:
+        if job_id: cur = await db.execute("SELECT * FROM product_fidelity_checks WHERE job_id=? ORDER BY created_at DESC LIMIT ?", (job_id, limit))
+        else: cur = await db.execute("SELECT * FROM product_fidelity_checks ORDER BY created_at DESC LIMIT ?", (limit,))
+        rows = await cur.fetchall(); await cur.close(); return [dict(r) for r in rows]

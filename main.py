@@ -21,6 +21,7 @@ import time
 import uuid
 import xml.etree.ElementTree as ET
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 from typing import Any, AsyncIterator
 
 from fastapi import Body, Depends, FastAPI, HTTPException, Query, Request
@@ -79,6 +80,9 @@ from database import (
     set_setting,
     update_order_status,
     upsert_product,
+    delete_product,
+    delete_bundle,
+    upsert_bundle,
     write_log,
     iam_get_user_by_email, iam_get_user, iam_list_users, iam_update_user, iam_ensure_role, iam_assign_role, iam_list_roles, iam_list_permissions, iam_grant_permission, iam_create_session, iam_get_session, iam_revoke_session, iam_touch_session, iam_get_user_roles, iam_create_user,
 )
@@ -130,6 +134,8 @@ RBAC_RULES: list[tuple[str, tuple[str, ...], str]] = [
     ("GET", ("/api/shopware/", "/ui/shopware"), "shopware.configure"),
     ("POST", ("/api/omniroute/", "/api/ai/"), "ai.configure"),
     ("GET", ("/api/omniroute/", "/ui/ai-control", "/omniroute"), "ai.configure"),
+    ("POST", ("/api/ai-agent/",), "ai.configure"),
+    ("GET", ("/api/ai-agent/",), "ai.configure"),
     ("POST", ("/api/pricing/",), "pricing.write"),
     ("GET", ("/api/pricing/", "/ui/pricing-center"), "pricing.read"),
     ("POST", ("/api/bundles",), "bundles.manage"),
@@ -145,6 +151,8 @@ RBAC_RULES: list[tuple[str, tuple[str, ...], str]] = [
     ("GET", ("/api/connectors", "/ui/connectors"), "connectors.read"),
     ("POST", ("/api/connectors",), "connectors.configure"),
     ("DELETE", ("/api/connectors",), "connectors.configure"),
+    ("GET", ("/api/crm/",), "products.read"),
+    ("POST", ("/api/crm/",), "system.configure"),
 ]
 
 
@@ -860,8 +868,7 @@ async def auth_csrf(request: Request, response: Response) -> dict[str, str]:
 @app.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request) -> HTMLResponse:
     """Render the unified Omni-Core Control Center."""
-    return templates.TemplateResponse(
-        "control_center.html",
+    return templates.TemplateResponse(request, "control_center.html",
         {
             "request": request,
             "metrics": await count_dashboard_metrics(),
@@ -982,6 +989,60 @@ async def product(sku: str) -> dict[str, Any]:
     if item is None:
         raise HTTPException(status_code=404, detail="Product not found.")
     return item
+
+@app.put("/api/products/{sku}")
+async def update_product(sku: str, payload: ProductCreate) -> dict[str, str]:
+    """Create or update a product by SKU (idempotent upsert)."""
+    if payload.sku != sku:
+        # allow upsert under path sku for simplicity
+        payload_sku = sku
+    else:
+        payload_sku = sku
+    source_hash = hashlib.sha256(
+        f"manual|{payload_sku}|{payload.title}|{payload.supplier_price}|{payload.stock}|{payload.raw_description}".encode()
+    ).hexdigest()
+    await upsert_product(
+        sku=payload_sku,
+        title=payload.title,
+        category=payload.category,
+        supplier_price=payload.supplier_price,
+        stock=payload.stock,
+        source_hash=source_hash,
+        raw_description=payload.raw_description,
+    )
+    await refresh_all_bundle_stocks()
+    return {"status": "success", "sku": payload_sku}
+
+
+@app.delete("/api/products/{sku}")
+async def remove_product(sku: str) -> dict[str, str]:
+    ok = await delete_product(sku)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Product not found.")
+    await refresh_all_bundle_stocks()
+    return {"status": "deleted", "sku": sku}
+
+
+class BundleCreate(BaseModel):
+    bundle_sku: str = Field(min_length=1, max_length=64)
+    title: str = Field(min_length=1, max_length=512)
+    component_skus: list[str] = Field(default_factory=list)
+
+
+@app.post("/api/bundles", status_code=201)
+async def create_bundle(payload: BundleCreate) -> dict[str, Any]:
+    await upsert_bundle(payload.bundle_sku, payload.title, payload.component_skus)
+    await refresh_all_bundle_stocks()
+    return {"status": "success", "bundle_sku": payload.bundle_sku}
+
+
+@app.delete("/api/bundles/{bundle_sku}")
+async def remove_bundle(bundle_sku: str) -> dict[str, str]:
+    ok = await delete_bundle(bundle_sku)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Bundle not found.")
+    return {"status": "deleted", "bundle_sku": bundle_sku}
+
 
 
 @app.get("/api/bundles")
@@ -2796,6 +2857,51 @@ async def ui_content_studio(request: Request):
 @app.get("/ui/internal-communication", response_class=HTMLResponse)
 async def ui_internal_communication(request: Request):
     return templates.TemplateResponse(request, "internal_communication.html", {"request": request})
+
+
+# ---------------------------------------------------------------------------
+# AI Admin & Business Copilot (Control Agent)
+# ---------------------------------------------------------------------------
+
+class _AgentChatPayload(BaseModel):
+    message: str = Field(min_length=1, max_length=12000)
+    conversation_id: str | None = Field(default=None, max_length=128)
+
+
+@app.post("/api/ai-agent/chat")
+async def api_ai_agent_chat(payload: _AgentChatPayload, user: dict[str, Any] = Depends(require_permission("ai.configure"))) -> dict[str, Any]:
+    """Process a natural-language request through OmniRoute tool calling (read or prepare action)."""
+    from services.ai_agent_controller import chat_with_agent
+    actor = str(user.get("email") or user.get("username") or user.get("id") or "admin")
+    try:
+        return await chat_with_agent(payload.message, payload.conversation_id, actor=actor)
+    except Exception as exc:
+        logger.exception("AI agent chat failed")
+        raise HTTPException(status_code=502, detail=f"AI agent unavailable: {exc}") from exc
+
+
+@app.post("/api/ai-agent/actions/{action_id}/confirm")
+async def api_ai_agent_confirm(action_id: str, user: dict[str, Any] = Depends(require_permission("ai.configure"))) -> dict[str, Any]:
+    """Execute one previously previewed write after explicit confirmation."""
+    from services.ai_agent_controller import execute_confirmed
+    actor = str(user.get("email") or user.get("username") or user.get("id") or "admin")
+    try:
+        result = await execute_confirmed(action_id, actor=actor)
+        return {"status": "confirmed", "action_id": action_id, "result": result}
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post("/api/ai-agent/actions/{action_id}/cancel")
+async def api_ai_agent_cancel(action_id: str, user: dict[str, Any] = Depends(require_permission("ai.configure"))) -> dict[str, Any]:
+    """Cancel a pending AI agent action without executing it."""
+    from services.ai_agent_controller import cancel_action
+    actor = str(user.get("email") or user.get("username") or user.get("id") or "admin")
+    try:
+        result = await cancel_action(action_id, actor=actor)
+        return result
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @app.get("/api/integrations/status")

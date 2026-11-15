@@ -50,8 +50,8 @@ function eventBusPage(){
   return {stats:{},modules:[],subHealth:{},recent:[],deadLetter:[],msg:'',err:false,
     async init(){await this.load(); setInterval(()=>this.load(),10000);},
     notify(m,e=false){this.msg=m;this.err=e;setTimeout(()=>{if(this.msg===m)this.msg='';},5000);},
-    async load(){try{this.stats=await api('/api/events/stats');}catch(e){this.stats={running:false};} try{const m=await api('/api/control-center/modules'); this.modules=m.modules||[]; this.subHealth=m.subscribers||{};}catch(e){this.modules=[];} try{this.recent=await api('/api/events/recent?limit=50');}catch(e){this.recent=[];} try{this.deadLetter=await api('/api/events/dead-letter');}catch(e){this.deadLetter=[];}},
-    async replay(){try{const r=await api('/api/events/dead-letter/replay',{method:'POST'}); this.notify('Replay: '+(r.replayed||0)+' Events.'); await this.load();}catch(e){this.notify('Replay fehlgeschlagen: '+e.message,true);}}
+    async load(){try{this.stats=await apiFetch('/api/events/stats');}catch(e){this.stats={running:false};} try{const m=await apiFetch('/api/control-center/modules'); this.modules=m.modules||[]; this.subHealth=m.subscribers||{};}catch(e){this.modules=[];} try{this.recent=await apiFetch('/api/events/recent?limit=50');}catch(e){this.recent=[];} try{this.deadLetter=await apiFetch('/api/events/dead-letter');}catch(e){this.deadLetter=[];}},
+    async replay(){try{const r=await apiFetch('/api/events/dead-letter/replay',{method:'POST'}); this.notify('Replay: '+(r.replayed||0)+' Events.'); await this.load();}catch(e){this.notify('Replay fehlgeschlagen: '+e.message,true);}}
   }
 }
 </script>

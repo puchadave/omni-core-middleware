@@ -1,19 +1,79 @@
 {% extends "base.html" %}
-{% block title %}Orders | Omni-Core{% endblock %}
+{% block title %}Bestellungen | Omni-Core Admin{% endblock %}
 {% block content %}
-<div x-data="ordPage()" x-init="load()" class="space-y-4 max-w-7xl mx-auto">
-  <div class="flex justify-between items-end"><div><h1 class="text-2xl font-bold">Orders</h1><p class="text-slate-400">Bestellungen und Status</p></div><button @click="load()" class="bg-slate-700 hover:bg-slate-600 px-4 py-2 rounded text-sm">Aktualisieren</button></div>
-  <template x-if="error"><div class="rounded border border-red-700 bg-red-900/30 p-3 text-sm text-red-200" x-text="error"></div></template>
-  <template x-if="!error && items.length===0"><div class="rounded border border-amber-700 bg-amber-900/20 p-3 text-sm text-amber-200">Keine Bestellungen vorhanden.</div></template>
-  <div class="bg-slate-900 border border-slate-800 rounded-lg overflow-auto" x-show="items.length">
-    <table class="w-full text-sm"><thead class="text-slate-400 bg-slate-950/50"><tr><th class="p-2 text-left">Order ID</th><th class="p-2 text-left">SKU</th><th class="p-2 text-left">Menge</th><th class="p-2 text-left">Kanal</th><th class="p-2 text-left">Status</th><th class="p-2 text-left">Zeit</th></tr></thead><tbody>
-      <template x-for="o in items" :key="(o.order_id||o.id||'')+(o.created_at||'')"><tr class="border-t border-slate-800"><td class="p-2 font-mono text-xs" x-text="o.order_id||o.id||'—'"></td><td class="p-2" x-text="o.sku||'—'"></td><td class="p-2" x-text="o.quantity??'—'"></td><td class="p-2" x-text="o.marketplace||o.channel||'—'"></td><td class="p-2" x-text="o.status||'—'"></td><td class="p-2 text-slate-400" x-text="o.created_at||''"></td></tr></template>
-    </tbody></table>
+<div x-data="ordersPage()" x-init="load()" class="space-y-4 max-w-7xl mx-auto">
+  <div class="flex flex-col md:flex-row md:items-end md:justify-between gap-3">
+    <div><h1 class="text-2xl md:text-3xl font-bold">Bestellverwaltung</h1><p class="text-slate-400">Bestellungen anzeigen, suchen und neue Aufträge erfassen.</p></div>
+    <div class="flex gap-2"><button @click="modal=true" class="btn btn-primary">+ Bestellung</button><button @click="load()" class="btn btn-secondary">Aktualisieren</button></div>
+  </div>
+
+  <div class="grid md:grid-cols-4 gap-4">
+    <div class="card p-4"><div class="text-xs text-slate-400 uppercase">Gesamt</div><div class="text-2xl font-bold mt-1" x-text="items.length"></div></div>
+    <div class="card p-4"><div class="text-xs text-slate-400 uppercase">Offen</div><div class="text-2xl font-bold mt-1" x-text="items.filter(o=>['received','reserved','dispatching','pending'].includes(String(o.status))).length"></div></div>
+    <div class="card p-4"><div class="text-xs text-slate-400 uppercase">Versendet</div><div class="text-2xl font-bold mt-1 text-emerald-300" x-text="items.filter(o=>String(o.status)==='dispatched').length"></div></div>
+    <div class="card p-4"><div class="text-xs text-slate-400 uppercase">Fehler</div><div class="text-2xl font-bold mt-1 text-red-300" x-text="items.filter(o=>String(o.status)==='failed').length"></div></div>
+  </div>
+
+  <div class="card p-4 grid md:grid-cols-3 gap-3">
+    <div class="md:col-span-2"><label class="label">Suche</label><input x-model="q" class="input" placeholder="Order-ID, SKU, Kunde, Kanal"></div>
+    <div><label class="label">Status</label><select x-model="status" class="select"><option value="">Alle</option><option>received</option><option>reserved</option><option>dispatching</option><option>dispatched</option><option>failed</option><option>cancelled</option></select></div>
+  </div>
+
+  <template x-if="error"><div class="card p-4 border-red-800 text-red-200 bg-red-950/30" x-text="error"></div></template>
+
+  <div class="card">
+    <div class="table-wrap">
+      <table class="tbl">
+        <thead><tr><th>Order-ID</th><th>SKU</th><th>Menge</th><th>Kanal</th><th>Kunde/Ref</th><th>Status</th><th>Zahlung</th><th>Tracking</th><th>Fehler</th><th>Erstellt</th></tr></thead>
+        <tbody>
+          <template x-for="o in filtered()" :key="(o.order_id||o.id||Math.random())">
+            <tr class="hover:bg-slate-800/40">
+              <td class="font-mono text-xs" x-text="o.order_id||o.id||'—'"></td>
+              <td x-text="o.sku||'—'"></td>
+              <td x-text="o.quantity??'—'"></td>
+              <td x-text="o.marketplace||o.channel||'—'"></td>
+              <td x-text="o.customer_reference||'—'"></td>
+              <td><span class="badge" :class="badge(o.status)" x-text="o.status||'—'"></span></td>
+              <td x-text="o.payment_status||'—'"></td>
+              <td class="text-xs"><div x-text="o.tracking_number||'—'"></div><template x-if="o.tracking_url"><a :href="o.tracking_url" target="_blank" class="text-indigo-400">Link</a></template></td>
+              <td class="text-xs text-red-300 max-w-xs truncate" :title="o.last_error||''" x-text="o.last_error||'—'"></td>
+              <td class="text-xs text-slate-400" x-text="fmtDate(o.created_at)"></td>
+            </tr>
+          </template>
+          <tr x-show="!loading && filtered().length===0"><td colspan="10" class="p-6 text-center text-slate-400">Keine Bestellungen vorhanden.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div x-show="loading" class="p-6 text-slate-400">Lade Bestellungen…</div>
+  </div>
+
+  <div x-show="modal" x-cloak class="fixed inset-0 z-40 flex items-center justify-center p-4">
+    <div class="absolute inset-0 bg-black/60" @click="modal=false"></div>
+    <div class="relative w-full max-w-xl card p-5 space-y-4">
+      <div class="flex items-center justify-between"><h2 class="text-lg font-semibold">Bestellung erfassen</h2><button @click="modal=false" class="text-slate-400 hover:text-white">✕</button></div>
+      <div class="grid md:grid-cols-2 gap-3">
+        <div><label class="label">Order-ID *</label><input x-model="form.order_id" class="input font-mono"></div>
+        <div><label class="label">SKU *</label><input x-model="form.sku" class="input font-mono"></div>
+        <div><label class="label">Menge *</label><input x-model.number="form.quantity" type="number" min="1" class="input"></div>
+        <div><label class="label">Kanal *</label><input x-model="form.marketplace" class="input" placeholder="shopify / ebay / ..."></div>
+        <div class="md:col-span-2"><label class="label">Kundenreferenz</label><input x-model="form.customer_reference" class="input"></div>
+      </div>
+      <div class="flex justify-end gap-2"><button @click="modal=false" class="btn btn-secondary">Abbrechen</button><button @click="create()" class="btn btn-primary" :disabled="saving">Anlegen & einreihen</button></div>
+    </div>
   </div>
 </div>
 {% endblock %}
 {% block scripts %}
 <script>
-function ordPage(){return{items:[],error:'',async load(){this.error=''; try{this.items=await apiFetch('/api/orders?limit=500'); if(!Array.isArray(this.items)) this.items=[];}catch(e){this.error=e.message; this.items=[];}}}}
+function ordersPage(){
+  return {
+    items:[],q:'',status:'',loading:false,error:'',modal:false,saving:false,
+    form:{order_id:'',sku:'',quantity:1,marketplace:'manual',customer_reference:''},
+    async load(){this.loading=true; this.error=''; try{const d=await apiFetch('/api/orders?limit=1000'); this.items=Array.isArray(d)?d:(d.items||[]);}catch(e){this.error=e.message; this.items=[];} this.loading=false;},
+    filtered(){const q=(this.q||'').toLowerCase(); return this.items.filter(o=>{if(this.status && String(o.status)!==this.status) return false; if(!q) return true; return [o.order_id,o.id,o.sku,o.customer_reference,o.marketplace,o.channel].some(v=>String(v||'').toLowerCase().includes(q));});},
+    badge(s){s=String(s||''); if(s==='dispatched') return 'border-emerald-700 bg-emerald-900/30 text-emerald-300'; if(s==='failed') return 'border-red-700 bg-red-900/30 text-red-300'; if(['reserved','dispatching','received'].includes(s)) return 'border-amber-700 bg-amber-900/30 text-amber-300'; return 'border-slate-700 bg-slate-800 text-slate-300';},
+    async create(){this.saving=true; try{await apiFetch('/api/orders',{method:'POST',body:JSON.stringify(this.form)}); toast('Bestellung erfasst','success'); this.modal=false; this.form={order_id:'',sku:'',quantity:1,marketplace:'manual',customer_reference:''}; await this.load();}catch(e){toast(e.message,'error')} this.saving=false;}
+  }
+}
 </script>
 {% endblock %}

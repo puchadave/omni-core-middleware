@@ -1,23 +1,78 @@
 {% extends "base.html" %}
-{% block title %}Products | Omni-Core{% endblock %}
+{% block title %}Produkte | Omni-Core Admin{% endblock %}
 {% block content %}
-<div x-data="prodPage()" x-init="load()" class="space-y-4 max-w-7xl mx-auto">
-  <div class="flex justify-between items-end"><div><h1 class="text-2xl font-bold">Products</h1><p class="text-slate-400">Produktliste, Suche, Filter und Status</p></div><button @click="load()" class="bg-slate-700 hover:bg-slate-600 px-4 py-2 rounded text-sm">Aktualisieren</button></div>
-  <div class="bg-slate-900 border border-slate-800 rounded-lg p-4 flex flex-wrap gap-2">
-    <input x-model="q" placeholder="Suche SKU/Titel/Kategorie" class="flex-1 min-w-[220px] bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm">
-    <select x-model="status" class="bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm"><option value="">Alle Status</option><option>active</option><option>draft</option><option>paused</option><option>archived</option></select>
+<div x-data="productsPage()" x-init="load()" class="space-y-4 max-w-7xl mx-auto">
+  <div class="flex flex-col md:flex-row md:items-end md:justify-between gap-3">
+    <div><h1 class="text-2xl md:text-3xl font-bold">Produktverwaltung</h1><p class="text-slate-400">Produkte anlegen, bearbeiten, löschen, suchen und filtern (reale Katalogdaten).</p></div>
+    <div class="flex gap-2"><button @click="openCreate()" class="btn btn-primary">+ Produkt</button><button @click="load()" class="btn btn-secondary">Aktualisieren</button></div>
   </div>
-  <template x-if="error"><div class="rounded border border-red-700 bg-red-900/30 p-3 text-sm text-red-200" x-text="error"></div></template>
-  <template x-if="!error && filtered().length===0"><div class="rounded border border-amber-700 bg-amber-900/20 p-3 text-sm text-amber-200">Keine Produkte vorhanden oder Filter ohne Treffer.</div></template>
-  <div class="bg-slate-900 border border-slate-800 rounded-lg overflow-auto" x-show="filtered().length">
-    <table class="w-full text-sm"><thead class="text-slate-400 bg-slate-950/50"><tr><th class="p-2 text-left">SKU</th><th class="p-2 text-left">Titel</th><th class="p-2 text-left">Kategorie</th><th class="p-2 text-left">Preis</th><th class="p-2 text-left">Bestand</th><th class="p-2 text-left">Status</th></tr></thead><tbody>
-      <template x-for="p in filtered()" :key="p.sku"><tr class="border-t border-slate-800 hover:bg-slate-800/40"><td class="p-2 font-mono text-xs" x-text="p.sku"></td><td class="p-2" x-text="p.ai_title||p.title||'—'"></td><td class="p-2" x-text="p.category||'—'"></td><td class="p-2" x-text="p.supplier_price ?? '—'"></td><td class="p-2" x-text="p.stock ?? 0"></td><td class="p-2" x-text="p.status||'—'"></td></tr></template>
-    </tbody></table>
+
+  <div class="card p-4 grid md:grid-cols-4 gap-3">
+    <div class="md:col-span-2"><label class="label">Suche</label><input x-model="q" class="input" placeholder="SKU, Titel, Kategorie, Beschreibung"></div>
+    <div><label class="label">Status</label><select x-model="status" class="select"><option value="">Alle</option><option value="active">active</option><option value="draft">draft</option><option value="paused">paused</option><option value="archived">archived</option></select></div>
+    <div><label class="label">Typ</label><select x-model="kind" class="select"><option value="">Alle</option><option value="single">Einzelprodukt</option><option value="bundle">Bundle</option></select></div>
+  </div>
+
+  <template x-if="error"><div class="card p-4 border-red-800 text-red-200 bg-red-950/30" x-text="error"></div></template>
+
+  <div class="card">
+    <div class="flex items-center justify-between px-4 py-3 border-b border-slate-800"><div class="text-sm text-slate-400"><span x-text="filtered().length"></span> von <span x-text="items.length"></span> Produkten</div></div>
+    <div class="table-wrap" x-show="!loading">
+      <table class="tbl">
+        <thead><tr><th>SKU</th><th>Titel</th><th>Kategorie</th><th>EK-Preis</th><th>Bestand</th><th>Status</th><th>Typ</th><th>Aktualisiert</th><th>Aktionen</th></tr></thead>
+        <tbody>
+          <template x-for="p in filtered()" :key="p.sku">
+            <tr class="hover:bg-slate-800/40">
+              <td class="font-mono text-xs" x-text="p.sku"></td>
+              <td><div class="font-medium" x-text="p.ai_title||p.title||'—'"></div><div class="text-xs text-slate-500 line-clamp-2" x-text="p.raw_description||''"></div></td>
+              <td x-text="p.category||'—'"></td>
+              <td x-text="p.supplier_price!=null ? Number(p.supplier_price).toFixed(2)+' €' : '—'"></td>
+              <td><span :class="Number(p.stock||0)>0?'text-emerald-300':'text-amber-300'" x-text="p.stock??0"></span></td>
+              <td><span class="badge border-slate-700 bg-slate-800" x-text="p.status||'—'"></span></td>
+              <td x-text="p.is_bundle?'Bundle':'Einzel'"></td>
+              <td class="text-xs text-slate-400" x-text="fmtDate(p.updated_at)"></td>
+              <td class="whitespace-nowrap"><button class="text-indigo-400 hover:text-indigo-300 mr-2" @click="openEdit(p)">Bearbeiten</button><button class="text-red-400 hover:text-red-300" @click="remove(p)">Löschen</button></td>
+            </tr>
+          </template>
+          <tr x-show="filtered().length===0"><td colspan="9" class="p-6 text-center text-slate-400">Keine Produkte gefunden. Lege ein Produkt an oder importiere über Matterhorn.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div x-show="loading" class="p-6 text-slate-400">Lade Produkte…</div>
+  </div>
+
+  <!-- Modal -->
+  <div x-show="modal" x-cloak class="fixed inset-0 z-40 flex items-center justify-center p-4">
+    <div class="absolute inset-0 bg-black/60" @click="modal=false"></div>
+    <div class="relative w-full max-w-2xl card p-5 space-y-4">
+      <div class="flex items-center justify-between"><h2 class="text-lg font-semibold" x-text="formMode==='create'?'Produkt anlegen':'Produkt bearbeiten'"></h2><button @click="modal=false" class="text-slate-400 hover:text-white">✕</button></div>
+      <div class="grid md:grid-cols-2 gap-3">
+        <div><label class="label">SKU *</label><input x-model="form.sku" :disabled="formMode==='edit'" class="input font-mono" placeholder="SKU-123"></div>
+        <div><label class="label">Status</label><select x-model="form.status" class="select"><option>active</option><option>draft</option><option>paused</option><option>archived</option></select></div>
+        <div class="md:col-span-2"><label class="label">Titel *</label><input x-model="form.title" class="input"></div>
+        <div><label class="label">Kategorie</label><input x-model="form.category" class="input"></div>
+        <div><label class="label">EK-Preis (Supplier)</label><input x-model.number="form.supplier_price" type="number" step="0.01" min="0" class="input"></div>
+        <div><label class="label">Bestand</label><input x-model.number="form.stock" type="number" step="1" min="0" class="input"></div>
+        <div class="md:col-span-2"><label class="label">Beschreibung</label><textarea x-model="form.raw_description" rows="4" class="textarea"></textarea></div>
+      </div>
+      <div class="flex justify-end gap-2"><button @click="modal=false" class="btn btn-secondary">Abbrechen</button><button @click="save()" class="btn btn-primary" :disabled="saving"><span x-show="!saving">Speichern</span><span x-show="saving">Speichere…</span></button></div>
+    </div>
   </div>
 </div>
 {% endblock %}
 {% block scripts %}
 <script>
-function prodPage(){return{items:[],q:'',status:'',error:'',async load(){this.error=''; try{this.items=await apiFetch('/api/products?limit=1000'); if(!Array.isArray(this.items)) this.items=[];}catch(e){this.error=e.message; this.items=[];}},filtered(){const q=(this.q||'').toLowerCase(); return this.items.filter(p=>{if(this.status && String(p.status)!==this.status) return false; if(!q) return true; return [p.sku,p.title,p.ai_title,p.category].some(v=>String(v||'').toLowerCase().includes(q));});}}}
+function productsPage(){
+  const empty=()=>({sku:'',title:'',category:'',supplier_price:0,stock:0,raw_description:'',status:'active'});
+  return {
+    items:[],q:'',status:'',kind:'',loading:false,error:'',modal:false,saving:false,formMode:'create',form:empty(),
+    async load(){this.loading=true; this.error=''; try{const d=await apiFetch('/api/products?limit=1000'); this.items=Array.isArray(d)?d:(d.items||[]);}catch(e){this.error=e.message; this.items=[];} this.loading=false;},
+    filtered(){const q=(this.q||'').toLowerCase(); return this.items.filter(p=>{if(this.status && String(p.status)!==this.status) return false; if(this.kind==='bundle' && !p.is_bundle) return false; if(this.kind==='single' && p.is_bundle) return false; if(!q) return true; return [p.sku,p.title,p.ai_title,p.category,p.raw_description].some(v=>String(v||'').toLowerCase().includes(q));});},
+    openCreate(){this.formMode='create'; this.form=empty(); this.modal=true;},
+    openEdit(p){this.formMode='edit'; this.form={sku:p.sku,title:p.title||'',category:p.category||'',supplier_price:Number(p.supplier_price||0),stock:Number(p.stock||0),raw_description:p.raw_description||'',status:p.status||'active'}; this.modal=true;},
+    async save(){this.saving=true; try{const url=this.formMode==='create'?'/api/products':'/api/products/'+encodeURIComponent(this.form.sku); const method=this.formMode==='create'?'POST':'PUT'; await apiFetch(url,{method, body:JSON.stringify({sku:this.form.sku,title:this.form.title,category:this.form.category,supplier_price:Number(this.form.supplier_price||0),stock:parseInt(this.form.stock||0,10),raw_description:this.form.raw_description})}); toast('Produkt gespeichert','success'); this.modal=false; await this.load();}catch(e){toast(e.message,'error')} this.saving=false;},
+    async remove(p){if(!confirm(`Produkt ${p.sku} wirklich löschen?`)) return; try{await apiFetch('/api/products/'+encodeURIComponent(p.sku),{method:'DELETE'}); toast('Produkt gelöscht','success'); await this.load();}catch(e){toast(e.message,'error')}}
+  }
+}
 </script>
 {% endblock %}

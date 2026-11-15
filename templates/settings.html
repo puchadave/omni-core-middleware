@@ -1,24 +1,46 @@
 {% extends "base.html" %}
-{% block title %}Settings | Omni-Core{% endblock %}
+{% block title %}Einstellungen | Omni-Core Admin{% endblock %}
 {% block content %}
-<div x-data="setPage()" x-init="load()" class="space-y-4 max-w-7xl mx-auto">
-  <div class="flex justify-between items-end"><div><h1 class="text-2xl font-bold">Settings</h1><p class="text-slate-400">Konfiguration (maskierte Secrets, persistente Settings)</p></div><button @click="load()" class="bg-slate-700 hover:bg-slate-600 px-4 py-2 rounded text-sm">Aktualisieren</button></div>
-  <div class="bg-slate-900 border border-slate-800 rounded-lg p-4">
-    <h2 class="font-semibold mb-2">Setting setzen/aktualisieren</h2>
-    <div class="grid md:grid-cols-4 gap-2"><input x-model="key" placeholder="key" class="bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm"><input x-model="value" placeholder="value" class="md:col-span-2 bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm"><button @click="save()" class="bg-indigo-600 hover:bg-indigo-500 px-4 py-2 rounded text-sm">Speichern</button></div>
-    <div x-show="msg" class="text-sm mt-2" :class="err?'text-red-300':'text-emerald-300'" x-text="msg"></div>
+<div x-data="settingsPage()" x-init="load()" class="space-y-4 max-w-7xl mx-auto">
+  <div class="flex flex-col md:flex-row md:items-end md:justify-between gap-3">
+    <div><h1 class="text-2xl md:text-3xl font-bold">Systemeinstellungen</h1><p class="text-slate-400">Konfiguration, Integrationsparameter und Secrets (maskiert) verwalten.</p></div>
+    <div class="flex gap-2"><button @click="load()" class="btn btn-secondary">Aktualisieren</button><a href="/ui/integrations" class="btn btn-secondary">Integrationsstatus</a></div>
   </div>
-  <template x-if="error"><div class="rounded border border-red-700 bg-red-900/30 p-3 text-sm text-red-200" x-text="error"></div></template>
-  <div class="bg-slate-900 border border-slate-800 rounded-lg overflow-auto">
-    <table class="w-full text-sm"><thead class="text-slate-400 bg-slate-950/50"><tr><th class="p-2 text-left">Key</th><th class="p-2 text-left">Value</th></tr></thead><tbody>
-      <template x-for="k in Object.keys(settings).sort()" :key="k"><tr class="border-t border-slate-800"><td class="p-2 font-mono text-xs" x-text="k"></td><td class="p-2 break-all" x-text="settings[k]"></td></tr></template>
-      <tr x-show="Object.keys(settings).length===0"><td colspan="2" class="p-3 text-slate-400">Keine Settings vorhanden.</td></tr>
-    </tbody></table>
+
+  <div class="card p-4 space-y-3">
+    <h2 class="font-semibold">Setting setzen / ändern</h2>
+    <div class="grid md:grid-cols-4 gap-3">
+      <div><label class="label">Key</label><input x-model="key" class="input font-mono" placeholder="omniroute_url"></div>
+      <div class="md:col-span-2"><label class="label">Value</label><input x-model="value" class="input" placeholder="Wert"></div>
+      <div class="flex items-end"><button @click="save()" class="btn btn-primary w-full" :disabled="saving">Speichern</button></div>
+    </div>
+    <p class="text-xs text-slate-500">Bekannte Schlüssel (Beispiele): <code>omniroute_url</code>, <code>omniroute_api_key</code>, <code>matterhorn_feed_url</code>, <code>matterhorn_api_token</code>. Secrets werden in der Anzeige maskiert.</p>
+    <div x-show="msg" class="text-sm" :class="err?'text-red-300':'text-emerald-300'" x-text="msg"></div>
+  </div>
+
+  <div class="card p-4">
+    <div class="flex items-center justify-between mb-3"><h2 class="font-semibold">Aktuelle Settings</h2><input x-model="q" class="input max-w-xs" placeholder="Filtern…"></div>
+    <template x-if="error"><div class="text-red-300 text-sm mb-2" x-text="error"></div></template>
+    <div class="table-wrap">
+      <table class="tbl">
+        <thead><tr><th>Key</th><th>Value</th><th>Aktion</th></tr></thead>
+        <tbody>
+          <template x-for="k in keys()" :key="k">
+            <tr>
+              <td class="font-mono text-xs" x-text="k"></td>
+              <td class="break-all" x-text="settings[k]"></td>
+              <td><button class="text-indigo-400 hover:text-indigo-300 text-sm" @click="edit(k)">Bearbeiten</button></td>
+            </tr>
+          </template>
+          <tr x-show="keys().length===0"><td colspan="3" class="p-6 text-center text-slate-400">Keine Settings gefunden.</td></tr>
+        </tbody>
+      </table>
+    </div>
   </div>
 </div>
 {% endblock %}
 {% block scripts %}
 <script>
-function setPage(){return{settings:{},key:'',value:'',msg:'',err:false,error:'',async load(){this.error=''; try{this.settings=await apiFetch('/api/settings')||{};}catch(e){this.error=e.message; this.settings={};}},async save(){this.msg='';this.err=false; try{await apiFetch('/api/settings',{method:'POST',body:JSON.stringify({key:this.key,value:this.value})}); this.msg='Gespeichert.'; this.value=''; await this.load();}catch(e){this.err=true; this.msg=e.message;}}}}
+function settingsPage(){return{settings:{},key:'',value:'',q:'',msg:'',err:false,error:'',saving:false,async load(){this.error=''; try{this.settings=await apiFetch('/api/settings')||{};}catch(e){this.error=e.message; this.settings={};}},keys(){const q=(this.q||'').toLowerCase(); return Object.keys(this.settings||{}).filter(k=>!q||k.toLowerCase().includes(q)||String(this.settings[k]||'').toLowerCase().includes(q)).sort();},edit(k){this.key=k; this.value=this.settings[k]==='********'?'':(this.settings[k]||''); window.scrollTo({top:0,behavior:'smooth'});},async save(){if(!this.key){toast('Key erforderlich','error'); return;} this.saving=true; this.msg=''; this.err=false; try{await apiFetch('/api/settings',{method:'POST',body:JSON.stringify({key:this.key,value:this.value})}); this.msg='Gespeichert.'; toast('Setting gespeichert','success'); await this.load();}catch(e){this.err=true; this.msg=e.message; toast(e.message,'error')} this.saving=false;}}}
 </script>
 {% endblock %}

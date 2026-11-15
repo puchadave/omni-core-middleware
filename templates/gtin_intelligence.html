@@ -54,11 +54,11 @@ function gtinPage(){
   return {gtinInput:'',lookupResult:null,providers:[],lookups:[],conflicts:[],provForm:{name:'openean',endpoint:'',priority:100,license_info:'',enabled:false,config_json:{}}},
   async init(){await this.loadAll();},
   async loadAll(){await Promise.all([this.loadProviders(),this.loadLookups(),this.loadConflicts()]);},
-  async loadProviders(){try{this.providers=await api('/api/gtin/providers');}catch(e){this.providers=[];}},
-  async loadLookups(){try{this.lookups=await api('/api/gtin/lookups?limit=50');}catch(e){this.lookups=[];}},
-  async loadConflicts(){try{this.conflicts=await api('/api/gtin/conflicts?limit=50');}catch(e){this.conflicts=[];}},
-  async lookup(){if(!this.gtinInput)return; try{this.lookupResult=await api('/api/gtin/lookup',{method:'POST',body:JSON.stringify({gtin:this.gtinInput})}); await this.loadLookups();}catch(e){this.lookupResult={error:e.message};}},
-  async saveProvider(){try{await api('/api/gtin/providers',{method:'POST',body:JSON.stringify(this.provForm)}); await this.loadProviders();}catch(e){alert('Fehler: '+e.message);}}
+  async loadProviders(){try{this.providers=await apiFetch('/api/gtin/providers');}catch(e){this.providers=[];}},
+  async loadLookups(){try{this.lookups=await apiFetch('/api/gtin/lookups?limit=50');}catch(e){this.lookups=[];}},
+  async loadConflicts(){try{this.conflicts=await apiFetch('/api/gtin/conflicts?limit=50');}catch(e){this.conflicts=[];}},
+  async lookup(){if(!this.gtinInput)return; try{this.lookupResult=await apiFetch('/api/gtin/lookup',{method:'POST',body:JSON.stringify({gtin:this.gtinInput})}); await this.loadLookups();}catch(e){this.lookupResult={error:e.message};}},
+  async saveProvider(){try{await apiFetch('/api/gtin/providers',{method:'POST',body:JSON.stringify(this.provForm)}); await this.loadProviders();}catch(e){alert('Fehler: '+e.message);}}
 }
 </script>
 {% endblock %}

@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>{% block title %}Omni-Core Control Center{% endblock %}</title>
+  <title>{% block title %}Omni-Core Admin{% endblock %}</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
   <style>
@@ -11,115 +11,146 @@
     .nav-link{display:flex;align-items:center;gap:.5rem;padding:.45rem .75rem;border-radius:.5rem;color:#cbd5e1;font-size:.875rem}
     .nav-link:hover{background:#1f2937;color:#fff}
     .nav-link.active{background:#312e81;color:#fff}
-    .nav-section{margin:.75rem .5rem .25rem;font-size:.7rem;letter-spacing:.08em;text-transform:uppercase;color:#64748b;font-weight:700}
+    .nav-section{margin:.85rem .5rem .25rem;font-size:.68rem;letter-spacing:.08em;text-transform:uppercase;color:#64748b;font-weight:700}
+    .card{background:#0f172a;border:1px solid #1e293b;border-radius:.75rem}
+    .btn{display:inline-flex;align-items:center;gap:.4rem;padding:.5rem .85rem;border-radius:.5rem;font-size:.875rem;font-weight:500}
+    .btn-primary{background:#4f46e5;color:#fff}.btn-primary:hover{background:#6366f1}
+    .btn-secondary{background:#334155;color:#fff}.btn-secondary:hover{background:#475569}
+    .btn-danger{background:#b91c1c;color:#fff}.btn-danger:hover{background:#dc2626}
+    .input,.select,.textarea{width:100%;background:#1e293b;border:1px solid #334155;border-radius:.5rem;padding:.55rem .75rem;color:#e2e8f0;font-size:.875rem}
+    .label{display:block;font-size:.8rem;color:#94a3b8;margin-bottom:.25rem}
+    .table-wrap{overflow:auto}.tbl{width:100%;font-size:.875rem;border-collapse:separate;border-spacing:0}
+    .tbl th{text-align:left;color:#94a3b8;font-weight:600;padding:.6rem .75rem;background:#020617;position:sticky;top:0}
+    .tbl td{padding:.6rem .75rem;border-top:1px solid #1e293b;vertical-align:top}
+    .badge{display:inline-flex;align-items:center;padding:.15rem .5rem;border-radius:999px;font-size:.72rem;font-weight:600;border:1px solid}
   </style>
 </head>
-<body class="h-full bg-slate-950 text-slate-100" x-data="{open:false, path: window.location.pathname}">
+<body class="h-full bg-slate-950 text-slate-100" x-data="{open:false, path: window.location.pathname}" @keydown.escape.window="open=false">
   <div class="min-h-full flex">
-    <!-- Sidebar -->
     <aside class="hidden lg:flex lg:flex-col lg:w-72 lg:fixed lg:inset-y-0 bg-slate-900 border-r border-slate-800">
       <div class="px-4 py-4 border-b border-slate-800 flex items-center justify-between">
-        <a href="/" class="text-lg font-extrabold tracking-tight">OMNI-CORE <span class="text-indigo-400">Control</span></a>
-        <span class="text-[10px] px-2 py-0.5 rounded bg-emerald-900/40 text-emerald-300 border border-emerald-800">LIVE</span>
+        <a href="/" class="text-lg font-extrabold tracking-tight">OMNI-CORE <span class="text-indigo-400">Admin</span></a>
+        <span class="text-[10px] px-2 py-0.5 rounded bg-emerald-900/40 text-emerald-300 border border-emerald-800">WEBGUI</span>
       </div>
       <nav class="flex-1 overflow-y-auto p-3">
         <div class="nav-section">Übersicht</div>
         <a href="/" class="nav-link" :class="path==='/'?'active':''">Dashboard</a>
         <a href="/control-center" class="nav-link" :class="path==='/control-center'?'active':''">Global Control Center</a>
         <a href="/ui/master-dashboard" class="nav-link" :class="path==='/ui/master-dashboard'?'active':''">Master Dashboard</a>
+        <a href="/ui/analytics" class="nav-link" :class="path==='/ui/analytics'?'active':''">Analytics</a>
 
-        <div class="nav-section">Commerce</div>
-        <a href="/ui/products" class="nav-link" :class="path.startsWith('/ui/products')||path==='/admin/products'?'active':''">Products</a>
-        <a href="/ui/inventory" class="nav-link" :class="path==='/ui/inventory'?'active':''">Inventory</a>
-        <a href="/ui/orders" class="nav-link" :class="path.startsWith('/ui/orders')||path==='/admin/orders'?'active':''">Orders</a>
-        <a href="/ui/pricing-center" class="nav-link" :class="path==='/ui/pricing-center'?'active':''">Pricing Center</a>
-        <a href="/ui/bundle-studio" class="nav-link" :class="path==='/ui/bundle-studio'?'active':''">Bundle Studio</a>
-        <a href="/ui/erp-pim" class="nav-link" :class="path==='/ui/erp-pim'?'active':''">ERP / PIM (Lite)</a>
+        <div class="nav-section">Katalog & Commerce</div>
+        <a href="/ui/products" class="nav-link" :class="path.startsWith('/ui/products')||path==='/admin/products'?'active':''">Produkte</a>
+        <a href="/ui/inventory" class="nav-link" :class="path==='/ui/inventory'?'active':''">Inventar</a>
+        <a href="/ui/pricing-center" class="nav-link" :class="path==='/ui/pricing-center'?'active':''">Pricing & Kalkulation</a>
+        <a href="/ui/bundle-studio" class="nav-link" :class="path==='/ui/bundle-studio'?'active':''">Bundles</a>
+        <a href="/ui/orders" class="nav-link" :class="path.startsWith('/ui/orders')||path==='/admin/orders'?'active':''">Bestellungen</a>
+        <a href="/ui/erp-pim" class="nav-link" :class="path==='/ui/erp-pim'?'active':''">ERP / PIM</a>
 
-        <div class="nav-section">Sales Channels & Connectors</div>
-        <a href="/ui/connectors" class="nav-link font-semibold text-indigo-300" :class="path==='/ui/connectors'?'active':''">Connector Dashboard</a>
-        <a href="/ui/marketplaces" class="nav-link" :class="path==='/ui/marketplaces'?'active':''">All Connectors</a>
-        <a href="/ui/matterhorn-import" class="nav-link" :class="path==='/ui/matterhorn-import'?'active':''">Matterhorn Connector</a>
-        <a href="/ui/shopware" class="nav-link" :class="path==='/ui/shopware'?'active':''">Shopware Connector</a>
+        <div class="nav-section">Integrationen & Kanäle</div>
+        <a href="/ui/matterhorn-import" class="nav-link" :class="path==='/ui/matterhorn-import'?'active':''">Matterhorn Import</a>
+        <a href="/ui/shopware" class="nav-link" :class="path==='/ui/shopware'?'active':''">Shopware</a>
+        <a href="/ui/connectors" class="nav-link" :class="path==='/ui/connectors'?'active':''">Connector Dashboard</a>
+        <a href="/ui/marketplaces" class="nav-link" :class="path==='/ui/marketplaces'?'active':''">Marktplätze & Kanäle</a>
+        <a href="/ui/integrations" class="nav-link" :class="path==='/ui/integrations'?'active':''">Integrationsstatus</a>
         <a href="/google" class="nav-link" :class="path.startsWith('/google')?'active':''">Google Merchant</a>
-        <a href="/omniroute" class="nav-link" :class="path.startsWith('/omniroute')?'active':''">OmniRoute / AI Gateway</a>
+        <a href="/omniroute" class="nav-link" :class="path.startsWith('/omniroute')?'active':''">OmniRoute Gateway</a>
         <a href="/ui/gtin-intelligence" class="nav-link" :class="path==='/ui/gtin-intelligence'?'active':''">GTIN / Product Intelligence</a>
-        <a href="/ui/integrations" class="nav-link" :class="path==='/ui/integrations'?'active':''">Integrations-Übersicht</a>
-        <a href="/ui/internal-communication" class="nav-link" :class="path==='/ui/internal-communication'?'active':''">Internal Communication (Events)</a>
+        <a href="/ui/internal-communication" class="nav-link" :class="path==='/ui/internal-communication'?'active':''">Events / Kommunikation</a>
 
-        <div class="nav-section">AI & Content</div>
+        <div class="nav-section">AI & Inhalte</div>
         <a href="/ui/ai-control" class="nav-link" :class="path==='/ui/ai-control'?'active':''">AI Control</a>
-        <a href="/ui/content-studio" class="nav-link" :class="path==='/ui/content-studio'?'active':''">Multi-Channel Content</a>
+        <a href="/ui/content-studio" class="nav-link" :class="path==='/ui/content-studio'?'active':''">Content Studio</a>
         <a href="/ui/ai-photoshooting" class="nav-link" :class="path==='/ui/ai-photoshooting'?'active':''">AI Photoshooting</a>
         <a href="/ui/model-management" class="nav-link" :class="path==='/ui/model-management'?'active':''">Model Management</a>
         <a href="/ui/competitor-intelligence" class="nav-link" :class="path==='/ui/competitor-intelligence'?'active':''">Competitor Intelligence</a>
         <a href="/ui/trend-intelligence" class="nav-link" :class="path==='/ui/trend-intelligence'?'active':''">Trend Intelligence</a>
         <a href="/ui/news-events" class="nav-link" :class="path==='/ui/news-events'?'active':''">News & Events</a>
         <a href="/ui/knowledge-base" class="nav-link" :class="path==='/ui/knowledge-base'?'active':''">Knowledge Base</a>
+        <button type="button" onclick="toggleAIAgent()" class="nav-link w-full text-left text-indigo-300 hover:text-white">🤖 AI Copilot</button>
 
-        <div class="nav-section">Betrieb & System</div>
+        <div class="nav-section">System & Sicherheit</div>
         <a href="/ui/jobs-automation" class="nav-link" :class="path==='/ui/jobs-automation'?'active':''">Jobs & Automation</a>
-        <a href="/ui/analytics" class="nav-link" :class="path==='/ui/analytics'?'active':''">Analytics</a>
-        <a href="/ui/audit-log" class="nav-link" :class="path==='/ui/audit-log'?'active':''">Audit Log</a>
-        <a href="/ui/security" class="nav-link" :class="path==='/ui/security'?'active':''">Security & User Management</a>
-        <a href="/ui/settings" class="nav-link" :class="path==='/ui/settings' || path==='/settings'?'active':''">Settings</a>
+        <a href="/ui/audit-log" class="nav-link" :class="path==='/ui/audit-log'?'active':''">Audit & Logs</a>
+        <a href="/ui/security" class="nav-link" :class="path==='/ui/security'?'active':''">Security & IAM</a>
+        <a href="/ui/settings" class="nav-link" :class="path==='/ui/settings' || path==='/settings'?'active':''">Einstellungen</a>
       </nav>
       <div class="p-3 border-t border-slate-800 text-xs text-slate-400 flex items-center justify-between">
-        <a href="/login" class="hover:text-white">Login</a>
+        <span>Verwaltungsoberfläche</span>
         <button onclick="logoutSession()" class="hover:text-white">Logout</button>
       </div>
     </aside>
 
-    <!-- Mobile header -->
     <div class="lg:pl-72 flex-1 flex flex-col min-w-0">
       <header class="lg:hidden sticky top-0 z-30 bg-slate-900/95 backdrop-blur border-b border-slate-800 px-4 py-3 flex items-center justify-between">
         <a href="/" class="font-bold">OMNI-CORE</a>
         <div class="flex gap-2"><button @click="open=!open" class="px-3 py-1.5 rounded bg-slate-800 border border-slate-700 text-sm">Menü</button><button onclick="logoutSession()" class="px-3 py-1.5 rounded bg-slate-800 border border-slate-700 text-sm">Logout</button></div>
       </header>
-      <div x-show="open" x-cloak class="lg:hidden border-b border-slate-800 bg-slate-900 p-3 space-y-1 text-sm">
-        <template x-for="l in [['/','Dashboard'],['/control-center','Control Center'],['/ui/products','Products'],['/ui/matterhorn-import','Matterhorn'],['/ui/shopware','Shopware'],['/ui/gtin-intelligence','GTIN'],['/ui/content-studio','Content'],['/ui/jobs-automation','Jobs'],['/ui/security','Security'],['/ui/settings','Settings']]" :key="l[0]">
-          <a :href="l[0]" class="block px-3 py-2 rounded hover:bg-slate-800" x-text="l[1]"></a>
+      <div x-show="open" x-cloak class="lg:hidden border-b border-slate-800 bg-slate-900 p-3 grid grid-cols-2 gap-1 text-sm">
+        <template x-for="l in [['/','Dashboard'],['/ui/products','Produkte'],['/ui/orders','Bestellungen'],['/ui/inventory','Inventar'],['/ui/matterhorn-import','Matterhorn'],['/ui/shopware','Shopware'],['/ui/connectors','Connectors'],['/ui/pricing-center','Pricing'],['/ui/jobs-automation','Jobs'],['/ui/analytics','Analytics'],['/ui/security','Security'],['/ui/settings','Settings']]" :key="l[0]">
+          <a :href="l[0]" @click="open=false" class="block px-3 py-2 rounded hover:bg-slate-800" x-text="l[1]"></a>
         </template>
       </div>
 
+      <div id="global-toast" class="fixed top-4 right-4 z-50 space-y-2 pointer-events-none"></div>
       <main class="flex-1 p-4 md:p-6 lg:p-8">
         {% block content %}{% endblock %}
       </main>
     </div>
   </div>
 
+  <button id="ai-agent-launcher" type="button" onclick="toggleAIAgent()" class="fixed bottom-5 right-5 z-50 rounded-full bg-indigo-600 hover:bg-indigo-500 text-white px-5 py-3 font-semibold shadow-xl">🤖 AI Copilot</button>
+
+  <aside id="ai-agent-drawer" class="fixed top-0 right-0 z-50 h-full w-full max-w-xl bg-slate-950 border-l border-slate-800 text-slate-100 hidden flex flex-col">
+    <div class="p-4 border-b border-slate-800 flex items-center justify-between">
+      <div>
+        <div class="font-semibold">Omni-Core Control Agent</div>
+        <div class="text-xs text-slate-400">Natürlichsprachliche Steuerung · OmniRoute · bestätigungspflichtige Schreibaktionen</div>
+      </div>
+      <button type="button" onclick="toggleAIAgent()" class="text-slate-400 hover:text-white text-xl">×</button>
+    </div>
+    <div id="ai-agent-messages" class="flex-1 overflow-y-auto p-4 space-y-3 text-sm">
+      <div class="bg-slate-900 border border-slate-800 rounded-lg p-3">
+        Ich kann Diagnosen lesen und Konfigurations-, Business- und CRM/Kalender-Aktionen <strong>vorbereiten</strong>.
+        Schreibende Änderungen werden erst nach deiner expliziten Bestätigung ausgeführt und auditiert.
+        Geschützte Fulfillment-/Payment-Regeln (unbezahlt ⇒ keine Ausführung) sind unveränderbar.
+      </div>
+    </div>
+    <div id="ai-agent-pending" class="hidden p-3 border-t border-amber-900 bg-amber-950/30 space-y-2"></div>
+    <form id="ai-agent-form" class="p-4 border-t border-slate-800">
+      <div class="flex gap-2">
+        <textarea id="ai-agent-input" rows="2" maxlength="12000" placeholder="z. B. „Prüfe unbezahlte Bestellungen“ oder „Stelle Shopware-Sync auf 15 Minuten.“" class="flex-1 rounded-lg bg-slate-900 border border-slate-700 px-3 py-2 text-sm focus:outline-none focus:border-indigo-500"></textarea>
+        <button type="submit" class="self-end bg-indigo-600 hover:bg-indigo-500 rounded-lg px-4 py-2 font-semibold">Senden</button>
+      </div>
+    </form>
+  </aside>
+
   <script>
-    function getCookie(name){
-      const parts = document.cookie.split(';').map(s=>s.trim());
-      for(const p of parts){ if(p.startsWith(name+'=')) return decodeURIComponent(p.slice(name.length+1)); }
-      return '';
-    }
-    async function ensureCsrf(){
-      let t = getCookie('csrf_token');
-      if(!t){ try{ const r = await fetch('/api/auth/csrf'); const d = await r.json(); t = d.csrf_token || getCookie('csrf_token'); }catch(e){} }
-      return t || '';
-    }
+    function getCookie(name){const p=document.cookie.split(';').map(s=>s.trim());for(const x of p){if(x.startsWith(name+'=')) return decodeURIComponent(x.slice(name.length+1));}return '';}
+    async function ensureCsrf(){let t=getCookie('csrf_token'); if(!t){try{const r=await fetch('/api/auth/csrf');const d=await r.json();t=d.csrf_token||getCookie('csrf_token');}catch(e){}} return t||'';}
     async function apiFetch(url, opts={}){
-      opts = Object.assign({}, opts);
-      const method = (opts.method || 'GET').toUpperCase();
-      const headers = Object.assign({'Accept':'application/json'}, opts.headers || {});
-      const hasBody = opts.body != null;
-      if(hasBody && !(opts.body instanceof FormData) && !headers['Content-Type']) headers['Content-Type'] = 'application/json';
-      if(['POST','PUT','PATCH','DELETE'].includes(method)){
-        const csrf = await ensureCsrf();
-        if(csrf) headers['X-CSRF-Token'] = csrf;
-      }
-      opts.headers = headers;
-      const r = await fetch(url, opts);
-      const ct = r.headers.get('content-type')||'';
-      const data = ct.includes('application/json') ? await r.json().catch(()=>null) : await r.text();
-      if(!r.ok){ const msg = data && (data.detail||data.error||data.message) ? (data.detail||data.error||data.message) : ('HTTP '+r.status); throw new Error(typeof msg==='string'?msg:JSON.stringify(msg)); }
+      opts=Object.assign({},opts); const method=(opts.method||'GET').toUpperCase();
+      const headers=Object.assign({'Accept':'application/json'}, opts.headers||{});
+      const hasBody=opts.body!=null; if(hasBody && !(opts.body instanceof FormData) && !headers['Content-Type']) headers['Content-Type']='application/json';
+      if(['POST','PUT','PATCH','DELETE'].includes(method)){const csrf=await ensureCsrf(); if(csrf) headers['X-CSRF-Token']=csrf;}
+      opts.headers=headers; const r=await fetch(url,opts); const ct=r.headers.get('content-type')||'';
+      const data=ct.includes('application/json')?await r.json().catch(()=>null):await r.text();
+      if(!r.ok){const msg=data&&(data.detail||data.error||data.message)?(data.detail||data.error||data.message):('HTTP '+r.status); throw new Error(typeof msg==='string'?msg:JSON.stringify(msg));}
       return data;
     }
-    async function logoutSession(){
-      try{ await apiFetch('/api/auth/logout', {method:'POST'}); }catch(e){}
-      window.location.href = '/login';
-    }
+    async function logoutSession(){try{await apiFetch('/api/auth/logout',{method:'POST'});}catch(e){} window.location.href='/login';}
+    function toast(msg,type='info'){const c=document.getElementById('global-toast');const d=document.createElement('div');const cls=type==='error'?'border-red-700 bg-red-950/90 text-red-200':(type==='success'?'border-emerald-700 bg-emerald-950/90 text-emerald-200':'border-slate-700 bg-slate-900/95 text-slate-100');d.className='pointer-events-auto border '+cls+' rounded-lg px-3 py-2 text-sm shadow-lg max-w-sm';d.textContent=String(msg);c.appendChild(d);setTimeout(()=>d.remove(),3500);}    
+    function fmt(v){if(v==null) return '—'; if(typeof v==='object'){try{return JSON.stringify(v);}catch(_){return String(v)}} return String(v);}    
+    function fmtDate(v){if(!v) return '—'; try{return new Date(v).toLocaleString('de-DE')}catch(_){return String(v)}}
+
+    let aiAgentConversationId = null;
+    function toggleAIAgent(){const d=document.getElementById('ai-agent-drawer'); d.classList.toggle('hidden'); if(!d.classList.contains('hidden')){document.getElementById('ai-agent-input').focus();}}
+    function aiAgentAdd(role, text){const box=document.getElementById('ai-agent-messages'); const el=document.createElement('div'); el.className=(role==='user'?'ml-8 bg-indigo-950 border border-indigo-800':'mr-8 bg-slate-900 border border-slate-800')+' rounded-lg p-3'; el.textContent=text||''; box.appendChild(el); box.scrollTop=box.scrollHeight;}
+    function aiAgentEsc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;','\'':'&#039;'}[c]));}
+    function renderAIPending(actions){const box=document.getElementById('ai-agent-pending'); if(!actions||!actions.length){box.classList.add('hidden'); box.innerHTML=''; return;} box.classList.remove('hidden'); box.innerHTML='<div class="font-semibold text-amber-300 text-sm">Bestätigung erforderlich (keine automatische Ausführung)</div>'+actions.map(a=>'<div class="border border-amber-800 rounded-lg p-3 text-sm"><div class="font-medium">'+aiAgentEsc(a.summary)+'</div><pre class="mt-2 text-xs text-slate-300 whitespace-pre-wrap overflow-auto">'+aiAgentEsc(JSON.stringify(a.diff,null,2))+'</pre><div class="mt-3 flex gap-2"><button onclick="confirmAIAction(\''+aiAgentEsc(a.action_id)+'\')" class="bg-emerald-600 hover:bg-emerald-500 rounded px-3 py-1.5">Übernehmen</button><button onclick="cancelAIAction(\''+aiAgentEsc(a.action_id)+'\')" class="bg-slate-700 hover:bg-slate-600 rounded px-3 py-1.5">Abbrechen</button></div></div>').join('');}
+    const _aiForm=document.getElementById('ai-agent-form'); if(_aiForm){_aiForm.addEventListener('submit', async (e)=>{e.preventDefault(); const input=document.getElementById('ai-agent-input'); const message=input.value.trim(); if(!message) return; input.value=''; aiAgentAdd('user', message); try{const data=await apiFetch('/api/ai-agent/chat',{method:'POST', body: JSON.stringify({message, conversation_id: aiAgentConversationId})}); aiAgentConversationId=data.conversation_id||aiAgentConversationId; aiAgentAdd('assistant', data.message||'Aktion vorbereitet.'); renderAIPending(data.pending_actions||[]);}catch(err){aiAgentAdd('assistant','Fehler: '+err.message);}});}
+    async function confirmAIAction(actionId){try{const data=await apiFetch('/api/ai-agent/actions/'+encodeURIComponent(actionId)+'/confirm',{method:'POST', body:'{}'}); aiAgentAdd('assistant','Änderung übernommen: '+JSON.stringify(data.result||data)); renderAIPending([]); toast('AI-Aktion ausgeführt','success');}catch(err){aiAgentAdd('assistant','Bestätigung fehlgeschlagen: '+err.message);}}
+    async function cancelAIAction(actionId){try{await apiFetch('/api/ai-agent/actions/'+encodeURIComponent(actionId)+'/cancel',{method:'POST', body:'{}'}); aiAgentAdd('assistant','Aktion abgebrochen.'); renderAIPending([]);}catch(err){aiAgentAdd('assistant','Abbruch fehlgeschlagen: '+err.message);}}
   </script>
   {% block scripts %}{% endblock %}
 </body>
