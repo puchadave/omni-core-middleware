@@ -250,12 +250,17 @@ setup_postgresql() {
             log_info "Erstelle SQLite Datenbank Fallback..."
             # Das existente database.py Modul verwenden
             cd "$project_dir" 2>/dev/null || return 1
-            python3 -c "
-import asyncio
+            if [ -f "$project_dir/database.py" ]; then
+                python3 - "$project_dir" <<'PY' 2>&1 || log_warn "SQLite Initialisierung fehlgeschlagen"
+import asyncio, os, sys
+sys.path.insert(0, sys.argv[1])
 from database import init_db
 asyncio.run(init_db())
 print('SQLite Datenbank initialisiert')
-" 2>&1 || log_warn "SQLite Initialisierung fehlgeschlagen"
+PY
+            else
+                log_warn "database.py nicht gefunden - SQLite Initialisierung übersprungen"
+            fi
         fi
     fi
 

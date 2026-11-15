@@ -239,7 +239,7 @@ init_single_postgresql() {
 import asyncio
 from database import init_db
 asyncio.run(init_db())
-print 'SQLite Datenbank initialisiert'
+print('SQLite Datenbank initialisiert')
 "
             else
                 log_info "Bestehende SQLite Datenbank gefunden"
@@ -285,7 +285,7 @@ print 'SQLite Datenbank initialisiert'
 import asyncio
 from database import init_db
 asyncio.run(init_db())
-print 'SQLite Datenbank initialisiert'
+print('SQLite Datenbank initialisiert')
 "
         else
             log_info "Bestehende SQLite Datenbank gefunden"
