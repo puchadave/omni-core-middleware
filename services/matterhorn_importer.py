@@ -168,27 +168,47 @@ def _parse_json_lossless(text: str) -> list[dict[str, Any]]:
 
 def detect_format(text: str, filename: str | None = None) -> str:
     name = (filename or "").lower()
-    s = text.lstrip()
-    if name.endswith(".csv") or ("," in s.splitlines()[0] if s else False and "<" not in s[:20]):
-        if name.endswith(".csv") or (";" in s[:200] and "<" not in s[:50]):
-            return "csv"
+    s = text.lstrip('\ufeff \t\r\n')
     if name.endswith(".json") or s.startswith("{") or s.startswith("["):
         return "json"
+    low = s[:500].lower()
+    if low.startswith("<!doctype html") or low.startswith("<html") or "<html" in low:
+        return "html"
+    if name.endswith(".csv"):
+        return "csv"
     if name.endswith(".xml") or s.startswith("<"):
         return "xml"
-    # heuristic
-    if "\n" in s and (";" in s.splitlines()[0] or "," in s.splitlines()[0]) and "<" not in s[:50]:
+    # heuristic CSV
+    first = s.splitlines()[0] if s.splitlines() else ""
+    if "\n" in s and (";" in first or "," in first) and "<" not in s[:50]:
         return "csv"
+    if s.startswith("<"):
+        return "xml"
     return "xml"
 
 
 def parse_lossless(text: str, filename: str | None = None, format_hint: str | None = None) -> tuple[str, list[dict[str, Any]]]:
+    stripped = (text or "").lstrip('\ufeff \t\r\n')
+    if not stripped:
+        raise ValueError("Feed ist leer (keine Daten empfangen). Bitte Quelle/Datei prüfen.")
     fmt = (format_hint or detect_format(text, filename) or "xml").lower()
+    # hard guard: HTML/error pages are not valid feeds
+    low = stripped[:500].lower()
+    if fmt == "html" or low.startswith("<!doctype html") or low.startswith("<html") or "<html" in low:
+        snippet = stripped[:120].replace("\n", " ").strip()
+        raise ValueError(
+            "Quelle liefert HTML statt XML/CSV/JSON (z. B. Login-/Fehlerseite oder falsche/geschützte URL). "
+            f"Auszug: {snippet!r}"
+        )
     if fmt == "json":
         return "json", _parse_json_lossless(text)
     if fmt == "csv":
         return "csv", _parse_csv_lossless(text)
-    return "xml", _parse_xml_lossless(text)
+    try:
+        return "xml", _parse_xml_lossless(text)
+    except ET.ParseError as exc:
+        snippet = stripped[:120].replace("\n", " ").strip()
+        raise ValueError(f"Feed ist kein gültiges XML/Format ({exc}). Auszug: {snippet!r}") from exc
 
 
 def _normalize_product(raw: dict[str, Any], *, source_system: str = "matterhorn") -> dict[str, Any]:
