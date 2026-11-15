@@ -1,0 +1,126 @@
+{% extends "base.html" %}
+{% block title %}CRM & Kommunikation | Omni-Core{% endblock %}
+{% block content %}
+<div x-data="crmPage()" x-init="init()" class="space-y-4 max-w-7xl mx-auto">
+  <div class="flex flex-col md:flex-row md:items-end md:justify-between gap-3">
+    <div>
+      <h1 class="text-2xl md:text-3xl font-bold">CRM & Omnichannel Communication Center</h1>
+      <p class="text-slate-400">Kunden, Unified Inbox (Shopware/Amazon/eBay/E-Mail/Messenger), Termine & Bestellkontext. Aktionen mit Zahlungs-/Fulfillment-Guardrails.</p>
+    </div>
+    <div class="flex gap-2">
+      <select x-model="syncChannel" class="select max-w-xs">
+        <option value="shopware">Shopware</option><option value="amazon">Amazon</option><option value="ebay">eBay</option><option value="email">E-Mail</option><option value="messenger">Messenger</option>
+      </select>
+      <button @click="sync()" class="btn btn-secondary" :disabled="busy">Sync</button>
+      <button @click="loadAll()" class="btn btn-primary">Aktualisieren</button>
+    </div>
+  </div>
+
+  <template x-if="msg"><div class="rounded border px-3 py-2 text-sm" :class="err?'border-red-700 bg-red-900/30 text-red-200':'border-emerald-700 bg-emerald-900/20 text-emerald-200'" x-text="msg"></div></template>
+
+  <div class="grid grid-cols-2 md:grid-cols-5 gap-4">
+    <div class="card p-4"><div class="text-xs text-slate-400 uppercase">Kunden</div><div class="text-2xl font-bold mt-1" x-text="overview.customers ?? 0"></div></div>
+    <div class="card p-4"><div class="text-xs text-slate-400 uppercase">Threads</div><div class="text-2xl font-bold mt-1" x-text="overview.threads ?? 0"></div></div>
+    <div class="card p-4"><div class="text-xs text-slate-400 uppercase">Offen</div><div class="text-2xl font-bold mt-1" x-text="overview.open_threads ?? 0"></div></div>
+    <div class="card p-4"><div class="text-xs text-slate-400 uppercase">Termine</div><div class="text-2xl font-bold mt-1" x-text="overview.appointments ?? 0"></div></div>
+    <div class="card p-4"><div class="text-xs text-slate-400 uppercase">Kanäle</div><div class="text-sm mt-1" x-text="Object.keys(overview.channels||{}).join(', ') || '—'"></div></div>
+  </div>
+
+  <div class="grid lg:grid-cols-3 gap-4">
+    <div class="card p-4 lg:col-span-1">
+      <h2 class="font-semibold mb-2">Unified Inbox / Threads</h2>
+      <div class="flex gap-2 mb-2">
+        <select x-model="filterChannel" @change="loadThreads()" class="select"><option value="">Alle Kanäle</option><option>shopware</option><option>amazon</option><option>ebay</option><option>email</option><option>messenger</option></select>
+      </div>
+      <div class="overflow-auto max-h-[28rem] border border-slate-800 rounded">
+        <template x-for="t in threads" :key="t.id">
+          <button @click="selectThread(t)" class="w-full text-left p-3 border-b border-slate-800 hover:bg-slate-800/60" :class="selected && selected.id===t.id ? 'bg-slate-800/80':''">
+            <div class="flex justify-between text-xs text-slate-400"><span x-text="t.channel"></span><span x-text="t.status"></span></div>
+            <div class="font-medium truncate" x-text="t.subject || t.external_thread_id || t.id"></div>
+            <div class="text-xs text-slate-500" x-text="t.order_id ? ('Order: '+t.order_id+' · '+((t.order||{}).payment_status||'—')) : 'Kein Bestellbezug'"></div>
+          </button>
+        </template>
+        <div x-show="threads.length===0" class="p-4 text-sm text-slate-400">Keine Threads. Kanal konfigurieren und Sync/Webhook nutzen (keine erfundenen Daten).</div>
+      </div>
+    </div>
+
+    <div class="card p-4 lg:col-span-2 space-y-3">
+      <div class="flex items-center justify-between"><h2 class="font-semibold">Nachrichten & Bestellkontext</h2><span class="text-xs text-slate-400" x-text="selected?selected.id:''"></span></div>
+      <template x-if="selected">
+        <div class="space-y-3">
+          <div class="grid md:grid-cols-3 gap-2 text-sm">
+            <div class="bg-slate-950 border border-slate-800 rounded p-2"><div class="text-slate-400 text-xs">Kanal/Status</div><div x-text="selected.channel+' / '+selected.status"></div></div>
+            <div class="bg-slate-950 border border-slate-800 rounded p-2"><div class="text-slate-400 text-xs">Bestellung</div><div x-text="selected.order_id || '—'"></div></div>
+            <div class="bg-slate-950 border border-slate-800 rounded p-2"><div class="text-slate-400 text-xs">Zahlung/Freigabe</div><div :class="(selected.order&&selected.order.fulfillment_release_allowed)?'text-emerald-400':'text-amber-400'" x-text="selected.order ? ((selected.order.payment_status||'—')+' / locked='+selected.order.fulfillment_locked) : 'kein Kontext'"></div></div>
+          </div>
+          <div class="overflow-auto max-h-72 border border-slate-800 rounded p-2 space-y-2 bg-slate-950">
+            <template x-for="m in messages" :key="m.id">
+              <div class="p-2 rounded border border-slate-800" :class="m.direction==='outbound'?'bg-indigo-950/30':'bg-slate-900/50'">
+                <div class="text-xs text-slate-400 flex justify-between"><span x-text="m.direction+' · '+(m.sender||'')"></span><span x-text="m.sent_at||m.created_at||''"></span></div>
+                <div class="text-sm whitespace-pre-wrap" x-text="m.body||m.subject||''"></div>
+              </div>
+            </template>
+            <div x-show="messages.length===0" class="text-sm text-slate-400">Keine Nachrichten.</div>
+          </div>
+          <div class="border border-amber-900/60 rounded p-3 bg-amber-950/10">
+            <div class="font-medium text-sm mb-2">Gesicherte Aktion (nur bei verifizierter Zahlung / Fulfillment-Regeln)</div>
+            <div class="grid md:grid-cols-3 gap-2">
+              <select x-model="actionName" class="select"><option value="manual_fulfillment_release">Freigabe (manuell)</option><option value="manual_approval">Manuelle Freigabe</option><option value="goodwill_credit">Kulanz-Gutschrift</option></select>
+              <input x-model="actionOrderId" class="input" placeholder="Order-ID" />
+              <button @click="runAction()" class="btn btn-primary" :disabled="busy">Aktion protokollieren</button>
+            </div>
+            <div class="text-xs text-slate-400 mt-1">Fulfillment gesperrt bis <code>payment_status</code> verifiziert &amp; <code>fulfillment_locked</code> gelöst (serverseitig erzwungen).</div>
+          </div>
+        </div>
+      </template>
+      <template x-if="!selected"><div class="text-sm text-slate-400">Thread auswählen, um Nachrichten, Bestell-/Zahlungsstatus und sichere Aktionen zu sehen.</div></template>
+    </div>
+  </div>
+
+  <div class="grid lg:grid-cols-2 gap-4">
+    <div class="card p-4">
+      <h2 class="font-semibold mb-2">Termine / Kalender</h2>
+      <div class="grid md:grid-cols-2 gap-2 mb-2">
+        <input x-model="appt.title" class="input" placeholder="Titel"/>
+        <input x-model="appt.starts_at" class="input" placeholder="Start (ISO, z.B. 2026-11-20T10:00:00Z)"/>
+        <input x-model="appt.customer_id" class="input" placeholder="Kunden-ID (optional)"/>
+        <input x-model="appt.order_id" class="input" placeholder="Order-ID (optional)"/>
+      </div>
+      <button @click="createAppt()" class="btn btn-secondary mb-3" :disabled="busy">Termin anlegen</button>
+      <div class="overflow-auto max-h-56 border border-slate-800 rounded"><table class="tbl"><thead><tr><th>Titel</th><th>Start</th><th>Status</th></tr></thead><tbody>
+        <template x-for="a in appointments" :key="a.id"><tr><td x-text="a.title"></td><td x-text="a.starts_at"></td><td x-text="a.status"></td></tr></template>
+        <tr x-show="appointments.length===0"><td colspan="3" class="text-center text-slate-400 p-4">Keine Termine.</td></tr>
+      </tbody></table></div>
+    </div>
+    <div class="card p-4">
+      <h2 class="font-semibold mb-2">Kunden</h2>
+      <div class="overflow-auto max-h-72 border border-slate-800 rounded"><table class="tbl"><thead><tr><th>Name</th><th>E-Mail</th><th>IDs</th></tr></thead><tbody>
+        <template x-for="c in customers" :key="c.id"><tr><td x-text="c.display_name||'—'"></td><td x-text="c.email||'—'"></td><td class="text-xs" x-text="[c.shopware_id,c.amazon_id,c.ebay_id].filter(Boolean).join(', ')||'—'"></td></tr></template>
+        <tr x-show="customers.length===0"><td colspan="3" class="text-center text-slate-400 p-4">Keine Kunden.</td></tr>
+      </tbody></table></div>
+      <p class="text-xs text-slate-500 mt-2">Sync liefert nur bei konfigurierten/autorisierten Kanälen Daten; Webhook-Ingestion ist idempotent.</p>
+    </div>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+function crmPage(){return {
+  overview:{}, threads:[], customers:[], appointments:[], messages:[], selected:null,
+  filterChannel:'', syncChannel:'shopware', busy:false, msg:'', err:false,
+  actionName:'manual_fulfillment_release', actionOrderId:'',
+  appt:{title:'', starts_at:'', customer_id:'', order_id:''},
+  notify(m,e=false){this.msg=m; this.err=e; setTimeout(()=>{if(this.msg===m)this.msg='';},5000);},
+  async init(){await this.loadAll();},
+  async loadAll(){await Promise.all([this.loadOverview(),this.loadThreads(),this.loadCustomers(),this.loadAppointments()]);},
+  async loadOverview(){try{this.overview=await apiFetch('/api/crm/overview');}catch(e){this.overview={};}},
+  async loadThreads(){try{const q=this.filterChannel?('?channel='+encodeURIComponent(this.filterChannel)) : ''; const r=await apiFetch('/api/crm/threads'+q); this.threads=r.items||[];}catch(e){this.threads=[]; this.notify('Threads: '+e.message,true);}},
+  async loadCustomers(){try{const r=await apiFetch('/api/crm/customers'); this.customers=r.items||[];}catch(e){this.customers=[];}},
+  async loadAppointments(){try{const r=await apiFetch('/api/crm/appointments'); this.appointments=r.items||[];}catch(e){this.appointments=[];}},
+  async selectThread(t){this.selected=t; this.actionOrderId=t.order_id||''; try{const r=await apiFetch('/api/crm/threads/'+encodeURIComponent(t.id)+'/messages'); this.messages=r.items||[];}catch(e){this.messages=[]; this.notify('Nachrichten: '+e.message,true);}},
+  async sync(){this.busy=true; try{const r=await apiFetch('/api/crm/sync/'+encodeURIComponent(this.syncChannel),{method:'POST'}); this.notify('Sync '+this.syncChannel+': '+((r.result||{}).status||'ok')); await this.loadAll();}catch(e){this.notify('Sync fehlgeschlagen: '+e.message,true);} this.busy=false;},
+  async runAction(){if(!this.actionOrderId){this.notify('Order-ID erforderlich',true); return;} this.busy=true; try{await apiFetch('/api/crm/actions',{method:'POST',body:JSON.stringify({action:this.actionName, order_id:this.actionOrderId, payload:{}})}); this.notify('Aktion protokolliert/akzeptiert');}catch(e){this.notify('Aktion abgelehnt/Fehler: '+e.message,true);} this.busy=false;},
+  async createAppt(){if(!this.appt.title||!this.appt.starts_at){this.notify('Titel und Startzeit erforderlich',true); return;} this.busy=true; try{await apiFetch('/api/crm/appointments',{method:'POST',body:JSON.stringify(this.appt)}); this.appt={title:'',starts_at:'',customer_id:'',order_id:''}; this.notify('Termin angelegt'); await this.loadAppointments(); await this.loadOverview();}catch(e){this.notify('Termin fehlgeschlagen: '+e.message,true);} this.busy=false;},
+}}
+</script>
+{% endblock %}

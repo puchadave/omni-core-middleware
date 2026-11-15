@@ -92,7 +92,7 @@ from database import (
     finance_reconciliation_list, finance_overview,
 )
 from services.fulfillment import FulfillmentService
-from services.finance import reconcile_payment_to_documents
+from services.finance import calculate_contribution_margin, reconcile_payment_to_documents
 from services.inventory_guard import InventoryGuard
 from services.matterhorn_importer import MatterhornUniversalImporter
 from services.omniroute_client import OmniRouteClient
@@ -125,42 +125,86 @@ CSRF_COOKIE_NAME = "csrf_token"
 SESSION_TTL_SECONDS = 8 * 60 * 60
 STATE_CHANGING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 
-# RBAC: permission required by (method, path_prefix). Most-specific/longest prefix wins.
-# "*" permission or superadmin/internal/api-key sessions bypass checks.
+# RBAC: permission required by (method, path_prefix). Most-specific prefix wins.
+# Unclassified paths are denied unless explicitly granted outside the default roles.
 RBAC_RULES: list[tuple[str, tuple[str, ...], str]] = [
+    ("GET", ("/docs", "/redoc", "/openapi.json"), "system.read"),
+    ("GET", ("/", "/api/stats", "/api/analytics", "/api/health", "/api/health/integrations", "/api/integrations/", "/api/control-center/", "/control-center"), "system.read"),
+    ("GET", ("/api/auth/me", "/api/auth/logout"), "system.read"),
+    ("POST", ("/api/auth/logout",), "system.read"),
     ("GET", ("/api/iam/", "/ui/security"), "users.manage"),
     ("POST", ("/api/iam/",), "users.manage"),
     ("PUT", ("/api/iam/",), "users.manage"),
     ("DELETE", ("/api/iam/",), "users.manage"),
     ("POST", ("/api/settings",), "system.configure"),
     ("GET", ("/api/settings", "/ui/settings", "/settings"), "system.configure"),
-    ("POST", ("/api/matterhorn/", "/api/import/matterhorn"), "matterhorn.configure"),
-    ("GET", ("/api/matterhorn/", "/ui/matterhorn-import"), "matterhorn.configure"),
+    ("POST", ("/api/matterhorn/",), "matterhorn.configure"),
+    ("PUT", ("/api/matterhorn/",), "matterhorn.configure"),
+    ("DELETE", ("/api/matterhorn/",), "matterhorn.configure"),
+    ("POST", ("/api/import/matterhorn",), "matterhorn.import"),
+    ("GET", ("/api/matterhorn/", "/api/import/matterhorn", "/api/import-runs", "/ui/matterhorn-import"), "matterhorn.read"),
     ("POST", ("/api/shopware/",), "shopware.configure"),
-    ("GET", ("/api/shopware/", "/ui/shopware"), "shopware.configure"),
+    ("GET", ("/api/shopware/", "/api/stats/shopware", "/ui/shopware"), "shopware.read"),
     ("POST", ("/api/omniroute/", "/api/ai/"), "ai.configure"),
     ("GET", ("/api/omniroute/", "/ui/ai-control", "/omniroute"), "ai.configure"),
     ("POST", ("/api/ai-agent/",), "ai.configure"),
     ("GET", ("/api/ai-agent/",), "ai.configure"),
+    ("GET", ("/api/creative/", "/api/photoshoot/", "/ui/ai-photoshooting", "/ui/content-studio"), "ai.generate"),
+    ("POST", ("/api/creative/", "/api/photoshoot/"), "ai.configure"),
+    ("POST", ("/api/content/generate", "/api/marketing/"), "ai.generate"),
+    ("GET", ("/api/content/", "/api/marketing/"), "products.read"),
     ("POST", ("/api/pricing/",), "pricing.write"),
     ("GET", ("/api/pricing/", "/ui/pricing-center"), "pricing.read"),
     ("POST", ("/api/bundles",), "bundles.manage"),
-    ("GET", ("/api/bundles", "/ui/bundle-studio"), "products.read"),
+    ("DELETE", ("/api/bundles/",), "bundles.manage"),
+    ("GET", ("/api/bundles", "/ui/bundle-studio"), "bundles.read"),
     ("POST", ("/api/products",), "products.write"),
     ("PUT", ("/api/products",), "products.write"),
-    ("DELETE", ("/api/products",), "products.write"),
+    ("DELETE", ("/api/products",), "products.delete"),
     ("GET", ("/api/products", "/ui/products", "/admin/products"), "products.read"),
-    ("GET", ("/api/orders", "/ui/orders", "/admin/orders"), "products.read"),
+    ("GET", ("/api/orders", "/ui/orders", "/admin/orders"), "fulfillment.read"),
+    ("POST", ("/api/orders",), "fulfillment.manage"),
     ("GET", ("/api/finance/",), "finance.read"),
+    ("POST", ("/api/finance/contribution-margin",), "finance.read"),
     ("POST", ("/api/finance/",), "finance.write"),
     ("GET", ("/api/audit-log", "/api/logs", "/ui/audit-log"), "audit.read"),
+    ("GET", ("/api/events/", "/ui/internal-communication"), "audit.read"),
+    ("POST", ("/api/events/",), "system.configure"),
     ("GET", ("/api/jobs", "/ui/jobs-automation"), "system.configure"),
     ("POST", ("/api/jobs",), "system.configure"),
+    ("GET", ("/api/scheduler/",), "system.configure"),
+    ("POST", ("/api/scheduler/",), "system.configure"),
     ("GET", ("/api/connectors", "/ui/connectors"), "connectors.read"),
     ("POST", ("/api/connectors",), "connectors.configure"),
     ("DELETE", ("/api/connectors",), "connectors.configure"),
     ("GET", ("/api/crm/",), "products.read"),
     ("POST", ("/api/crm/",), "system.configure"),
+    ("GET", ("/api/competitor/providers", "/api/stats/competitor", "/ui/competitor-intelligence"), "competitor.read"),
+    ("POST", ("/api/competitor/",), "competitor.manage"),
+    ("GET", ("/api/sales/overview", "/api/sales/product-scores"), "products.read"),
+    ("GET", ("/api/sales/pricing-recommendations",), "pricing.read"),
+    ("GET", ("/api/scene-intelligence/", "/api/news/", "/ui/news-events", "/ui/trend-intelligence"), "trends.read"),
+    ("POST", ("/api/news/",), "trends.manage"),
+    ("GET", ("/api/knowledge", "/ui/knowledge-base"), "system.read"),
+    ("POST", ("/api/knowledge",), "system.configure"),
+    ("GET", ("/api/export/",), "exports.execute"),
+    ("POST", ("/api/export/", "/api/pipeline/"), "exports.execute"),
+    ("GET", ("/api/google/accounts", "/api/google/export/health/", "/google"), "connectors.read"),
+    ("POST", ("/api/google/accounts",), "connectors.configure"),
+    ("GET", ("/api/google/export/",), "exports.execute"),
+    ("POST", ("/api/google/export/", "/api/google/sync"), "exports.execute"),
+    ("GET", ("/api/gtin/", "/ui/gtin-intelligence"), "products.read"),
+    ("POST", ("/api/gtin/lookup",), "products.read"),
+    ("POST", ("/api/gtin/providers",), "products.write"),
+    ("GET", ("/ui/master-dashboard", "/ui/analytics"), "system.read"),
+    ("GET", ("/ui/inventory",), "products.read"),
+    ("GET", ("/ui/erp-pim",), "products.read"),
+    ("GET", ("/ui/integrations", "/ui/marketplaces"), "connectors.read"),
+    ("GET", ("/ui/model-management",), "ai.configure"),
+    ("GET", ("/ui/competitor-intelligence",), "competitor.read"),
+    ("GET", ("/ui/trend-intelligence",), "trends.read"),
+    ("GET", ("/ui/knowledge-base",), "system.read"),
+    ("GET", ("/api/import/matterhorn/preview",), "matterhorn.read"),
 ]
 
 
@@ -242,6 +286,18 @@ class MatterhornImportRequest(BaseModel):
 
 class FinancePayloadRequest(BaseModel):
     payload_json: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("provider", "external_id", mode="before", check_fields=False)
+    @classmethod
+    def require_finance_identifier(cls, value: Any) -> Any:
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("Provider and external ID must not be blank.")
+        return value.strip()
+
+    @field_validator("order_reference", "settlement_reference", mode="before", check_fields=False)
+    @classmethod
+    def normalize_finance_reference(cls, value: Any) -> Any:
+        return value.strip() if isinstance(value, str) else value
 
     @field_validator("payload_json")
     @classmethod
@@ -326,6 +382,22 @@ class FinanceSettlementRequest(FinancePayloadRequest):
 
 class FinanceReconcileRequest(BaseModel):
     transaction_id: str = Field(min_length=1, max_length=64)
+
+
+class FinanceContributionMarginRequest(BaseModel):
+    revenue: Decimal = Field(ge=0, max_digits=20, decimal_places=6)
+    currency: str = Field(pattern=r"^[A-Z]{3}$")
+    cost_of_goods: Decimal | None = Field(default=None, ge=0, max_digits=20, decimal_places=6)
+    marketplace_fee: Decimal | None = Field(default=None, ge=0, max_digits=20, decimal_places=6)
+    payment_fee: Decimal | None = Field(default=None, ge=0, max_digits=20, decimal_places=6)
+    shipping: Decimal | None = Field(default=None, ge=0, max_digits=20, decimal_places=6)
+    packaging: Decimal | None = Field(default=None, ge=0, max_digits=20, decimal_places=6)
+    returns: Decimal | None = Field(default=None, ge=0, max_digits=20, decimal_places=6)
+
+    @field_validator("currency", mode="before")
+    @classmethod
+    def normalize_currency(cls, value: Any) -> Any:
+        return value.strip().upper() if isinstance(value, str) else value
 
 
 
@@ -621,17 +693,21 @@ app = FastAPI(
 )
 
 _INTERNAL_API_KEY_HEADER = "X-Internal-API-Key"
-_INTERNAL_API_EXCLUDED_PATHS = frozenset({"/api/health", "/docs", "/redoc", "/openapi.json"})
-_AUTH_EXCLUDED_PATHS = frozenset({"/login", "/api/auth/login", "/api/auth/logout", "/api/auth/csrf"})
-_CSRF_EXEMPT_PATHS = frozenset({"/api/auth/login", "/api/auth/logout", "/api/auth/csrf"})
+_INTERNAL_API_EXCLUDED_PATHS = frozenset({"/healthz"})
+_AUTH_EXCLUDED_PATHS = frozenset({"/login", "/api/auth/login", "/api/auth/csrf"})
+_CSRF_EXEMPT_PATHS = frozenset({"/api/auth/login", "/api/auth/csrf"})
 
 
 def _auth_secret() -> str:
-    return (os.getenv("SESSION_SECRET") or os.getenv("INTERNAL_API_KEY") or "dev-insecure-secret").strip()
+    secret = os.getenv("SESSION_SECRET", "").strip()
+    return secret if len(secret) >= 32 else ""
 
 
 def _sign(data: str) -> str:
-    return hmac.new(_auth_secret().encode(), data.encode(), hashlib.sha256).hexdigest()
+    secret = _auth_secret()
+    if not secret:
+        raise RuntimeError("SESSION_SECRET must contain at least 32 characters before issuing sessions.")
+    return hmac.new(secret.encode(), data.encode(), hashlib.sha256).hexdigest()
 
 
 def _b64url_encode(raw: bytes) -> str:
@@ -658,13 +734,14 @@ def _issue_session_token(*, principal_type: str, user_id: str = "", role: str = 
 
 
 def _decode_session_token(token: str) -> dict[str, Any] | None:
-    if not token:
+    if not token or not _auth_secret():
         return None
     # legacy format: <issued_ts>.<hmac>
     if token.count(".") == 1:
         issued, signature = token.split(".", 1)
         if issued.isdigit():
-            expected = hmac.new((os.getenv("INTERNAL_API_KEY", "").strip() or _auth_secret()).encode(), issued.encode(), hashlib.sha256).hexdigest()
+            signing_key = (os.getenv("INTERNAL_API_KEY", "").strip() or _auth_secret()).encode()
+            expected = hmac.new(signing_key, issued.encode(), hashlib.sha256).hexdigest()
             if hmac.compare_digest(signature, expected) and int(time.time()) - int(issued) <= SESSION_TTL_SECONDS:
                 return {"typ": "api_key", "uid": "internal-api-key", "role": "SUPERADMIN", "iat": int(issued), "exp": int(issued) + SESSION_TTL_SECONDS, "sid": "legacy"}
         return None
@@ -689,9 +766,16 @@ def _new_csrf_token() -> str:
     return secrets.token_urlsafe(32)
 
 
+def _cookie_secure(request: Request) -> bool:
+    secure_setting = os.getenv("COOKIE_SECURE", "").strip().lower()
+    if secure_setting:
+        return secure_setting in {"1", "true", "yes", "on"}
+    return request.url.scheme == "https" or os.getenv("OMNI_ENV", "").lower() == "production"
+
+
 def _set_auth_cookies(request: Request, response: Response, session_token: str) -> str:
     csrf = _new_csrf_token()
-    secure = request.url.scheme == "https"
+    secure = _cookie_secure(request)
     response.set_cookie(SESSION_COOKIE_NAME, session_token, max_age=SESSION_TTL_SECONDS, httponly=True, samesite="lax", secure=secure, path="/")
     # readable by JS for header injection
     response.set_cookie(CSRF_COOKIE_NAME, csrf, max_age=SESSION_TTL_SECONDS, httponly=False, samesite="lax", secure=secure, path="/")
@@ -725,6 +809,10 @@ async def _resolve_principal(request: Request) -> dict[str, Any]:
     sess = await iam_get_session(sid) if sid else None
     if not sess or bool(sess.get("revoked")):
         return {"authenticated": False}
+    stored_token_hash = str(sess.get("session_token_hash") or "")
+    presented_token_hash = hashlib.sha256(token.encode()).hexdigest()
+    if not stored_token_hash or not hmac.compare_digest(stored_token_hash, presented_token_hash):
+        return {"authenticated": False}
     expires_at = sess.get("expires_at")
     if expires_at:
         try:
@@ -733,8 +821,8 @@ async def _resolve_principal(request: Request) -> dict[str, Any]:
                 exp_dt = exp_dt.replace(tzinfo=timezone.utc)
             if exp_dt < datetime.now(timezone.utc):
                 return {"authenticated": False}
-        except Exception:
-            pass
+        except (TypeError, ValueError):
+            return {"authenticated": False}
     user_id = str(payload.get("uid") or sess.get("user_id") or "")
     user = await iam_get_user(user_id) if user_id else None
     if not user or not bool(user.get("is_active", True)):
@@ -763,18 +851,26 @@ async def _resolve_principal(request: Request) -> dict[str, Any]:
 
 
 def _required_permission(method: str, path: str) -> str | None:
-    candidates = [(m, pfx, perm) for (m, prefixes, perm) in RBAC_RULES for pfx in prefixes if m == method and path.startswith(pfx)]
+    normalized_method = "GET" if method.upper() == "HEAD" else method.upper()
+    candidates = [
+        (len(pfx), perm)
+        for rule_method, prefixes, perm in RBAC_RULES
+        if rule_method == normalized_method
+        for pfx in prefixes
+        if path == (pfx.rstrip("/") or "/")
+        or path.startswith((pfx.rstrip("/") or "/") + "/")
+    ]
     if not candidates:
-        return None
-    # longest prefix wins
-    candidates.sort(key=lambda x: len(x[1]), reverse=True)
-    return candidates[0][2]
+        return "system.unclassified"
+    return max(candidates, key=lambda candidate: candidate[0])[1]
 
 
 def _has_permission(principal: dict[str, Any], permission: str | None) -> bool:
     if not permission:
-        return True
+        return False
     perms = set(principal.get("permissions") or [])
+    if permission == "system.unclassified":
+        return permission in perms
     if "*" in perms or principal.get("role") == "SUPERADMIN":
         return True
     return permission in perms
@@ -784,6 +880,16 @@ def _csrf_valid(request: Request) -> bool:
     cookie = request.cookies.get(CSRF_COOKIE_NAME, "")
     header = request.headers.get("X-CSRF-Token") or request.headers.get("X-CSRFToken") or ""
     return bool(cookie) and bool(header) and secrets.compare_digest(cookie, header)
+
+
+def _add_security_headers(response: Response, request: Request) -> Response:
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+    if request.url.scheme == "https" or os.getenv("OMNI_ENV", "").lower() == "production":
+        response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+    return response
 
 
 @app.middleware("http")
@@ -796,34 +902,34 @@ async def security_middleware(request: Request, call_next):
         response = await call_next(request)
         # ensure csrf cookie exists for browser sessions on safe responses to pages
         if method == "GET" and not path.startswith("/api/") and request.cookies.get(SESSION_COOKIE_NAME) and not request.cookies.get(CSRF_COOKIE_NAME):
-            response.set_cookie(CSRF_COOKIE_NAME, _new_csrf_token(), max_age=SESSION_TTL_SECONDS, httponly=False, samesite="lax", secure=request.url.scheme == "https", path="/")
-        return response
+            response.set_cookie(CSRF_COOKIE_NAME, _new_csrf_token(), max_age=SESSION_TTL_SECONDS, httponly=False, samesite="lax", secure=_cookie_secure(request), path="/")
+        return _add_security_headers(response, request)
 
     principal = await _resolve_principal(request)
     request.state.principal = principal
     if not principal.get("authenticated"):
         if path.startswith("/api/"):
-            return JSONResponse(status_code=401, content={"detail": "Unauthorized"})
-        return RedirectResponse(url="/login", status_code=303)
+            return _add_security_headers(JSONResponse(status_code=401, content={"detail": "Unauthorized"}), request)
+        return _add_security_headers(RedirectResponse(url="/login", status_code=303), request)
 
     # CSRF: enforce for browser-session authenticated state-changing requests
     if method in STATE_CHANGING_METHODS and path not in _CSRF_EXEMPT_PATHS and principal.get("via") != "api_key_header":
         # allow if no browser cookie/session context? principal came from session cookie in our resolver except api_key_header
         if not _csrf_valid(request):
-            return JSONResponse(status_code=403, content={"detail": "CSRF token missing or invalid"})
+            return _add_security_headers(JSONResponse(status_code=403, content={"detail": "CSRF token missing or invalid"}), request)
 
     # RBAC
     required = _required_permission(method, path)
     if not _has_permission(principal, required):
         if path.startswith("/api/"):
-            return JSONResponse(status_code=403, content={"detail": "Forbidden", "required_permission": required})
-        return JSONResponse(status_code=403, content={"detail": "Forbidden"})
+            return _add_security_headers(JSONResponse(status_code=403, content={"detail": "Forbidden", "required_permission": required}), request)
+        return _add_security_headers(JSONResponse(status_code=403, content={"detail": "Forbidden"}), request)
 
     response = await call_next(request)
     # attach csrf cookie for authenticated browser GET pages if missing
     if method == "GET" and not path.startswith("/api/") and request.cookies.get(SESSION_COOKIE_NAME) and not request.cookies.get(CSRF_COOKIE_NAME):
-        response.set_cookie(CSRF_COOKIE_NAME, _new_csrf_token(), max_age=SESSION_TTL_SECONDS, httponly=False, samesite="lax", secure=request.url.scheme == "https", path="/")
-    return response
+        response.set_cookie(CSRF_COOKIE_NAME, _new_csrf_token(), max_age=SESSION_TTL_SECONDS, httponly=False, samesite="lax", secure=_cookie_secure(request), path="/")
+    return _add_security_headers(response, request)
 
 
 
@@ -841,21 +947,6 @@ def get_current_principal(request: Request) -> dict[str, Any]:
     if not p or not p.get("authenticated"):
         raise HTTPException(status_code=401, detail="Unauthorized")
     return p
-
-
-@app.get("/logout")
-async def logout(request: Request):
-    token = request.cookies.get(SESSION_COOKIE_NAME, "")
-    payload = _decode_session_token(token) or {}
-    sid = str(payload.get("sid") or "")
-    if sid and sid != "legacy":
-        try:
-            await iam_revoke_session(sid)
-        except Exception:
-            pass
-    response = RedirectResponse(url="/login", status_code=303)
-    _clear_auth_cookies(response)
-    return response
 
 
 @app.get("/login", response_class=HTMLResponse)
@@ -891,6 +982,8 @@ async def _bootstrap_iam_if_possible() -> None:
 @app.post("/api/auth/login")
 async def login(request: Request, payload: LoginRequest, response: Response) -> dict[str, Any]:
     """Authenticate via internal API key (compat) or IAM user credentials."""
+    if not _auth_secret():
+        raise HTTPException(status_code=503, detail="SESSION_SECRET must contain at least 32 characters.")
     await _bootstrap_iam_if_possible()
     expected_api_key = os.getenv("INTERNAL_API_KEY", "").strip()
 
@@ -941,10 +1034,7 @@ async def logout_api(request: Request, response: Response) -> dict[str, str]:
     payload = _decode_session_token(token) or {}
     sid = str(payload.get("sid") or "")
     if sid and sid != "legacy":
-        try:
-            await iam_revoke_session(sid)
-        except Exception:
-            pass
+        await iam_revoke_session(sid)
     _clear_auth_cookies(response)
     return {"status": "ok"}
 
@@ -957,7 +1047,7 @@ async def auth_me(principal: dict[str, Any] = Depends(get_current_principal)) ->
 @app.get("/api/auth/csrf")
 async def auth_csrf(request: Request, response: Response) -> dict[str, str]:
     token = request.cookies.get(CSRF_COOKIE_NAME) or _new_csrf_token()
-    response.set_cookie(CSRF_COOKIE_NAME, token, max_age=SESSION_TTL_SECONDS, httponly=False, samesite="lax", secure=request.url.scheme == "https", path="/")
+    response.set_cookie(CSRF_COOKIE_NAME, token, max_age=SESSION_TTL_SECONDS, httponly=False, samesite="lax", secure=_cookie_secure(request), path="/")
     return {"csrf_token": token}
 
 
@@ -995,9 +1085,15 @@ async def settings_page(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(request, "settings.html", {"request": request, "settings": await list_settings()})
 
 
+@app.get("/healthz")
+async def liveness_check() -> dict[str, str]:
+    """Public liveness endpoint with no dependency or configuration details."""
+    return {"status": "ok"}
+
+
 @app.get("/api/health")
 async def health_check() -> dict[str, Any]:
-    """Readiness and dependency health endpoint."""
+    """Authenticated readiness and dependency health endpoint."""
     try:
         await count_dashboard_metrics()
         database_healthy = True
@@ -1179,15 +1275,31 @@ async def finance_dashboard_metrics() -> dict[str, Any]:
     return await finance_overview()
 
 
+@app.post("/api/finance/contribution-margin")
+async def finance_contribution_margin(
+    payload: FinanceContributionMarginRequest,
+) -> dict[str, Any]:
+    """Calculate scenario contribution from supplied amounts; this is not actualized BI."""
+    return calculate_contribution_margin(**payload.model_dump())
+
+
 @app.post("/api/finance/documents")
-async def finance_document_import(payload: FinanceDocumentRequest) -> dict[str, Any]:
+async def finance_document_import(
+    payload: FinanceDocumentRequest,
+    principal: dict[str, Any] = Depends(get_current_principal),
+) -> dict[str, Any]:
     """Idempotently import an invoice, credit note, supplier invoice, or expense."""
     record = await finance_document_upsert(payload.model_dump())
     await write_log(
         "INFO",
         "finance_document_imported",
         "Finance document imported or updated.",
-        {"provider": payload.provider, "external_id": payload.external_id, "document_type": payload.document_type},
+        {
+            "provider": payload.provider,
+            "external_id": payload.external_id,
+            "document_type": payload.document_type,
+            "actor_id": principal.get("user_id"),
+        },
     )
     return record
 
@@ -1201,14 +1313,22 @@ async def finance_documents(
 
 
 @app.post("/api/finance/transactions")
-async def finance_transaction_import(payload: FinanceTransactionRequest) -> dict[str, Any]:
+async def finance_transaction_import(
+    payload: FinanceTransactionRequest,
+    principal: dict[str, Any] = Depends(get_current_principal),
+) -> dict[str, Any]:
     """Idempotently import a payment-provider or marketplace transaction."""
     record = await finance_transaction_upsert(payload.model_dump())
     await write_log(
         "INFO",
         "finance_transaction_imported",
         "Finance transaction imported or updated.",
-        {"provider": payload.provider, "external_id": payload.external_id, "transaction_type": payload.transaction_type},
+        {
+            "provider": payload.provider,
+            "external_id": payload.external_id,
+            "transaction_type": payload.transaction_type,
+            "actor_id": principal.get("user_id"),
+        },
     )
     return record
 
@@ -1222,14 +1342,21 @@ async def finance_transactions(
 
 
 @app.post("/api/finance/settlements")
-async def finance_settlement_import(payload: FinanceSettlementRequest) -> dict[str, Any]:
+async def finance_settlement_import(
+    payload: FinanceSettlementRequest,
+    principal: dict[str, Any] = Depends(get_current_principal),
+) -> dict[str, Any]:
     """Idempotently import a provider settlement without inferring accounting entries."""
     record = await finance_settlement_upsert(payload.model_dump())
     await write_log(
         "INFO",
         "finance_settlement_imported",
         "Finance settlement imported or updated.",
-        {"provider": payload.provider, "external_id": payload.external_id},
+        {
+            "provider": payload.provider,
+            "external_id": payload.external_id,
+            "actor_id": principal.get("user_id"),
+        },
     )
     return record
 
@@ -1243,7 +1370,10 @@ async def finance_settlements(
 
 
 @app.post("/api/finance/reconcile")
-async def finance_reconcile_payment(payload: FinanceReconcileRequest) -> dict[str, Any]:
+async def finance_reconcile_payment(
+    payload: FinanceReconcileRequest,
+    principal: dict[str, Any] = Depends(get_current_principal),
+) -> dict[str, Any]:
     """Match one payment to invoice records and persist the outcome for review."""
     transaction = await finance_transaction_get(payload.transaction_id)
     if transaction is None:
@@ -1278,6 +1408,17 @@ async def finance_reconcile_payment(payload: FinanceReconcileRequest) -> dict[st
             "matched_amount": result["matched_amount"],
             "details_json": {"candidate_ids": result["candidate_ids"]},
         }
+    )
+    await write_log(
+        "INFO" if result["status"] == "matched" else "WARNING",
+        "finance_reconciliation_created",
+        f"Payment reconciliation result: {result['status']}.",
+        {
+            "transaction_id": payload.transaction_id,
+            "reconciliation_id": persisted["id"],
+            "status": result["status"],
+            "actor_id": principal.get("user_id"),
+        },
     )
     return persisted
 
@@ -1527,6 +1668,21 @@ async def api_audit_log(limit: int = Query(default=200, ge=1, le=1000)):
 async def api_analytics():
     return await analytics_overview()
 
+
+# ── Scene Intelligence APIs ───────────────────────────────────────────────
+
+@app.get("/api/scene-intelligence/overview")
+async def api_scene_intelligence_overview(limit: int = Query(default=200, ge=1, le=1000), principal: dict[str, Any] = Depends(get_current_principal)):
+    from services.scene_intelligence import overview
+    return await overview(limit=limit)
+
+@app.get("/api/scene-intelligence/pulse")
+async def api_scene_intelligence_pulse(limit: int = Query(default=200, ge=1, le=1000), principal: dict[str, Any] = Depends(get_current_principal)):
+    from services.scene_intelligence import overview
+    data = await overview(limit=limit)
+    return {"status": "ok", "generated_at": data.get("generated_at"), "pulse": data.get("pulse"), "data_basis": data.get("data_basis"), "notes": data.get("notes", [])}
+
+
 @app.get("/api/bundles/intelligence")
 async def api_bundles_intelligence():
     bundles_data = await list_bundles()
@@ -1635,7 +1791,7 @@ async def pricing_recommendations():
 @app.get("/api/marketing/campaigns")
 async def list_campaigns():
     """List marketing campaigns."""
-    from services.database import get_connection
+    from database import get_connection
     
     async with get_connection() as db:
         cursor = await db.execute(
@@ -1670,7 +1826,7 @@ async def generate_product_content(product_id: int):
 @app.get("/api/marketing/products/{product_id}/content")
 async def get_product_content(product_id: int):
     """Get stored marketing content for a product."""
-    from services.database import get_connection
+    from database import get_connection
     
     async with get_connection() as db:
         cursor = await db.execute(
@@ -3271,6 +3427,95 @@ async def api_integrations_status() -> dict[str, Any]:
                  "scheduler": runtime.scheduler_task is not None and not runtime.scheduler_task.done() if getattr(runtime, "scheduler_task", None) else False},
         "event_bus": (runtime.event_bus.get_stats() if getattr(runtime, "event_bus", None) else {"running": False}),
     }
+
+
+
+# ---------------------------------------------------------------------------
+# Omnichannel CRM & Communication Center APIs
+# ---------------------------------------------------------------------------
+
+class CrmIngestPayload(BaseModel):
+    channel: str = Field(min_length=1, max_length=32)
+    direction: str = Field(default="inbound", max_length=16)
+    payload: dict[str, Any] | list[dict[str, Any]] = Field(default_factory=dict)
+
+class CrmActionPayload(BaseModel):
+    action: str = Field(min_length=1, max_length=64)
+    order_id: str = Field(min_length=1, max_length=64)
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+class CrmAppointmentPayload(BaseModel):
+    customer_id: str = ""
+    thread_id: str = ""
+    order_id: str = ""
+    title: str = Field(min_length=1, max_length=200)
+    description: str = Field(default="", max_length=4000)
+    starts_at: str = Field(min_length=1, max_length=64)
+    ends_at: str | None = None
+    status: str = Field(default="scheduled", max_length=32)
+    channel: str = Field(default="email", max_length=32)
+    location: str = Field(default="", max_length=256)
+    metadata_json: dict[str, Any] = Field(default_factory=dict)
+
+@app.get("/ui/crm", response_class=HTMLResponse)
+async def ui_crm(request: Request):
+    return templates.TemplateResponse(request, "crm_center.html", {"request": request})
+
+@app.get("/api/crm/overview")
+async def api_crm_overview(user: dict[str, Any] = Depends(require_permission("products.read"))):
+    from services.crm_service import get_crm_overview
+    return {"status": "ok", **await get_crm_overview()}
+
+@app.get("/api/crm/customers")
+async def api_crm_customers(limit: int = Query(default=100, ge=1, le=500), q: str | None = Query(default=None), user: dict[str, Any] = Depends(require_permission("products.read"))):
+    from database import crm_list_customers
+    return {"status": "ok", "items": await crm_list_customers(limit=limit, query=q)}
+
+@app.get("/api/crm/threads")
+async def api_crm_threads(limit: int = Query(default=100, ge=1, le=500), channel: str | None = Query(default=None), status: str | None = Query(default=None), user: dict[str, Any] = Depends(require_permission("products.read"))):
+    from services.crm_service import list_threads_enriched
+    return {"status": "ok", "items": await list_threads_enriched(limit=limit, channel=channel, status=status)}
+
+@app.get("/api/crm/threads/{thread_id}/messages")
+async def api_crm_thread_messages(thread_id: str, limit: int = Query(default=200, ge=1, le=1000), user: dict[str, Any] = Depends(require_permission("products.read"))):
+    from database import crm_list_messages
+    return {"status": "ok", "items": await crm_list_messages(thread_id=thread_id, limit=limit)}
+
+@app.post("/api/crm/ingest")
+async def api_crm_ingest(payload: CrmIngestPayload, user: dict[str, Any] = Depends(require_permission("system.configure"))):
+    from services.crm_adapters import ingest_webhook
+    res = await ingest_webhook(payload.channel, payload.payload, direction=payload.direction)
+    return {"status": "ok", **res}
+
+@app.post("/api/crm/sync/{channel}")
+async def api_crm_sync(channel: str, user: dict[str, Any] = Depends(require_permission("system.configure"))):
+    from services.crm_adapters import sync_channel
+    return {"status": "ok", "result": await sync_channel(channel)}
+
+@app.get("/api/crm/appointments")
+async def api_crm_appointments(limit: int = Query(default=100, ge=1, le=500), user: dict[str, Any] = Depends(require_permission("products.read"))):
+    from database import crm_list_appointments
+    return {"status": "ok", "items": await crm_list_appointments(limit=limit)}
+
+@app.post("/api/crm/appointments")
+async def api_crm_appointments_create(payload: CrmAppointmentPayload, user: dict[str, Any] = Depends(require_permission("system.configure"))):
+    from services.crm_service import create_appointment
+    actor = str(user.get("email") or user.get("username") or user.get("id") or "admin")
+    data = payload.model_dump(); data["created_by"] = actor
+    appt = await create_appointment(data)
+    return {"status": "ok", "appointment": appt}
+
+@app.post("/api/crm/actions")
+async def api_crm_action(payload: CrmActionPayload, user: dict[str, Any] = Depends(require_permission("system.configure"))):
+    from services.crm_service import guarded_manual_action
+    actor = str(user.get("email") or user.get("username") or user.get("id") or "admin")
+    try:
+        res = await guarded_manual_action(action=payload.action, order_id=payload.order_id, actor=actor, payload=payload.payload)
+        return {"status": "ok", **res}
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 

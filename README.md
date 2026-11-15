@@ -17,14 +17,15 @@ Windows:
 start.bat
 ```
 
-The startup script generates a private `.env` with random database and internal API secrets on first launch, builds the image, waits for PostgreSQL and verifies application health.
+The startup script generates a private `.env` with random database, API, and session-signing secrets on first launch, builds the image, waits for PostgreSQL, and verifies liveness.
 
 Open:
 
 - Dashboard / Global Control Center: http://localhost:8000
 - Login: use the generated `INTERNAL_API_KEY` from `.env`
 - API documentation: http://localhost:8000/docs
-- Health endpoint: http://localhost:8000/api/health
+- Public liveness endpoint: http://localhost:8000/healthz
+- Authenticated readiness endpoint: http://localhost:8000/api/health
 
 ## Included stack
 
@@ -52,9 +53,11 @@ MATTERHORN_API_TOKEN=your-token
 # Follow application logs
 docker compose logs -f omni-core
 
-# Check runtime state
+# Check liveness (public; no dependency details)
+curl http://localhost:8000/healthz
+
+# Check runtime state (authenticated with X-Internal-API-Key)
 docker compose ps
-curl http://localhost:8000/api/health
 
 # Stop without losing data
 docker compose down
@@ -97,7 +100,7 @@ Advanced options: `deploy/shopware-proxmox/README.md`, `deploy/shopware-proxmox/
 
 ## Control Plane UI
 
-The root route is the unified Global Control Center. Browser access is authenticated through a short-lived, HttpOnly signed session derived from `INTERNAL_API_KEY`. Direct API clients can continue to authenticate with `X-Internal-API-Key`.
+The root route is the unified Global Control Center. Browser access is authenticated through a short-lived, HttpOnly signed session using the separate `SESSION_SECRET` from `.env`; keep this value private and at least 32 characters long. Direct API clients can continue to authenticate with `X-Internal-API-Key`. Readiness, API docs, and OpenAPI are authenticated; `/healthz` exposes only liveness.
 
 Main operational areas:
 - Global Control Center: system, ERP/BI, AI, marketplace and security telemetry.
@@ -105,5 +108,10 @@ Main operational areas:
 - Settings: integration configuration with masked secrets.
 - OmniRoute: provider, model and routing administration.
 - Google Merchant: account and export operations.
+- Finance API: idempotent document, payment and settlement ingestion plus reviewable payment-to-invoice reconciliation.
 
 The dashboard polls control-center telemetry every 15 seconds and exposes safe operational actions for Matterhorn import and trend analysis.
+
+Finance endpoints, payloads, permissions and current scope are documented in [docs/FINANCE.md](docs/FINANCE.md). The finance layer integrates records with accounting providers; it is not bookkeeping or tax software.
+
+CRM endpoints, guardrails and channel ingestion are documented in [docs/CRM.md](docs/CRM.md). Scene Intelligence (pulse/radar/trends) aggregates stored real records via `/api/scene-intelligence/*` and the News & Events UI; no external signals are fabricated.

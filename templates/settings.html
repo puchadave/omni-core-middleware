@@ -1,46 +1,152 @@
 {% extends "base.html" %}
 {% block title %}Einstellungen | Omni-Core Admin{% endblock %}
 {% block content %}
-<div x-data="settingsPage()" x-init="load()" class="space-y-4 max-w-7xl mx-auto">
+<div x-data="settingsPage()" x-init="init()" class="space-y-4 max-w-7xl mx-auto">
   <div class="flex flex-col md:flex-row md:items-end md:justify-between gap-3">
-    <div><h1 class="text-2xl md:text-3xl font-bold">Systemeinstellungen</h1><p class="text-slate-400">Konfiguration, Integrationsparameter und Secrets (maskiert) verwalten.</p></div>
-    <div class="flex gap-2"><button @click="load()" class="btn btn-secondary">Aktualisieren</button><a href="/ui/integrations" class="btn btn-secondary">Integrationsstatus</a></div>
-  </div>
-
-  <div class="card p-4 space-y-3">
-    <h2 class="font-semibold">Setting setzen / ändern</h2>
-    <div class="grid md:grid-cols-4 gap-3">
-      <div><label class="label">Key</label><input x-model="key" class="input font-mono" placeholder="omniroute_url"></div>
-      <div class="md:col-span-2"><label class="label">Value</label><input x-model="value" class="input" placeholder="Wert"></div>
-      <div class="flex items-end"><button @click="save()" class="btn btn-primary w-full" :disabled="saving">Speichern</button></div>
+    <div>
+      <h1 class="text-2xl md:text-3xl font-bold">Geführte Systemeinstellungen</h1>
+      <p class="text-slate-400">Interaktive Konfiguration aller Integrationen. Secrets werden maskiert angezeigt/gespeichert; leere Werte werden nicht erfunden.</p>
     </div>
-    <p class="text-xs text-slate-500">Bekannte Schlüssel (Beispiele): <code>omniroute_url</code>, <code>omniroute_api_key</code>, <code>matterhorn_feed_url</code>, <code>matterhorn_api_token</code>. Secrets werden in der Anzeige maskiert.</p>
-    <div x-show="msg" class="text-sm" :class="err?'text-red-300':'text-emerald-300'" x-text="msg"></div>
+    <div class="flex gap-2">
+      <button @click="load()" class="btn btn-secondary">Aktualisieren</button>
+      <a href="/ui/integrations" class="btn btn-secondary">Integrationsstatus</a>
+    </div>
   </div>
 
-  <div class="card p-4">
-    <div class="flex items-center justify-between mb-3"><h2 class="font-semibold">Aktuelle Settings</h2><input x-model="q" class="input max-w-xs" placeholder="Filtern…"></div>
-    <template x-if="error"><div class="text-red-300 text-sm mb-2" x-text="error"></div></template>
-    <div class="table-wrap">
-      <table class="tbl">
-        <thead><tr><th>Key</th><th>Value</th><th>Aktion</th></tr></thead>
-        <tbody>
-          <template x-for="k in keys()" :key="k">
-            <tr>
-              <td class="font-mono text-xs" x-text="k"></td>
-              <td class="break-all" x-text="settings[k]"></td>
-              <td><button class="text-indigo-400 hover:text-indigo-300 text-sm" @click="edit(k)">Bearbeiten</button></td>
-            </tr>
+  <template x-if="banner"><div class="rounded border px-3 py-2 text-sm" :class="bannerErr?'border-red-700 bg-red-900/30 text-red-200':'border-emerald-700 bg-emerald-900/20 text-emerald-200'" x-text="banner"></div></template>
+  <template x-if="error"><div class="rounded border border-red-700 bg-red-900/30 p-3 text-sm text-red-200" x-text="error"></div></template>
+
+  <div class="grid lg:grid-cols-3 gap-4">
+    <div class="lg:col-span-2 space-y-4">
+      <template x-for="group in groups" :key="group.id">
+        <div class="card p-4">
+          <div class="flex items-start justify-between gap-2 mb-2">
+            <div>
+              <h2 class="font-semibold" x-text="group.title"></h2>
+              <p class="text-xs text-slate-400" x-text="group.help"></p>
+            </div>
+            <span class="text-[10px] px-2 py-0.5 rounded border" :class="groupStatus(group).cls" x-text="groupStatus(group).label"></span>
+          </div>
+          <div class="grid md:grid-cols-2 gap-3">
+            <template x-for="f in group.fields" :key="f.key">
+              <div :class="f.full?'md:col-span-2':''">
+                <label class="label flex items-center gap-1"><span x-text="f.label"></span><span x-show="f.secret" class="text-amber-400 text-[10px]">(Secret)</span></label>
+                <template x-if="f.type==='select'">
+                  <select class="select" x-model="form[f.key]">
+                    <option value="">— nicht gesetzt —</option>
+                    <template x-for="opt in f.options" :key="opt.value"><option :value="opt.value" x-text="opt.label"></option></template>
+                  </select>
+                </template>
+                <template x-if="f.type==='textarea'">
+                  <textarea class="input font-mono text-xs" rows="3" x-model="form[f.key]" :placeholder="f.placeholder||''"></textarea>
+                </template>
+                <template x-if="f.type!=='select' && f.type!=='textarea'">
+                  <input class="input" :type="f.secret && !revealed[f.key] ? 'password' : 'text'" x-model="form[f.key]" :placeholder="f.placeholder||''" autocomplete="off">
+                </template>
+                <div class="flex items-center justify-between mt-1">
+                  <p class="text-[11px] text-slate-500" x-text="f.help||''"></p>
+                  <button type="button" x-show="f.secret" @click="revealed[f.key]=!revealed[f.key]" class="text-[11px] text-indigo-400 hover:text-indigo-300" x-text="revealed[f.key]?'verbergen':'anzeigen'"></button>
+                </div>
+                <div class="text-[11px] text-slate-500">Key: <code x-text="f.key"></code> · Aktuell: <span x-text="displayValue(f.key)"></span></div>
+              </div>
+            </template>
+          </div>
+          <div class="mt-3 flex justify-end"><button @click="saveGroup(group)" class="btn btn-primary" :disabled="saving">Gruppe speichern</button></div>
+        </div>
+      </template>
+    </div>
+
+    <div class="space-y-4">
+      <div class="card p-4">
+        <h2 class="font-semibold mb-2">Integrationsstatus (Live)</h2>
+        <template x-if="intLoading"><div class="text-sm text-slate-400">Lade…</div></template>
+        <div class="space-y-2 text-sm">
+          <template x-for="(val, name) in integrations" :key="name">
+            <div class="flex items-center justify-between border-b border-slate-800 pb-1">
+              <span class="capitalize" x-text="name"></span>
+              <span class="text-xs px-2 py-0.5 rounded" :class="statusCls(val)" x-text="statusLabel(val)"></span>
+            </div>
           </template>
-          <tr x-show="keys().length===0"><td colspan="3" class="p-6 text-center text-slate-400">Keine Settings gefunden.</td></tr>
-        </tbody>
-      </table>
+          <div x-show="!intLoading && Object.keys(integrations).length===0" class="text-slate-400">Keine Statusdaten.</div>
+        </div>
+        <p class="text-[11px] text-slate-500 mt-2">Status basiert auf vorhandener Konnektivität/Konfiguration; keine externen Aufrufe werden erfunden.</p>
+      </div>
+
+      <div class="card p-4">
+        <h2 class="font-semibold mb-2">Erweitert: einzelnes Setting</h2>
+        <label class="label">Key</label><input x-model="rawKey" class="input font-mono text-xs" placeholder="custom_key">
+        <label class="label mt-2">Value</label><textarea x-model="rawVal" class="input text-xs" rows="3" placeholder="Wert"></textarea>
+        <button @click="saveRaw()" class="btn btn-secondary mt-2 w-full" :disabled="saving">Speichern</button>
+      </div>
+
+      <div class="card p-4">
+        <h2 class="font-semibold mb-2">Alle Keys (gefiltert)</h2>
+        <input x-model="q" class="input mb-2" placeholder="Filtern…">
+        <div class="max-h-72 overflow-auto border border-slate-800 rounded">
+          <table class="tbl text-xs"><tbody>
+            <template x-for="k in keys()" :key="k"><tr><td class="font-mono" x-text="k"></td><td class="break-all" x-text="settings[k]"></td><td><button class="text-indigo-400" @click="editKey(k)">Edit</button></td></tr></template>
+            <tr x-show="keys().length===0"><td colspan="3" class="p-3 text-slate-400 text-center">Keine Einträge.</td></tr>
+          </tbody></table>
+        </div>
+      </div>
     </div>
   </div>
 </div>
 {% endblock %}
 {% block scripts %}
 <script>
-function settingsPage(){return{settings:{},key:'',value:'',q:'',msg:'',err:false,error:'',saving:false,async load(){this.error=''; try{this.settings=await apiFetch('/api/settings')||{};}catch(e){this.error=e.message; this.settings={};}},keys(){const q=(this.q||'').toLowerCase(); return Object.keys(this.settings||{}).filter(k=>!q||k.toLowerCase().includes(q)||String(this.settings[k]||'').toLowerCase().includes(q)).sort();},edit(k){this.key=k; this.value=this.settings[k]==='********'?'':(this.settings[k]||''); window.scrollTo({top:0,behavior:'smooth'});},async save(){if(!this.key){toast('Key erforderlich','error'); return;} this.saving=true; this.msg=''; this.err=false; try{await apiFetch('/api/settings',{method:'POST',body:JSON.stringify({key:this.key,value:this.value})}); this.msg='Gespeichert.'; toast('Setting gespeichert','success'); await this.load();}catch(e){this.err=true; this.msg=e.message; toast(e.message,'error')} this.saving=false;}}}
+function settingsPage(){return{
+  settings:{}, integrations:{}, form:{}, revealed:{}, q:'', rawKey:'', rawVal:'',
+  saving:false, error:'', banner:'', bannerErr:false, intLoading:false,
+  groups:[
+    {id:'core', title:'Kern & OmniRoute (LLM/Provider)', help:'Basis-Routing für KI/Agenten. Ohne gültige Provider-Keys keine echten Modellaufrufe (keine erfundenen Antworten).', fields:[
+      {key:'omniroute_url', label:'OmniRoute URL', placeholder:'http://omniroute:3000'},
+      {key:'omniroute_api_key', label:'OmniRoute API Key', secret:true, placeholder:'(secret)'},
+      {key:'default_llm_model', label:'Standard LLM-Modell', placeholder:'z.B. gpt-4o-mini'},
+      {key:'default_image_model', label:'Standard Bildmodell', placeholder:'z.B. flux/…'},
+    ]},
+    {id:'matterhorn', title:'Matterhorn / Lieferant', help:'Quelle für Produkt-Feed/Import. Echte URL/Credentials erforderlich.', fields:[
+      {key:'matterhorn_feed_url', label:'Matterhorn Feed/Export URL', placeholder:'https://…/xmloffer', full:true},
+      {key:'matterhorn_api_token', label:'Matterhorn API Token', secret:true, placeholder:'(optional/secret)'},
+      {key:'matterhorn_default_margin', label:'Standard-Marge (%)', placeholder:'30'},
+    ]},
+    {id:'shopware', title:'Shopware 6', help:'Shop-Integration für Sync/Export.', fields:[
+      {key:'shopware_url', label:'Shopware Base URL', placeholder:'https://shop.example.com'},
+      {key:'shopware_access_token', label:'Shopware Access Token', secret:true},
+      {key:'shopware_sales_channel_id', label:'Sales Channel ID', placeholder:'(uuid)'},
+    ]},
+    {id:'market', title:'Marktplätze (Amazon/eBay)', help:'Nur aktiv mit autorisierten API-Credentials/Rollen.', fields:[
+      {key:'amazon_seller_id', label:'Amazon Seller ID', placeholder:''},
+      {key:'amazon_sp_api_refresh_token', label:'Amazon SP-API Refresh Token', secret:true},
+      {key:'ebay_oauth_token', label:'eBay OAuth Token', secret:true},
+      {key:'marketplace_sync_enabled', label:'Marketplace Sync', type:'select', options:[{value:'true',label:'Aktiv'},{value:'false',label:'Inaktiv'}]},
+    ]},
+    {id:'crm', title:'CRM & Kommunikation (E-Mail/Messenger)', help:'Für omnichannel Inbox/Sync/Webhooks. Versand/Empfang nur bei gültiger Konfiguration.', fields:[
+      {key:'email_imap_host', label:'IMAP Host', placeholder:'imap.example.com'},
+      {key:'email_username', label:'E-Mail Benutzer', placeholder:'support@example.com'},
+      {key:'email_password', label:'E-Mail Passwort', secret:true},
+      {key:'smtp_host', label:'SMTP Host', placeholder:'smtp.example.com'},
+      {key:'smtp_user', label:'SMTP Benutzer', placeholder:''},
+      {key:'smtp_password', label:'SMTP Passwort', secret:true},
+      {key:'messenger_page_token', label:'Messenger/Page Token', secret:true},
+    ]},
+    {id:'ops', title:'Betrieb & Sicherheit', help:'Allgemeine Betriebsparameter. Keine Zahlungs-/Fulfillment-Guardrails umgehen.', fields:[
+      {key:'public_base_url', label:'Öffentliche Basis-URL', placeholder:'https://…', full:true},
+      {key:'log_level', label:'Log-Level', type:'select', options:[{value:'INFO',label:'INFO'},{value:'WARNING',label:'WARNING'},{value:'ERROR',label:'ERROR'},{value:'DEBUG',label:'DEBUG'}]},
+      {key:'feature_scene_intelligence', label:'Scene Intelligence', type:'select', options:[{value:'true',label:'Aktiv'},{value:'false',label:'Inaktiv'}], help:'Aktiviert Auswertung/Anzeige gespeicherter Scene-Daten (keine erfundenen Quellen).'},
+    ]},
+  ],
+  async init(){await this.load();},
+  async load(){this.error=''; try{const [s,i]=await Promise.all([apiFetch('/api/settings').catch(e=>{throw e;}), apiFetch('/api/integrations/status').catch(()=>({}))]); this.settings=s||{}; this.integrations=i||{}; this.seedForm();}catch(e){this.error=e.message; this.settings={};}},
+  seedForm(){ for(const g of this.groups){ for(const f of g.fields){ const v=this.settings[f.key]; this.form[f.key]=(v && v!=='********')?v:''; } } },
+  displayValue(k){ const v=this.settings[k]; return (v===undefined||v===null||v==='') ? '— nicht gesetzt —' : v; },
+  keys(){const q=(this.q||'').toLowerCase(); return Object.keys(this.settings||{}).filter(k=>!q||k.toLowerCase().includes(q)||String(this.settings[k]||'').toLowerCase().includes(q)).sort();},
+  editKey(k){this.rawKey=k; this.rawVal=this.settings[k]==='********'?'':(this.settings[k]||''); window.scrollTo({top:0,behavior:'smooth'});},
+  groupStatus(g){ const known=g.fields.map(f=>this.settings[f.key]).filter(v=>v && v!=='********' && v!==''); if(known.length===0) return {label:'nicht konfiguriert',cls:'border-slate-700 text-slate-400'}; if(known.length<g.fields.filter(f=>!f.optional).length) return {label:'teilweise',cls:'border-amber-700 text-amber-300'}; return {label:'konfiguriert',cls:'border-emerald-700 text-emerald-300'}; },
+  statusCls(v){ const s=(typeof v==='string'?v:(v&&v.status)||'').toLowerCase(); if(['ok','connected','healthy','active','configured'].includes(s)) return 'bg-emerald-900/40 text-emerald-300'; if(['error','failed','down'].includes(s)) return 'bg-red-900/40 text-red-300'; return 'bg-slate-800 text-slate-300'; },
+  statusLabel(v){ return typeof v==='string'?v:(v&&(v.status||v.state||JSON.stringify(v))||'unbekannt'); },
+  async saveGroup(group){ this.saving=true; this.banner=''; this.bannerErr=false; try{ let n=0; for(const f of group.fields){ const val=this.form[f.key]; if(val===undefined) continue; if(f.secret && (val==='' || val===null)) continue; await apiFetch('/api/settings',{method:'POST',body:JSON.stringify({key:f.key,value:String(val)})}); n++; } this.banner=group.title+': '+n+' Einstellung(en) gespeichert.'; await this.load(); }catch(e){ this.bannerErr=true; this.banner='Fehler: '+e.message; } this.saving=false; },
+  async saveRaw(){ if(!this.rawKey){this.bannerErr=true; this.banner='Key erforderlich'; return;} this.saving=true; try{ await apiFetch('/api/settings',{method:'POST',body:JSON.stringify({key:this.rawKey,value:this.rawVal})}); this.bannerErr=false; this.banner='Gespeichert.'; this.rawKey=''; this.rawVal=''; await this.load(); }catch(e){ this.bannerErr=true; this.banner='Fehler: '+e.message; } this.saving=false; },
+}}
 </script>
 {% endblock %}

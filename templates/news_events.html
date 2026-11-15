@@ -1,62 +1,96 @@
 {% extends "base.html" %}
-{% block title %}News & Events | Omni-Core{% endblock %}
+{% block title %}Scene Intelligence & News | Omni-Core{% endblock %}
 {% block content %}
-<div x-data="pageState()" x-init="loadAll()" class="space-y-4 max-w-7xl mx-auto">
+<div x-data="scenePage()" x-init="init()" class="space-y-4 max-w-7xl mx-auto">
   <div class="flex flex-col md:flex-row md:items-end md:justify-between gap-3">
     <div>
-      <h1 class="text-2xl md:text-3xl font-bold">News & Events</h1>
-      <p class="text-slate-400">Quellen und kuratierte News/Event-Signale.</p>
+      <h1 class="text-2xl md:text-3xl font-bold">Scene Intelligence / News & Events</h1>
+      <p class="text-slate-400">Pulse, Radar und Trends aus gespeicherten, realen Quellen/Items (keine erfundenen Daten).</p>
     </div>
-    <button @click="loadAll()" class="bg-slate-700 hover:bg-slate-600 px-4 py-2 rounded text-sm">Aktualisieren</button>
+    <button @click="loadAll()" class="btn btn-secondary">Aktualisieren</button>
   </div>
 
-  <template x-if="globalError"><div class="rounded border border-red-700 bg-red-900/30 p-3 text-sm text-red-200" x-text="globalError"></div></template>
+  <template x-if="msg"><div class="rounded border px-3 py-2 text-sm" :class="err?'border-red-700 bg-red-900/30 text-red-200':'border-emerald-700 bg-emerald-900/20 text-emerald-200'" x-text="msg"></div></template>
+
+  <div class="grid grid-cols-2 md:grid-cols-5 gap-4">
+    <div class="card p-4"><div class="text-xs text-slate-400 uppercase">Scene Pulse</div><div class="text-2xl font-bold mt-1" x-text="(intel.pulse||{}).score ?? '—'"></div><div class="text-xs text-slate-500">Index (0–100, gespeichert)</div></div>
+    <div class="card p-4"><div class="text-xs text-slate-400 uppercase">Quellen</div><div class="text-2xl font-bold mt-1" x-text="(intel.sources||{}).total ?? 0"></div><div class="text-xs text-slate-500" x-text="'aktiv: '+((intel.sources||{}).enabled??0)"></div></div>
+    <div class="card p-4"><div class="text-xs text-slate-400 uppercase">Items/Signale</div><div class="text-2xl font-bold mt-1" x-text="(intel.items||{}).total ?? 0"></div></div>
+    <div class="card p-4"><div class="text-xs text-slate-400 uppercase">Knowledge</div><div class="text-2xl font-bold mt-1" x-text="(intel.knowledge||{}).total ?? 0"></div></div>
+    <div class="card p-4"><div class="text-xs text-slate-400 uppercase">Datenbasis</div><div class="text-sm mt-1" x-text="intel.data_basis||'—'"></div></div>
+  </div>
+
+  <template x-if="(intel.notes||[]).length"><div class="rounded border border-amber-700 bg-amber-900/20 p-3 text-sm text-amber-200"><template x-for="n in intel.notes" :key="n"><div x-text="n"></div></template></div></template>
+
+  <div class="grid lg:grid-cols-3 gap-4">
+    <div class="card p-4">
+      <h2 class="font-semibold mb-2">Radar (Typen)</h2>
+      <div class="space-y-1 text-sm"><template x-for="r in intel.radar||[]" :key="r.kind"><div class="flex justify-between border-b border-slate-800 pb-1"><span class="capitalize" x-text="r.kind"></span><span x-text="r.count"></span></div></template><div x-show="!(intel.radar||[]).length" class="text-slate-400">Keine Signale.</div></div>
+      <h2 class="font-semibold mt-4 mb-2">Trends (Kategorien)</h2>
+      <div class="space-y-1 text-sm"><template x-for="t in intel.trends||[]" :key="t.category"><div class="flex justify-between border-b border-slate-800 pb-1"><span x-text="t.category"></span><span x-text="t.count"></span></div></template><div x-show="!(intel.trends||[]).length" class="text-slate-400">Keine Trends.</div></div>
+    </div>
+
+    <div class="card p-4 lg:col-span-2">
+      <h2 class="font-semibold mb-2">Top-Signale (gespeichert)</h2>
+      <div class="overflow-auto max-h-96 border border-slate-800 rounded">
+        <table class="tbl"><thead><tr><th>Typ</th><th>Titel</th><th>Kategorie</th><th>Rel.</th></tr></thead><tbody>
+          <template x-for="i in intel.top_signals||[]" :key="i.id"><tr>
+            <td class="capitalize text-xs" x-text="i._kind||'news'"></td>
+            <td><div class="font-medium" x-text="i.title||'—'"></div><div class="text-xs text-slate-500 truncate max-w-md" x-text="i.summary||i.url||''"></div></td>
+            <td class="text-xs" x-text="i.category||'—'"></td>
+            <td class="text-xs" x-text="i._relevance"></td>
+          </tr></template>
+          <tr x-show="!(intel.top_signals||[]).length"><td colspan="4" class="p-4 text-center text-slate-400">Keine gespeicherten Signale.</td></tr>
+        </tbody></table>
+      </div>
+      <p class="text-xs text-slate-500 mt-2" x-text="(intel.pulse||{}).explanation||''"></p>
+    </div>
+  </div>
 
   <div class="grid lg:grid-cols-2 gap-4">
-    <template x-for="ep in endpoints" :key="ep.url">
-      <div class="bg-slate-900 border border-slate-800 rounded-lg p-4">
-        <div class="flex items-center justify-between mb-2">
-          <h2 class="font-semibold" x-text="ep.label"></h2>
-          <span class="text-xs" :class="ep.state==='ok'?'text-emerald-400':(ep.state==='error'?'text-red-400':(ep.state==='empty'?'text-amber-400':'text-slate-400'))" x-text="ep.state"></span>
-        </div>
-        <div class="text-xs text-slate-500 mb-2" x-text="ep.url"></div>
-        <template x-if="ep.state==='loading'"><div class="text-sm text-slate-400">Lade…</div></template>
-        <template x-if="ep.state==='error'"><div class="text-sm text-red-300" x-text="ep.error"></div></template>
-        <template x-if="ep.state==='empty'"><div class="text-sm text-amber-300">Keine Daten / nicht konfiguriert oder leer.</div></template>
-        <template x-if="ep.state==='ok'"><pre class="text-xs bg-slate-950 border border-slate-800 rounded p-3 overflow-auto max-h-96" x-text="formatData(ep.data)"></pre></template>
+    <div class="card p-4 space-y-3">
+      <h2 class="font-semibold">Quelle hinzufügen/aktualisieren</h2>
+      <div class="grid md:grid-cols-2 gap-2">
+        <input x-model="src.name" class="input" placeholder="Name">
+        <select x-model="src.category" class="select"><option value="general">general</option><option value="festival">festival</option><option value="event">event</option><option value="release">release</option><option value="artist">artist</option><option value="label">label</option><option value="trend">trend</option></select>
+        <input x-model="src.url" class="input md:col-span-2" placeholder="URL/Feed (optional, real)">
       </div>
-    </template>
+      <label class="text-sm flex items-center gap-2"><input type="checkbox" x-model="src.enabled"> Aktiv</label>
+      <button @click="saveSource()" class="btn btn-primary" :disabled="busy">Quelle speichern</button>
+      <div class="overflow-auto max-h-48 border border-slate-800 rounded"><table class="tbl text-xs"><thead><tr><th>Name</th><th>Kategorie</th><th>Aktiv</th></tr></thead><tbody>
+        <template x-for="s in sources" :key="s.id"><tr><td x-text="s.name"></td><td x-text="s.category"></td><td x-text="s.enabled"></td></tr></template>
+        <tr x-show="sources.length===0"><td colspan="3" class="p-3 text-center text-slate-400">Keine Quellen.</td></tr>
+      </tbody></table></div>
+    </div>
+
+    <div class="card p-4 space-y-3">
+      <h2 class="font-semibold">Signal/News/Event erfassen (real)</h2>
+      <div class="grid md:grid-cols-2 gap-2">
+        <input x-model="item.title" class="input md:col-span-2" placeholder="Titel">
+        <select x-model="item.category" class="select"><option value="general">general</option><option value="festival">festival</option><option value="event">event</option><option value="release">release</option><option value="artist">artist</option><option value="label">label</option><option value="trend">trend</option></select>
+        <input x-model="item.source_id" class="input" placeholder="Source-ID (optional)">
+        <input x-model="item.url" class="input md:col-span-2" placeholder="URL (optional)">
+        <textarea x-model="item.summary" class="input md:col-span-2" rows="2" placeholder="Kurzinfo/Zusammenfassung"></textarea>
+      </div>
+      <button @click="saveItem()" class="btn btn-primary" :disabled="busy">Item speichern</button>
+      <p class="text-xs text-slate-500">Nur reale, verifizierte Informationen erfassen. Kommerzielle Relevanz/Bundle-Signale können über Kategorie/Metadata in nachgelagerten Flows bewertet werden.</p>
+    </div>
   </div>
 </div>
 {% endblock %}
 {% block scripts %}
 <script>
-function pageState(){
-  return {
-    endpoints: [{url:'/api/news/sources',label:'Quellen'},{url:'/api/news/items?limit=50',label:'Items'}],
-    globalError: '',
-    supplier: 10, calcResult: null,
-    query: '', actionResult: null, busy: false,
-    q:'', status:'',
-    setKey:'', setVal:'', actionMsg:'', actionErr:false,
-    async loadAll(){ this.globalError=''; await Promise.all(this.endpoints.map(e=>this.loadEp(e))); },
-    async loadEp(ep){
-      ep.state='loading'; ep.error=''; ep.data=null;
-      try {
-        const d = await apiFetch(ep.url);
-        ep.data = d;
-        const empty = d==null || (Array.isArray(d) && d.length===0) || (typeof d==='object' && !Array.isArray(d) && Object.keys(d).length===0);
-        ep.state = empty ? 'empty' : 'ok';
-      } catch(e){ ep.state='error'; ep.error=e.message; }
-    },
-    formatData(d){ try{ return JSON.stringify(d, null, 2); }catch(_ ){ return String(d); } },
-    filteredProducts(){ const all = (this.endpoints.find(e=>e.url.startsWith('/api/products'))||{}).data||[]; const q=(this.q||'').toLowerCase(); return (Array.isArray(all)?all:[]).filter(p=>{ if(this.status && String(p.status)!==this.status) return false; if(!q) return true; return [p.sku,p.title,p.ai_title,p.category].some(v=>String(v||'').toLowerCase().includes(q)); }); },
-    orders(){ const all=(this.endpoints.find(e=>e.url.startsWith('/api/orders'))||{}).data||[]; return Array.isArray(all)?all:(all.items||[]); },
-    async calc(){ try{ this.calcResult=await apiFetch('/api/pricing/calculate',{method:'POST',body:JSON.stringify({supplier_price:Number(this.supplier||0)})}); }catch(e){ this.calcResult={error:e.message}; } },
-    async search(){ try{ this.actionResult=await apiFetch('/api/competitor/search',{method:'POST',body:JSON.stringify({query:this.query,limit:10})}); }catch(e){ this.actionResult={error:e.message}; } },
-    async runTrend(){ this.busy=true; try{ this.actionResult=await apiFetch('/api/ai/trend-analysis',{method:'POST'}); }catch(e){ this.actionResult={error:e.message}; } this.busy=false; },
-    async saveSetting(){ this.actionMsg=''; this.actionErr=false; try{ await apiFetch('/api/settings',{method:'POST',body:JSON.stringify({key:this.setKey,value:this.setVal})}); this.actionMsg='Gespeichert.'; await this.loadAll(); }catch(e){ this.actionErr=true; this.actionMsg='Fehler: '+e.message; } }
-  }
-}
+function scenePage(){return{
+  intel:{}, sources:[], busy:false, msg:'', err:false,
+  src:{name:'',url:'',category:'general',enabled:true},
+  item:{title:'',url:'',summary:'',category:'general',source_id:''},
+  notify(m,e=false){this.msg=m; this.err=e; setTimeout(()=>{if(this.msg===m)this.msg='';},5000);},
+  async init(){await this.loadAll();},
+  async loadAll(){await Promise.all([this.loadIntel(),this.loadSources()]);},
+  async loadIntel(){try{this.intel=await apiFetch('/api/scene-intelligence/overview');}catch(e){this.intel={notes:['Fehler: '+e.message]};}},
+  async loadSources(){try{const r=await apiFetch('/api/news/sources'); this.sources=r.items||[];}catch(e){this.sources=[];}},
+  async saveSource(){if(!this.src.name){this.notify('Name erforderlich',true); return;} this.busy=true; try{await apiFetch('/api/news/sources',{method:'POST',body:JSON.stringify(this.src)}); this.src={name:'',url:'',category:'general',enabled:true}; this.notify('Quelle gespeichert'); await this.loadAll();}catch(e){this.notify('Fehler: '+e.message,true);} this.busy=false;},
+  async saveItem(){if(!this.item.title){this.notify('Titel erforderlich',true); return;} this.busy=true; try{await apiFetch('/api/news/items',{method:'POST',body:JSON.stringify(this.item)}); this.item={title:'',url:'',summary:'',category:'general',source_id:''}; this.notify('Item gespeichert'); await this.loadAll();}catch(e){this.notify('Fehler: '+e.message,true);} this.busy=false;},
+}}
 </script>
 {% endblock %}

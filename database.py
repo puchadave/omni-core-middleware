@@ -13,7 +13,7 @@ import logging
 import os
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, AsyncIterator, Mapping, Sequence
 
@@ -1267,6 +1267,7 @@ POSTGRES_SCHEMA: tuple[str, ...] = (
     )
     """,
     "CREATE INDEX IF NOT EXISTS idx_finance_documents_order ON finance_documents(order_reference, currency)",
+    "CREATE INDEX IF NOT EXISTS idx_finance_documents_currency_amount ON finance_documents(currency, gross_amount)",
     "CREATE INDEX IF NOT EXISTS idx_finance_documents_issued ON finance_documents(issued_at DESC)",
     """
     CREATE TABLE IF NOT EXISTS finance_transactions (
@@ -2322,9 +2323,9 @@ CREATE TABLE IF NOT EXISTS finance_documents (
     direction TEXT NOT NULL CHECK (direction IN ('receivable','payable')),
     order_reference TEXT NOT NULL DEFAULT '',
     currency TEXT NOT NULL CHECK (length(currency) = 3),
-    net_amount NUMERIC NOT NULL CHECK (net_amount >= 0),
-    tax_amount NUMERIC NOT NULL CHECK (tax_amount >= 0),
-    gross_amount NUMERIC NOT NULL CHECK (gross_amount >= 0),
+    net_amount TEXT NOT NULL CHECK (CAST(net_amount AS REAL) >= 0),
+    tax_amount TEXT NOT NULL CHECK (CAST(tax_amount AS REAL) >= 0),
+    gross_amount TEXT NOT NULL CHECK (CAST(gross_amount AS REAL) >= 0),
     status TEXT NOT NULL DEFAULT 'issued',
     issued_at TEXT,
     due_at TEXT,
@@ -2334,6 +2335,7 @@ CREATE TABLE IF NOT EXISTS finance_documents (
     UNIQUE(provider, external_id)
 );
 CREATE INDEX IF NOT EXISTS idx_finance_documents_order ON finance_documents(order_reference, currency);
+CREATE INDEX IF NOT EXISTS idx_finance_documents_currency_amount ON finance_documents(currency, gross_amount);
 CREATE INDEX IF NOT EXISTS idx_finance_documents_issued ON finance_documents(issued_at DESC);
 CREATE TABLE IF NOT EXISTS finance_transactions (
     id TEXT PRIMARY KEY,
@@ -2343,7 +2345,7 @@ CREATE TABLE IF NOT EXISTS finance_transactions (
     order_reference TEXT NOT NULL DEFAULT '',
     settlement_reference TEXT NOT NULL DEFAULT '',
     currency TEXT NOT NULL CHECK (length(currency) = 3),
-    amount NUMERIC NOT NULL CHECK (amount >= 0),
+    amount TEXT NOT NULL CHECK (CAST(amount AS REAL) >= 0),
     occurred_at TEXT,
     payload_json TEXT NOT NULL DEFAULT '{}',
     created_at TEXT NOT NULL,
@@ -2357,9 +2359,9 @@ CREATE TABLE IF NOT EXISTS finance_settlements (
     provider TEXT NOT NULL,
     external_id TEXT NOT NULL,
     currency TEXT NOT NULL CHECK (length(currency) = 3),
-    gross_amount NUMERIC NOT NULL CHECK (gross_amount >= 0),
-    fees_amount NUMERIC NOT NULL CHECK (fees_amount >= 0),
-    net_amount NUMERIC NOT NULL,
+    gross_amount TEXT NOT NULL CHECK (CAST(gross_amount AS REAL) >= 0),
+    fees_amount TEXT NOT NULL CHECK (CAST(fees_amount AS REAL) >= 0),
+    net_amount TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'received',
     settled_at TEXT,
     payload_json TEXT NOT NULL DEFAULT '{}',
@@ -2376,7 +2378,7 @@ CREATE TABLE IF NOT EXISTS finance_reconciliations (
     target_id TEXT NOT NULL DEFAULT '',
     status TEXT NOT NULL CHECK (status IN ('matched','partial_match','mismatch','missing_document','ambiguous','review_required')),
     currency TEXT NOT NULL,
-    matched_amount NUMERIC NOT NULL DEFAULT 0,
+    matched_amount TEXT NOT NULL DEFAULT '0',
     details_json TEXT NOT NULL DEFAULT '{}',
     created_at TEXT NOT NULL
 );
@@ -5265,6 +5267,26 @@ _FINANCE_RECORD_FIELDS: dict[str, tuple[str, ...]] = {
 }
 
 
+def _finance_amount(value: Any, *, field: str) -> Decimal:
+    try:
+        amount = Decimal(str(value))
+    except (InvalidOperation, ValueError, TypeError) as exc:
+        raise ValueError(f"{field} must be a decimal amount.") from exc
+    if not amount.is_finite():
+        raise ValueError(f"{field} must be finite.")
+    normalized = amount.normalize()
+    _, digits, exponent = normalized.as_tuple()
+    scale = max(-exponent, 0)
+    integer_digits = max(len(digits) + exponent, 0)
+    if scale > 6 or integer_digits > 14:
+        raise ValueError(f"{field} exceeds the supported precision (14 integer and 6 decimal places).")
+    return amount
+
+
+def _finance_amount_sqlite(value: Decimal) -> str:
+    return format(value.normalize(), "f") if value else "0"
+
+
 def _decode_finance_row(row: Mapping[str, Any] | None) -> dict[str, Any] | None:
     if row is None:
         return None
@@ -5296,6 +5318,9 @@ async def _finance_record_upsert(table: str, data: Mapping[str, Any]) -> dict[st
     values: list[Any] = [record_id, provider, external_id]
     for field in fields:
         value = data.get(field)
+        if field in {"net_amount", "tax_amount", "gross_amount", "amount", "fees_amount"}:
+            amount = _finance_amount(value, field=field)
+            value = amount if uses_postgres() else _finance_amount_sqlite(amount)
         if field in {"order_reference", "settlement_reference"}:
             value = str(value or "")
         elif field == "status":
@@ -5420,6 +5445,7 @@ async def finance_document_candidates(
     gross_amount: Any,
 ) -> list[dict[str, Any]]:
     """Fetch exact/reference candidates for safe, bounded payment matching."""
+    amount = _finance_amount(gross_amount, field="gross_amount")
     if uses_postgres():
         pool = await get_pg_pool()
         async with pool.acquire() as conn:
@@ -5428,7 +5454,7 @@ async def finance_document_candidates(
                    WHERE direction='receivable' AND currency=$1
                      AND (($2 <> '' AND order_reference=$2) OR gross_amount=$3)
                    ORDER BY created_at DESC LIMIT 501""",
-                currency, order_reference, gross_amount,
+                currency, order_reference, amount,
             )
         return [_decode_finance_row(row) or {} for row in rows]
     async with get_connection() as db:
@@ -5437,7 +5463,7 @@ async def finance_document_candidates(
                WHERE direction='receivable' AND currency=?
                  AND ((? <> '' AND order_reference=?) OR gross_amount=?)
                ORDER BY created_at DESC LIMIT 501""",
-            (currency, order_reference, order_reference, str(gross_amount)),
+            (currency, order_reference, order_reference, _finance_amount_sqlite(amount)),
         )
         rows = await cursor.fetchall()
         await cursor.close()
@@ -5457,7 +5483,7 @@ async def finance_reconciliation_create(data: Mapping[str, Any]) -> dict[str, An
         str(data.get("target_id") or ""),
         str(data["status"]),
         str(data["currency"]),
-        Decimal(str(data.get("matched_amount", "0"))),
+        _finance_amount(data.get("matched_amount", "0"), field="matched_amount"),
         details_json,
         utc_now(),
     )
@@ -5471,7 +5497,7 @@ async def finance_reconciliation_create(data: Mapping[str, Any]) -> dict[str, An
                 *values[:-1],
             )
         return _decode_finance_row(row) or {"id": record_id}
-    values = (*values[:7], str(values[7]), *values[8:])
+    values = (*values[:7], _finance_amount_sqlite(values[7]), *values[8:])
     async with get_connection() as db:
         await db.execute(
             """INSERT INTO finance_reconciliations
@@ -5491,22 +5517,82 @@ async def finance_reconciliation_create(data: Mapping[str, Any]) -> dict[str, An
 
 async def finance_overview() -> dict[str, Any]:
     """Return source totals grouped by currency, never conflating unlike records."""
-    queries = {
-        "documents": "SELECT currency, COUNT(*) AS count, SUM(gross_amount) AS gross_amount FROM finance_documents GROUP BY currency ORDER BY currency",
-        "transactions": "SELECT currency, transaction_type, COUNT(*) AS count, SUM(amount) AS amount FROM finance_transactions GROUP BY currency, transaction_type ORDER BY currency, transaction_type",
-        "settlements": "SELECT currency, COUNT(*) AS count, SUM(gross_amount) AS gross_amount, SUM(fees_amount) AS fees_amount, SUM(net_amount) AS net_amount FROM finance_settlements GROUP BY currency ORDER BY currency",
-        "reconciliations": "SELECT status, COUNT(*) AS count FROM finance_reconciliations GROUP BY status ORDER BY status",
-    }
-    results: dict[str, Any] = {}
     if uses_postgres():
+        queries = {
+            "documents": "SELECT currency, COUNT(*) AS count, SUM(gross_amount) AS gross_amount FROM finance_documents GROUP BY currency ORDER BY currency",
+            "transactions": "SELECT currency, transaction_type, COUNT(*) AS count, SUM(amount) AS amount FROM finance_transactions GROUP BY currency, transaction_type ORDER BY currency, transaction_type",
+            "settlements": "SELECT currency, COUNT(*) AS count, SUM(gross_amount) AS gross_amount, SUM(fees_amount) AS fees_amount, SUM(net_amount) AS net_amount FROM finance_settlements GROUP BY currency ORDER BY currency",
+            "reconciliations": "SELECT status, COUNT(*) AS count FROM finance_reconciliations GROUP BY status ORDER BY status",
+        }
+        results: dict[str, Any] = {}
         pool = await get_pg_pool()
         async with pool.acquire() as conn:
             for name, query in queries.items():
-                results[name] = [dict(row) for row in await conn.fetch(query)]
-    else:
-        async with get_connection() as db:
-            for name, query in queries.items():
-                cursor = await db.execute(query)
-                results[name] = [dict(row) for row in await cursor.fetchall()]
-                await cursor.close()
-    return results
+                rows = [dict(row) for row in await conn.fetch(query)]
+                for row in rows:
+                    for field in ("gross_amount", "fees_amount", "net_amount", "amount"):
+                        if row.get(field) is not None:
+                            row[field] = str(row[field])
+                results[name] = rows
+        return results
+
+    documents: dict[str, dict[str, Any]] = {}
+    transactions: dict[tuple[str, str], dict[str, Any]] = {}
+    settlements: dict[str, dict[str, Any]] = {}
+    reconciliations: dict[str, int] = {}
+    async with get_connection() as db:
+        cursor = await db.execute("SELECT currency, gross_amount FROM finance_documents")
+        for currency, gross_amount in await cursor.fetchall():
+            item = documents.setdefault(currency, {"currency": currency, "count": 0, "gross_amount": Decimal("0")})
+            item["count"] += 1
+            item["gross_amount"] += _finance_amount(gross_amount, field="gross_amount")
+        await cursor.close()
+
+        cursor = await db.execute("SELECT currency, transaction_type, amount FROM finance_transactions")
+        for currency, transaction_type, amount in await cursor.fetchall():
+            item = transactions.setdefault(
+                (currency, transaction_type),
+                {"currency": currency, "transaction_type": transaction_type, "count": 0, "amount": Decimal("0")},
+            )
+            item["count"] += 1
+            item["amount"] += _finance_amount(amount, field="amount")
+        await cursor.close()
+
+        cursor = await db.execute("SELECT currency, gross_amount, fees_amount, net_amount FROM finance_settlements")
+        for currency, gross_amount, fees_amount, net_amount in await cursor.fetchall():
+            item = settlements.setdefault(
+                currency,
+                {
+                    "currency": currency,
+                    "count": 0,
+                    "gross_amount": Decimal("0"),
+                    "fees_amount": Decimal("0"),
+                    "net_amount": Decimal("0"),
+                },
+            )
+            item["count"] += 1
+            item["gross_amount"] += _finance_amount(gross_amount, field="gross_amount")
+            item["fees_amount"] += _finance_amount(fees_amount, field="fees_amount")
+            item["net_amount"] += _finance_amount(net_amount, field="net_amount")
+        await cursor.close()
+
+        cursor = await db.execute("SELECT status, COUNT(*) FROM finance_reconciliations GROUP BY status")
+        reconciliations = {status: count for status, count in await cursor.fetchall()}
+        await cursor.close()
+
+    def serialize_amounts(rows: dict[Any, dict[str, Any]], amount_fields: tuple[str, ...]) -> list[dict[str, Any]]:
+        serialized = []
+        for key in sorted(rows):
+            row = rows[key]
+            serialized.append({
+                field: str(value) if field in amount_fields else value
+                for field, value in row.items()
+            })
+        return serialized
+
+    return {
+        "documents": serialize_amounts(documents, ("gross_amount",)),
+        "transactions": serialize_amounts(transactions, ("amount",)),
+        "settlements": serialize_amounts(settlements, ("gross_amount", "fees_amount", "net_amount")),
+        "reconciliations": [{"status": status, "count": count} for status, count in sorted(reconciliations.items())],
+    }

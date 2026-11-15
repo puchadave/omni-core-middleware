@@ -1,62 +1,53 @@
 {% extends "base.html" %}
 {% block title %}Knowledge Base | Omni-Core{% endblock %}
 {% block content %}
-<div x-data="pageState()" x-init="loadAll()" class="space-y-4 max-w-7xl mx-auto">
+<div x-data="kbPage()" x-init="loadAll()" class="space-y-4 max-w-7xl mx-auto">
   <div class="flex flex-col md:flex-row md:items-end md:justify-between gap-3">
     <div>
-      <h1 class="text-2xl md:text-3xl font-bold">Knowledge Base</h1>
-      <p class="text-slate-400">Wissenseinträge, Richtlinien und Produktkontext.</p>
+      <h1 class="text-2xl md:text-3xl font-bold">Knowledge Base & Scene-Wissen</h1>
+      <p class="text-slate-400">Kuratierte, reale Wissenseinträge (Produkt/Markt/Szene/Trends) als Grundlage für Analyse und Content.</p>
     </div>
-    <button @click="loadAll()" class="bg-slate-700 hover:bg-slate-600 px-4 py-2 rounded text-sm">Aktualisieren</button>
+    <button @click="loadAll()" class="btn btn-secondary">Aktualisieren</button>
   </div>
+  <template x-if="msg"><div class="rounded border px-3 py-2 text-sm" :class="err?'border-red-700 bg-red-900/30 text-red-200':'border-emerald-700 bg-emerald-900/20 text-emerald-200'" x-text="msg"></div></template>
 
-  <template x-if="globalError"><div class="rounded border border-red-700 bg-red-900/30 p-3 text-sm text-red-200" x-text="globalError"></div></template>
-
-  <div class="grid lg:grid-cols-2 gap-4">
-    <template x-for="ep in endpoints" :key="ep.url">
-      <div class="bg-slate-900 border border-slate-800 rounded-lg p-4">
-        <div class="flex items-center justify-between mb-2">
-          <h2 class="font-semibold" x-text="ep.label"></h2>
-          <span class="text-xs" :class="ep.state==='ok'?'text-emerald-400':(ep.state==='error'?'text-red-400':(ep.state==='empty'?'text-amber-400':'text-slate-400'))" x-text="ep.state"></span>
-        </div>
-        <div class="text-xs text-slate-500 mb-2" x-text="ep.url"></div>
-        <template x-if="ep.state==='loading'"><div class="text-sm text-slate-400">Lade…</div></template>
-        <template x-if="ep.state==='error'"><div class="text-sm text-red-300" x-text="ep.error"></div></template>
-        <template x-if="ep.state==='empty'"><div class="text-sm text-amber-300">Keine Daten / nicht konfiguriert oder leer.</div></template>
-        <template x-if="ep.state==='ok'"><pre class="text-xs bg-slate-950 border border-slate-800 rounded p-3 overflow-auto max-h-96" x-text="formatData(ep.data)"></pre></template>
+  <div class="grid lg:grid-cols-3 gap-4">
+    <div class="card p-4 space-y-2 lg:col-span-1">
+      <h2 class="font-semibold">Eintrag erfassen</h2>
+      <input x-model="entry.title" class="input" placeholder="Titel">
+      <select x-model="entry.category" class="select"><option value="general">general</option><option value="product">product</option><option value="market">market</option><option value="scene">scene</option><option value="trend">trend</option><option value="artist">artist</option><option value="event">event</option></select>
+      <input x-model="entry.source" class="input" placeholder="Quelle/Referenz (optional)">
+      <input x-model="tags" class="input" placeholder="Tags, komma-getrennt">
+      <textarea x-model="entry.content" class="input" rows="6" placeholder="Inhalt (nur verifizierte Fakten)"></textarea>
+      <button @click="save()" class="btn btn-primary" :disabled="busy">Speichern</button>
+      <p class="text-xs text-slate-500">Keine erfundenen Daten; Einträge sind interne Wissensbasis für Agenten/Analyse.</p>
+    </div>
+    <div class="card p-4 lg:col-span-2">
+      <div class="flex justify-between items-center mb-2"><h2 class="font-semibold">Einträge</h2><input x-model="q" class="input max-w-xs" placeholder="Suchen…"></div>
+      <div class="overflow-auto max-h-[34rem] border border-slate-800 rounded">
+        <table class="tbl"><thead><tr><th>Titel</th><th>Kategorie</th><th>Quelle</th><th>Aktualisiert</th></tr></thead><tbody>
+          <template x-for="e in filtered()" :key="e.id"><tr>
+            <td><div class="font-medium" x-text="e.title"></div><div class="text-xs text-slate-500 line-clamp-2" x-text="e.content"></div></td>
+            <td class="text-xs" x-text="e.category"></td>
+            <td class="text-xs" x-text="e.source||'—'"></td>
+            <td class="text-xs" x-text="e.updated_at||e.created_at||''"></td>
+          </tr></template>
+          <tr x-show="filtered().length===0"><td colspan="4" class="p-4 text-center text-slate-400">Keine Einträge.</td></tr>
+        </tbody></table>
       </div>
-    </template>
+    </div>
   </div>
 </div>
 {% endblock %}
 {% block scripts %}
 <script>
-function pageState(){
-  return {
-    endpoints: [{url:'/api/knowledge',label:'Einträge'}],
-    globalError: '',
-    supplier: 10, calcResult: null,
-    query: '', actionResult: null, busy: false,
-    q:'', status:'',
-    setKey:'', setVal:'', actionMsg:'', actionErr:false,
-    async loadAll(){ this.globalError=''; await Promise.all(this.endpoints.map(e=>this.loadEp(e))); },
-    async loadEp(ep){
-      ep.state='loading'; ep.error=''; ep.data=null;
-      try {
-        const d = await apiFetch(ep.url);
-        ep.data = d;
-        const empty = d==null || (Array.isArray(d) && d.length===0) || (typeof d==='object' && !Array.isArray(d) && Object.keys(d).length===0);
-        ep.state = empty ? 'empty' : 'ok';
-      } catch(e){ ep.state='error'; ep.error=e.message; }
-    },
-    formatData(d){ try{ return JSON.stringify(d, null, 2); }catch(_ ){ return String(d); } },
-    filteredProducts(){ const all = (this.endpoints.find(e=>e.url.startsWith('/api/products'))||{}).data||[]; const q=(this.q||'').toLowerCase(); return (Array.isArray(all)?all:[]).filter(p=>{ if(this.status && String(p.status)!==this.status) return false; if(!q) return true; return [p.sku,p.title,p.ai_title,p.category].some(v=>String(v||'').toLowerCase().includes(q)); }); },
-    orders(){ const all=(this.endpoints.find(e=>e.url.startsWith('/api/orders'))||{}).data||[]; return Array.isArray(all)?all:(all.items||[]); },
-    async calc(){ try{ this.calcResult=await apiFetch('/api/pricing/calculate',{method:'POST',body:JSON.stringify({supplier_price:Number(this.supplier||0)})}); }catch(e){ this.calcResult={error:e.message}; } },
-    async search(){ try{ this.actionResult=await apiFetch('/api/competitor/search',{method:'POST',body:JSON.stringify({query:this.query,limit:10})}); }catch(e){ this.actionResult={error:e.message}; } },
-    async runTrend(){ this.busy=true; try{ this.actionResult=await apiFetch('/api/ai/trend-analysis',{method:'POST'}); }catch(e){ this.actionResult={error:e.message}; } this.busy=false; },
-    async saveSetting(){ this.actionMsg=''; this.actionErr=false; try{ await apiFetch('/api/settings',{method:'POST',body:JSON.stringify({key:this.setKey,value:this.setVal})}); this.actionMsg='Gespeichert.'; await this.loadAll(); }catch(e){ this.actionErr=true; this.actionMsg='Fehler: '+e.message; } }
-  }
-}
+function kbPage(){return{
+  items:[], q:'', busy:false, msg:'', err:false, tags:'',
+  entry:{title:'',content:'',category:'general',source:''},
+  notify(m,e=false){this.msg=m; this.err=e; setTimeout(()=>{if(this.msg===m)this.msg='';},5000);},
+  async loadAll(){try{const r=await apiFetch('/api/knowledge?limit=300'); this.items=r.items||[];}catch(e){this.items=[]; this.notify('Laden fehlgeschlagen: '+e.message,true);}},
+  filtered(){const q=(this.q||'').toLowerCase(); if(!q) return this.items; return this.items.filter(e=>[e.title,e.content,e.category,e.source,JSON.stringify(e.tags_json||e.tags||[])].join(' ').toLowerCase().includes(q));},
+  async save(){if(!this.entry.title){this.notify('Titel erforderlich',true); return;} this.busy=true; try{const tags=this.tags.split(',').map(s=>s.trim()).filter(Boolean); await apiFetch('/api/knowledge',{method:'POST',body:JSON.stringify({...this.entry,tags})}); this.entry={title:'',content:'',category:'general',source:''}; this.tags=''; this.notify('Eintrag gespeichert'); await this.loadAll();}catch(e){this.notify('Fehler: '+e.message,true);} this.busy=false;},
+}}
 </script>
 {% endblock %}
