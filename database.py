@@ -781,7 +781,265 @@ POSTGRES_SCHEMA: tuple[str, ...] = (
     """CREATE TABLE IF NOT EXISTS iam_sessions (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, session_token_hash TEXT NOT NULL, ip_address TEXT NOT NULL DEFAULT '', user_agent TEXT NOT NULL DEFAULT '', expires_at TIMESTAMPTZ, revoked BOOLEAN NOT NULL DEFAULT FALSE, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), last_seen_at TIMESTAMPTZ)""",
     """CREATE TABLE IF NOT EXISTS news_sources (id TEXT PRIMARY KEY, name TEXT NOT NULL, url TEXT NOT NULL DEFAULT '', category TEXT NOT NULL DEFAULT 'general', enabled BOOLEAN NOT NULL DEFAULT TRUE, config_json JSONB NOT NULL DEFAULT '{}', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())""",
     """CREATE TABLE IF NOT EXISTS news_items (id TEXT PRIMARY KEY, source_id TEXT NOT NULL DEFAULT '', title TEXT NOT NULL, url TEXT NOT NULL DEFAULT '', summary TEXT NOT NULL DEFAULT '', category TEXT NOT NULL DEFAULT 'general', published_at TIMESTAMPTZ, metadata_json JSONB NOT NULL DEFAULT '{}', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())""",
-    """CREATE TABLE IF NOT EXISTS knowledge_entries (id TEXT PRIMARY KEY, title TEXT NOT NULL, content TEXT NOT NULL DEFAULT '', category TEXT NOT NULL DEFAULT 'general', tags_json JSONB NOT NULL DEFAULT '[]', source TEXT NOT NULL DEFAULT '', metadata_json JSONB NOT NULL DEFAULT '{}', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())"""
+    """CREATE TABLE IF NOT EXISTS knowledge_entries (id TEXT PRIMARY KEY, title TEXT NOT NULL, content TEXT NOT NULL DEFAULT '', category TEXT NOT NULL DEFAULT 'general', tags_json JSONB NOT NULL DEFAULT '[]', source TEXT NOT NULL DEFAULT '', metadata_json JSONB NOT NULL DEFAULT '{}', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())""",
+    # ── Job Queue & Scheduler ────────────────────────────────────────────────
+    """
+    CREATE TABLE IF NOT EXISTS jobs (
+        id TEXT PRIMARY KEY,
+        type TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','running','succeeded','failed','cancelled','retry')),
+        payload_json JSONB NOT NULL DEFAULT '{}',
+        result_json JSONB NOT NULL DEFAULT '{}',
+        error_message TEXT NOT NULL DEFAULT '',
+        attempts INTEGER NOT NULL DEFAULT 0,
+        max_attempts INTEGER NOT NULL DEFAULT 3,
+        run_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        locked_by TEXT NOT NULL DEFAULT '',
+        locked_at TIMESTAMPTZ,
+        started_at TIMESTAMPTZ,
+        finished_at TIMESTAMPTZ,
+        created_by TEXT NOT NULL DEFAULT '',
+        correlation_id TEXT NOT NULL DEFAULT '',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_jobs_status_run_at ON jobs(status, run_at)",
+    "CREATE INDEX IF NOT EXISTS idx_jobs_type_created ON jobs(type, created_at)",
+    """
+    CREATE TABLE IF NOT EXISTS scheduler_config (
+        id TEXT PRIMARY KEY,
+        job_type TEXT NOT NULL UNIQUE,
+        enabled BOOLEAN NOT NULL DEFAULT TRUE,
+        interval_seconds INTEGER NOT NULL DEFAULT 3600,
+        payload_json JSONB NOT NULL DEFAULT '{}',
+        last_run_at TIMESTAMPTZ,
+        next_run_at TIMESTAMPTZ,
+        last_status TEXT NOT NULL DEFAULT '',
+        last_error TEXT NOT NULL DEFAULT '',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
+    # ── Matterhorn Config ────────────────────────────────────────────────────
+    """
+    CREATE TABLE IF NOT EXISTS matterhorn_config (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL DEFAULT '',
+        is_secret BOOLEAN NOT NULL DEFAULT FALSE,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS matterhorn_feeds (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        url TEXT NOT NULL,
+        feed_type TEXT NOT NULL DEFAULT 'xml',
+        enabled BOOLEAN NOT NULL DEFAULT TRUE,
+        auth_header TEXT NOT NULL DEFAULT '',
+        config_json JSONB NOT NULL DEFAULT '{}',
+        last_imported_at TIMESTAMPTZ,
+        last_status TEXT NOT NULL DEFAULT '',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS matterhorn_mappings (
+        id TEXT PRIMARY KEY,
+        feed_id TEXT NOT NULL DEFAULT '',
+        source_field TEXT NOT NULL,
+        target_field TEXT NOT NULL,
+        transform TEXT NOT NULL DEFAULT 'direct',
+        config_json JSONB NOT NULL DEFAULT '{}',
+        priority INTEGER NOT NULL DEFAULT 0,
+        is_active BOOLEAN NOT NULL DEFAULT TRUE,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
+    # ── Pricing & Competitor ─────────────────────────────────────────────────
+    """
+    CREATE TABLE IF NOT EXISTS pricing_rules (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        rule_type TEXT NOT NULL DEFAULT 'margin',
+        config_json JSONB NOT NULL DEFAULT '{}',
+        priority INTEGER NOT NULL DEFAULT 0,
+        is_active BOOLEAN NOT NULL DEFAULT TRUE,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS pricing_recommendations (
+        id TEXT PRIMARY KEY,
+        product_sku TEXT NOT NULL,
+        recommended_price NUMERIC(12,2) NOT NULL,
+        base_price NUMERIC(12,2) NOT NULL DEFAULT 0,
+        margin_pct NUMERIC(6,2) NOT NULL DEFAULT 0,
+        confidence NUMERIC(4,2) NOT NULL DEFAULT 0,
+        reasoning TEXT NOT NULL DEFAULT '',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS price_alerts (
+        id TEXT PRIMARY KEY,
+        product_sku TEXT NOT NULL,
+        alert_type TEXT NOT NULL DEFAULT 'price_drop',
+        threshold_value NUMERIC(12,2) NOT NULL DEFAULT 0,
+        current_value NUMERIC(12,2) NOT NULL DEFAULT 0,
+        message TEXT NOT NULL DEFAULT '',
+        resolved BOOLEAN NOT NULL DEFAULT FALSE,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        resolved_at TIMESTAMPTZ
+    )
+    """,
+    # ── Shopware Connector ───────────────────────────────────────────────────
+    """
+    CREATE TABLE IF NOT EXISTS shopware_connections (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        base_url TEXT NOT NULL,
+        client_id TEXT NOT NULL DEFAULT '',
+        client_secret TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL DEFAULT 'disconnected' CHECK (status IN ('connected','disconnected','error','testing')),
+        last_checked_at TIMESTAMPTZ,
+        last_error TEXT NOT NULL DEFAULT '',
+        config_json JSONB NOT NULL DEFAULT '{}',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS shopware_product_mappings (
+        id TEXT PRIMARY KEY,
+        connection_id TEXT NOT NULL,
+        product_sku TEXT NOT NULL,
+        shopware_product_id TEXT NOT NULL DEFAULT '',
+        shopware_variant_id TEXT NOT NULL DEFAULT '',
+        last_synced_at TIMESTAMPTZ,
+        sync_status TEXT NOT NULL DEFAULT 'pending',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE(connection_id, product_sku)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS shopware_export_queue (
+        id TEXT PRIMARY KEY,
+        connection_id TEXT NOT NULL,
+        product_sku TEXT NOT NULL,
+        operation TEXT NOT NULL DEFAULT 'upsert',
+        status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','processing','completed','failed')),
+        payload_json JSONB NOT NULL DEFAULT '{}',
+        error_message TEXT NOT NULL DEFAULT '',
+        attempts INTEGER NOT NULL DEFAULT 0,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
+    # ── Competitor Intelligence ──────────────────────────────────────────────
+    """
+    CREATE TABLE IF NOT EXISTS competitors (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL UNIQUE,
+        base_url TEXT NOT NULL DEFAULT '',
+        scrape_config_json JSONB NOT NULL DEFAULT '{}',
+        is_active BOOLEAN NOT NULL DEFAULT TRUE,
+        last_scraped_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS competitor_products (
+        id TEXT PRIMARY KEY,
+        competitor_id TEXT NOT NULL,
+        product_sku TEXT NOT NULL DEFAULT '',
+        competitor_sku TEXT NOT NULL DEFAULT '',
+        title TEXT NOT NULL DEFAULT '',
+        current_price NUMERIC(12,2) NOT NULL DEFAULT 0,
+        currency TEXT NOT NULL DEFAULT 'EUR',
+        url TEXT NOT NULL DEFAULT '',
+        in_stock BOOLEAN NOT NULL DEFAULT TRUE,
+        last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS competitor_price_history (
+        id BIGSERIAL PRIMARY KEY,
+        competitor_product_id TEXT NOT NULL,
+        price NUMERIC(12,2) NOT NULL,
+        currency TEXT NOT NULL DEFAULT 'EUR',
+        recorded_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS product_matches (
+        id TEXT PRIMARY KEY,
+        our_sku TEXT NOT NULL,
+        competitor_product_id TEXT NOT NULL,
+        match_score NUMERIC(4,2) NOT NULL DEFAULT 0,
+        match_method TEXT NOT NULL DEFAULT 'ean',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE(our_sku, competitor_product_id)
+    )
+    """,
+    # ── Research ─────────────────────────────────────────────────────────────
+    """
+    CREATE TABLE IF NOT EXISTS research_runs (
+        id TEXT PRIMARY KEY,
+        query TEXT NOT NULL,
+        source TEXT NOT NULL DEFAULT 'web',
+        status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','running','completed','failed')),
+        result_json JSONB NOT NULL DEFAULT '{}',
+        error_message TEXT NOT NULL DEFAULT '',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        finished_at TIMESTAMPTZ
+    """,
+    # ── Multi-Channel Connector Management Center ────────────────────────────
+    """
+    CREATE TABLE IF NOT EXISTS connector_accounts (
+        id TEXT PRIMARY KEY,
+        connector_id TEXT NOT NULL,
+        account_name TEXT NOT NULL,
+        marketplace TEXT NOT NULL DEFAULT 'DE',
+        is_active BOOLEAN NOT NULL DEFAULT TRUE,
+        is_sandbox BOOLEAN NOT NULL DEFAULT FALSE,
+        credentials_json JSONB NOT NULL DEFAULT '{}',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS connector_mappings (
+        id TEXT PRIMARY KEY,
+        connector_id TEXT NOT NULL,
+        canonical_field TEXT NOT NULL,
+        channel_field TEXT NOT NULL,
+        mapping_type TEXT NOT NULL DEFAULT 'direct',
+        config_json JSONB NOT NULL DEFAULT '{}',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS connector_exports (
+        id TEXT PRIMARY KEY,
+        connector_id TEXT NOT NULL,
+        account_id TEXT NOT NULL DEFAULT '',
+        sku TEXT NOT NULL,
+        remote_listing_id TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL DEFAULT 'pending',
+        payload_json JSONB NOT NULL DEFAULT '{}',
+        error_message TEXT NOT NULL DEFAULT '',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """
 
 )
 
@@ -1586,6 +1844,20 @@ CREATE TABLE IF NOT EXISTS news_items (
 CREATE TABLE IF NOT EXISTS knowledge_entries (
     id TEXT PRIMARY KEY, title TEXT NOT NULL, content TEXT NOT NULL DEFAULT '', category TEXT NOT NULL DEFAULT 'general',
     tags_json TEXT NOT NULL DEFAULT '[]', source TEXT NOT NULL DEFAULT '', metadata_json TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS connector_accounts (
+    id TEXT PRIMARY KEY, connector_id TEXT NOT NULL, account_name TEXT NOT NULL, marketplace TEXT NOT NULL DEFAULT 'DE',
+    is_active INTEGER NOT NULL DEFAULT 1, is_sandbox INTEGER NOT NULL DEFAULT 0, credentials_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS connector_mappings (
+    id TEXT PRIMARY KEY, connector_id TEXT NOT NULL, canonical_field TEXT NOT NULL, channel_field TEXT NOT NULL,
+    mapping_type TEXT NOT NULL DEFAULT 'direct', config_json TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS connector_exports (
+    id TEXT PRIMARY KEY, connector_id TEXT NOT NULL, account_id TEXT NOT NULL DEFAULT '', sku TEXT NOT NULL,
+    remote_listing_id TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'pending', payload_json TEXT NOT NULL DEFAULT '{}',
+    error_message TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL
 );
 
 """
@@ -3543,3 +3815,189 @@ async def analytics_overview() -> dict[str, Any]:
         "jobs": {"recent": len(jobs), "failed_recent": failed_jobs},
         "generated_at": utc_now(),
     }
+
+# ── Multi-Channel Connector Management Tables & Persistence Helpers ───────
+
+async def connector_account_list(connector_id: str | None = None) -> list[dict[str, Any]]:
+    """List configured seller accounts for channels."""
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            if connector_id:
+                rows = await conn.fetch("SELECT * FROM connector_accounts WHERE connector_id = $1 ORDER BY updated_at DESC", connector_id)
+            else:
+                rows = await conn.fetch("SELECT * FROM connector_accounts ORDER BY updated_at DESC")
+            return [dict(r) for r in rows]
+    async with get_connection() as db:
+        if connector_id:
+            cur = await db.execute("SELECT * FROM connector_accounts WHERE connector_id = ? ORDER BY updated_at DESC", (connector_id,))
+        else:
+            cur = await db.execute("SELECT * FROM connector_accounts ORDER BY updated_at DESC")
+        rows = await cur.fetchall()
+        await cur.close()
+        return [dict(r) for r in rows]
+
+
+async def connector_account_upsert(account: dict[str, Any]) -> dict[str, Any]:
+    """Upsert a multi-channel seller account."""
+    import uuid as _uuid
+    aid = str(account.get("id") or _uuid.uuid4())
+    cid = str(account.get("connector_id") or "")
+    name = str(account.get("account_name") or "Default Account")
+    marketplace = str(account.get("marketplace") or "DE")
+    cfg = json.dumps(account.get("credentials_json") or account.get("config") or {}, ensure_ascii=False, default=str)
+    is_active = bool(account.get("is_active", True))
+    is_sandbox = bool(account.get("is_sandbox", False))
+    now = utc_now()
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            await conn.execute("""
+                INSERT INTO connector_accounts (id, connector_id, account_name, marketplace, is_active, is_sandbox, credentials_json, created_at, updated_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, NOW(), NOW())
+                ON CONFLICT(id) DO UPDATE SET
+                    account_name = EXCLUDED.account_name,
+                    marketplace = EXCLUDED.marketplace,
+                    is_active = EXCLUDED.is_active,
+                    is_sandbox = EXCLUDED.is_sandbox,
+                    credentials_json = EXCLUDED.credentials_json,
+                    updated_at = NOW()
+            """, aid, cid, name, marketplace, is_active, is_sandbox, cfg)
+            row = await conn.fetchrow("SELECT * FROM connector_accounts WHERE id = $1", aid)
+            return dict(row) if row else {"id": aid}
+    async with get_connection() as db:
+        await db.execute("""
+            INSERT INTO connector_accounts (id, connector_id, account_name, marketplace, is_active, is_sandbox, credentials_json, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                account_name = excluded.account_name,
+                marketplace = excluded.marketplace,
+                is_active = excluded.is_active,
+                is_sandbox = excluded.is_sandbox,
+                credentials_json = excluded.credentials_json,
+                updated_at = excluded.updated_at
+        """, (aid, cid, name, marketplace, 1 if is_active else 0, 1 if is_sandbox else 0, cfg, now, now))
+        await db.commit()
+        cur = await db.execute("SELECT * FROM connector_accounts WHERE id = ?", (aid,))
+        row = await cur.fetchone()
+        await cur.close()
+        return dict(row) if row else {"id": aid}
+
+
+async def connector_account_delete(account_id: str) -> bool:
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            res = await conn.execute("DELETE FROM connector_accounts WHERE id = $1", account_id)
+            return res.endswith("1")
+    async with get_connection() as db:
+        cur = await db.execute("DELETE FROM connector_accounts WHERE id = ?", (account_id,))
+        await db.commit()
+        ok = cur.rowcount > 0
+        await cur.close()
+        return ok
+
+
+async def connector_mapping_list(connector_id: str | None = None) -> list[dict[str, Any]]:
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            if connector_id:
+                rows = await conn.fetch("SELECT * FROM connector_mappings WHERE connector_id = $1 ORDER BY updated_at DESC", connector_id)
+            else:
+                rows = await conn.fetch("SELECT * FROM connector_mappings ORDER BY updated_at DESC")
+            return [dict(r) for r in rows]
+    async with get_connection() as db:
+        if connector_id:
+            cur = await db.execute("SELECT * FROM connector_mappings WHERE connector_id = ? ORDER BY updated_at DESC", (connector_id,))
+        else:
+            cur = await db.execute("SELECT * FROM connector_mappings ORDER BY updated_at DESC")
+        rows = await cur.fetchall()
+        await cur.close()
+        return [dict(r) for r in rows]
+
+
+async def connector_mapping_upsert(mapping: dict[str, Any]) -> dict[str, Any]:
+    import uuid as _uuid
+    mid = str(mapping.get("id") or _uuid.uuid4())
+    cid = str(mapping.get("connector_id") or "")
+    src = str(mapping.get("canonical_field") or mapping.get("source_field") or "")
+    tgt = str(mapping.get("channel_field") or mapping.get("target_field") or "")
+    m_type = str(mapping.get("mapping_type") or "direct")
+    cfg = json.dumps(mapping.get("config_json") or {}, ensure_ascii=False, default=str)
+    now = utc_now()
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            await conn.execute("""
+                INSERT INTO connector_mappings (id, connector_id, canonical_field, channel_field, mapping_type, config_json, created_at, updated_at)
+                VALUES ($1, $2, $3, $4, $5, $6::jsonb, NOW(), NOW())
+                ON CONFLICT(id) DO UPDATE SET
+                    canonical_field = EXCLUDED.canonical_field,
+                    channel_field = EXCLUDED.channel_field,
+                    mapping_type = EXCLUDED.mapping_type,
+                    config_json = EXCLUDED.config_json,
+                    updated_at = NOW()
+            """, mid, cid, src, tgt, m_type, cfg)
+            row = await conn.fetchrow("SELECT * FROM connector_mappings WHERE id = $1", mid)
+            return dict(row) if row else {"id": mid}
+    async with get_connection() as db:
+        await db.execute("""
+            INSERT INTO connector_mappings (id, connector_id, canonical_field, channel_field, mapping_type, config_json, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                canonical_field = excluded.canonical_field,
+                channel_field = excluded.channel_field,
+                mapping_type = excluded.mapping_type,
+                config_json = excluded.config_json,
+                updated_at = excluded.updated_at
+        """, (mid, cid, src, tgt, m_type, cfg, now, now))
+        await db.commit()
+        cur = await db.execute("SELECT * FROM connector_mappings WHERE id = ?", (mid,))
+        row = await cur.fetchone()
+        await cur.close()
+        return dict(row) if row else {"id": mid}
+
+
+async def connector_export_enqueue(sku: str, connector_id: str, account_id: str = "") -> dict[str, Any]:
+    import uuid as _uuid
+    eid = str(_uuid.uuid4())
+    now = utc_now()
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            await conn.execute("""
+                INSERT INTO connector_exports (id, connector_id, account_id, sku, status, payload_json, created_at, updated_at)
+                VALUES ($1, $2, $3, $4, 'pending', '{}'::jsonb, NOW(), NOW())
+            """, eid, connector_id, account_id, sku)
+            row = await conn.fetchrow("SELECT * FROM connector_exports WHERE id = $1", eid)
+            return dict(row) if row else {"id": eid}
+    async with get_connection() as db:
+        await db.execute("""
+            INSERT INTO connector_exports (id, connector_id, account_id, sku, status, payload_json, created_at, updated_at)
+            VALUES (?, ?, ?, ?, 'pending', '{}', ?, ?)
+        """, (eid, connector_id, account_id, sku, now, now))
+        await db.commit()
+        cur = await db.execute("SELECT * FROM connector_exports WHERE id = ?", (eid,))
+        row = await cur.fetchone()
+        await cur.close()
+        return dict(row) if row else {"id": eid}
+
+
+async def connector_export_list(connector_id: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            if connector_id:
+                rows = await conn.fetch("SELECT * FROM connector_exports WHERE connector_id = $1 ORDER BY created_at DESC LIMIT $2", connector_id, limit)
+            else:
+                rows = await conn.fetch("SELECT * FROM connector_exports ORDER BY created_at DESC LIMIT $1", limit)
+            return [dict(r) for r in rows]
+    async with get_connection() as db:
+        if connector_id:
+            cur = await db.execute("SELECT * FROM connector_exports WHERE connector_id = ? ORDER BY created_at DESC LIMIT ?", (connector_id, limit))
+        else:
+            cur = await db.execute("SELECT * FROM connector_exports ORDER BY created_at DESC LIMIT ?", (limit,))
+        rows = await cur.fetchall()
+        await cur.close()
+        return [dict(r) for r in rows]

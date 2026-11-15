@@ -23,7 +23,7 @@ import xml.etree.ElementTree as ET
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi import Body, Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
@@ -142,6 +142,9 @@ RBAC_RULES: list[tuple[str, tuple[str, ...], str]] = [
     ("GET", ("/api/audit-log", "/api/logs", "/ui/audit-log"), "audit.read"),
     ("GET", ("/api/jobs", "/ui/jobs-automation"), "system.configure"),
     ("POST", ("/api/jobs",), "system.configure"),
+    ("GET", ("/api/connectors", "/ui/connectors"), "connectors.read"),
+    ("POST", ("/api/connectors",), "connectors.configure"),
+    ("DELETE", ("/api/connectors",), "connectors.configure"),
 ]
 
 
@@ -717,6 +720,16 @@ async def security_middleware(request: Request, call_next):
     if method == "GET" and not path.startswith("/api/") and request.cookies.get(SESSION_COOKIE_NAME) and not request.cookies.get(CSRF_COOKIE_NAME):
         response.set_cookie(CSRF_COOKIE_NAME, _new_csrf_token(), max_age=SESSION_TTL_SECONDS, httponly=False, samesite="lax", secure=request.url.scheme == "https", path="/")
     return response
+
+
+
+
+def require_permission(permission: str):
+    async def _dep(principal: dict[str, Any] = Depends(get_current_principal)) -> dict[str, Any]:
+        if not _has_permission(principal, permission):
+            raise HTTPException(status_code=403, detail="Forbidden", headers={"X-Required-Permission": permission})
+        return principal
+    return _dep
 
 
 def get_current_principal(request: Request) -> dict[str, Any]:
@@ -2783,3 +2796,139 @@ async def ui_content_studio(request: Request):
 @app.get("/ui/internal-communication", response_class=HTMLResponse)
 async def ui_internal_communication(request: Request):
     return templates.TemplateResponse(request, "internal_communication.html", {"request": request})
+
+
+@app.get("/api/integrations/status")
+async def api_integrations_status() -> dict[str, Any]:
+    """Aggregate integration/configuration status from real system state (no fabricated data)."""
+    from services.connector_registry import ConnectorRegistry
+    reg = ConnectorRegistry.get_instance()
+    matterhorn_cfg = await matterhorn_get_config()
+    matterhorn_feeds = await matterhorn_list_feeds()
+    shopware = len(getattr(runtime, "shopware_connections", {}) or {})
+    omniroute_url = await get_setting("omniroute_url") or await get_setting("omni_route_base_url")
+    return {
+        "status": "ok",
+        "database": "postgresql" if DATABASE_URL else "sqlite-wal",
+        "matterhorn": {
+            "configured": bool(matterhorn_cfg) or bool(matterhorn_feeds) or bool(await get_setting("matterhorn_feed_url")),
+            "feeds": len(matterhorn_feeds),
+        },
+        "shopware": {"configured_connections": shopware},
+        "omniroute": {"configured": bool(omniroute_url), "healthy": bool(getattr(runtime, "omniroute_healthy", False))},
+        "connectors": {"registered": len(reg.list_connectors())},
+        "jobs": {"persistent_worker": runtime.persistent_job_task is not None and not runtime.persistent_job_task.done() if getattr(runtime, "persistent_job_task", None) else False,
+                 "scheduler": runtime.scheduler_task is not None and not runtime.scheduler_task.done() if getattr(runtime, "scheduler_task", None) else False},
+        "event_bus": (runtime.event_bus.get_stats() if getattr(runtime, "event_bus", None) else {"running": False}),
+    }
+
+
+
+# ---------------------------------------------------------------------------
+# Multi-Channel Connector Management Center APIs
+# ---------------------------------------------------------------------------
+
+@app.get("/ui/connectors", response_class=HTMLResponse)
+async def ui_connectors(request: Request):
+    """Render Multi-Channel Connector Management Center dashboard."""
+    return templates.TemplateResponse(request, "connectors_dashboard.html", {"request": request})
+
+
+@app.get("/api/connectors")
+async def api_list_connectors(user: dict[str, Any] = Depends(require_permission("connectors.read"))):
+    """List all registered platform connectors with capabilities."""
+    from services.connector_registry import ConnectorRegistry
+    reg = ConnectorRegistry.get_instance()
+    return {
+        "status": "ok",
+        "connectors": reg.list_connectors(),
+    }
+
+
+@app.post("/api/connectors/{connector_id}/test")
+async def api_test_connector(connector_id: str, user: dict[str, Any] = Depends(require_permission("connectors.configure"))):
+    """Execute live connection test for a specific connector."""
+    from services.connector_registry import ConnectorRegistry
+    from database import connector_account_list
+    reg = ConnectorRegistry.get_instance()
+    accounts = await connector_account_list(connector_id)
+    cfg = accounts[0].get("credentials_json", {}) if accounts else {}
+    if isinstance(cfg, str):
+        try:
+            cfg = json.loads(cfg)
+        except Exception:
+            cfg = {}
+    conn = reg.instantiate(connector_id, config=cfg)
+    if not conn:
+        raise HTTPException(status_code=404, detail=f"Connector {connector_id} not found in registry.")
+    health = await conn.test_connection()
+    return {
+        "status": "ok",
+        "connector_id": connector_id,
+        "healthy": health.healthy,
+        "state": health.status.value,
+        "message": health.message,
+        "details": health.details,
+    }
+
+
+@app.get("/api/connectors/accounts")
+async def api_get_connector_accounts(user: dict[str, Any] = Depends(require_permission("connectors.read"))):
+    """List all seller accounts."""
+    from database import connector_account_list
+    rows = await connector_account_list()
+    return rows
+
+
+@app.post("/api/connectors/accounts")
+async def api_save_connector_account(account: dict[str, Any] = Body(...), user: dict[str, Any] = Depends(require_permission("connectors.configure"))):
+    """Save or update a seller account."""
+    from database import connector_account_upsert
+    saved = await connector_account_upsert(account)
+    return saved
+
+
+@app.delete("/api/connectors/accounts/{account_id}")
+async def api_delete_connector_account(account_id: str, user: dict[str, Any] = Depends(require_permission("connectors.configure"))):
+    """Delete a seller account."""
+    from database import connector_account_delete
+    ok = await connector_account_delete(account_id)
+    return {"status": "ok", "deleted": ok}
+
+
+@app.get("/api/connectors/mappings")
+async def api_get_connector_mappings(connector_id: str | None = None, user: dict[str, Any] = Depends(require_permission("connectors.read"))):
+    """List field mappings."""
+    from database import connector_mapping_list
+    return await connector_mapping_list(connector_id)
+
+
+@app.post("/api/connectors/mappings")
+async def api_save_connector_mapping(mapping: dict[str, Any] = Body(...), user: dict[str, Any] = Depends(require_permission("connectors.configure"))):
+    """Create or update a field mapping rule."""
+    from database import connector_mapping_upsert
+    return await connector_mapping_upsert(mapping)
+
+
+@app.get("/api/connectors/exports")
+async def api_get_connector_exports(connector_id: str | None = None, user: dict[str, Any] = Depends(require_permission("connectors.read"))):
+    """Get export queue and audit history."""
+    from database import connector_export_list
+    return await connector_export_list(connector_id)
+
+
+@app.post("/api/connectors/{connector_id}/export")
+async def api_trigger_connector_export(connector_id: str, payload: dict[str, Any] = Body(...), user: dict[str, Any] = Depends(require_permission("connectors.configure"))):
+    """Enqueue single SKU or bulk export to a platform connector."""
+    from database import connector_export_enqueue, list_products
+    sku = payload.get("sku")
+    if sku:
+        enqueued = await connector_export_enqueue(sku=sku, connector_id=connector_id)
+        return {"status": "ok", "enqueued": [enqueued]}
+    # Bulk export active products
+    prods = await list_products(limit=50)
+    enqueued_list = []
+    for p in prods:
+        item = await connector_export_enqueue(sku=p["sku"], connector_id=connector_id)
+        enqueued_list.append(item)
+    return {"status": "ok", "enqueued_count": len(enqueued_list)}

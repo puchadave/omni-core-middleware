@@ -22,11 +22,11 @@ from database import (
 
 DEFAULT_ROLES = {
     "SUPERADMIN": ["*"] ,
-    "ADMIN": ["users.manage","roles.manage","system.configure","audit.read","sessions.manage","products.write","pricing.write","bundles.manage","ai.configure","matterhorn.configure","shopware.configure","marketplace.manage"],
-    "MANAGER": ["products.write","pricing.write","bundles.manage","marketplace.manage"],
-    "EDITOR": ["products.write","ai.generate"],
-    "ANALYST": ["audit.read"],
-    "VIEWER": ["products.read","pricing.read"],
+    "ADMIN": ["users.manage","roles.manage","system.configure","audit.read","sessions.manage","products.write","pricing.write","bundles.manage","ai.configure","matterhorn.configure","shopware.configure","marketplace.manage","connectors.read","connectors.configure","connectors.activate","accounts.manage","mapping.manage","exports.execute"],
+    "MANAGER": ["products.write","pricing.write","bundles.manage","marketplace.manage","connectors.read","exports.execute"],
+    "EDITOR": ["products.write","ai.generate","connectors.read"],
+    "ANALYST": ["audit.read","connectors.read"],
+    "VIEWER": ["products.read","pricing.read","connectors.read"],
 }
 
 
