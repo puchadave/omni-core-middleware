@@ -1,47 +1,49 @@
 FROM python:3.11-alpine AS builder
 
-# Install build dependencies needed for compiling Python packages
-# Musl-dev is required for musl libc compatibility with uvloop and pydantic
-RUN apk add --no-cache --virtual=.build-dependencies \
-    gcc \
-    musl-dev \
-    libffi-dev \
-    openssl-dev \
-    cargo \
-    pkgconfig
+# Install system dependencies for asyncpg and pydantic
+RUN apk add --no-cache --virtual=.build-deps \
+        gcc \
+        musl-dev \
+        libpq-dev \
+        jpeg-dev \
+        zlib-dev \
+        cargo \
+        cargo-doc \
+        cargo-html \
+    && pip install --no-cache-dir \
+        fastapi==0.115.0 \
+        uvicorn[standard]==0.32.0 \
+        uvloop==0.21.0 \
+        httpx==0.27.2 \
+        pydantic==2.10.2 \
+        pydantic-settings==2.6.0 \
+        aiosqlite==0.20.0 \
+        jinja2==3.1.4
 
-# Set work directory
-WORKDIR /app
-
-# Copy requirements first for caching
-COPY requirements.txt .
-
-# Install dependencies into /prefix
-RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
-
-# Remove build dependencies to keep image small
-RUN apk del .build-dependencies
-
+# Runtime stage - only install production deps, remove build deps
 FROM python:3.11-alpine
 
-# Install only runtime dependencies (sqlite-libs, minimal libs needed)
+# Install runtime dependencies
 RUN apk add --no-cache \
-    sqlite-libs \
-    libffi \
-    openssl \
-    tzdata
+        libpq \
+        tzdata \
+        su-exec
 
+# Set working directory
 WORKDIR /app
 
-# Copy installed dependencies from builder
-COPY --from=builder /install /usr/local
+# Copy installed packages from builder
+COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
 
 # Copy application code
 COPY . .
 
-# Expose FastAPI port
+# Create non-root user for security
+RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+USER appuser
+
+# Expose the application port
 EXPOSE 8000
 
-# Start FastAPI with Uvicorn + uvloop
-# uvloop provides high-performance event loop for asyncio
+# Startup command with uvicorn and uvloop
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--loop", "uvloop"]
