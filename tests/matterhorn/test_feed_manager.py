@@ -65,7 +65,7 @@ def test_parse_xml_v2():
             <kategorie>Test Category</kategorie>
             <vorrat>5</vorrat>
         </offer>
-    </offs>"""
+    </offers>"""
     
     products = parse_xml_v2(xml_text)
     assert len(products) == 1
