@@ -32,6 +32,50 @@ class OmniRouteClient:
             logger.error("OmniRoute health check failed: %s", exc)
             return False
 
+    async def chat_completion(
+        self,
+        *,
+        model: str,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | dict[str, Any] = "auto",
+        timeout: float = 60.0,
+    ) -> dict[str, Any]:
+        """Call the OpenAI-compatible chat completions endpoint with optional tools."""
+        payload: dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            "tool_choice": tool_choice,
+        }
+        if tools:
+            payload["tools"] = tools
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                response = await client.post(
+                    f"{self.base_url}/chat/completions",
+                    headers=self.headers,
+                    json=payload,
+                )
+                response.raise_for_status()
+                data = response.json()
+                message = data.get("choices", [{}])[0].get("message", {})
+                tool_calls: list[dict[str, Any]] = []
+                for call in message.get("tool_calls", []) or []:
+                    function = call.get("function", {})
+                    tool_calls.append({
+                        "id": call.get("id"),
+                        "name": function.get("name"),
+                        "arguments": function.get("arguments", "{}"),
+                    })
+                return {
+                    "content": message.get("content", ""),
+                    "tool_calls": tool_calls,
+                    "raw": data,
+                }
+        except Exception as exc:
+            logger.error("OmniRoute chat completion failed: %s", exc)
+            raise
+
     async def get_ai_trend_analysis(self, prompt: str) -> Optional[Dict[str, Any]]:
         """Request a structured JSON fashion trend analysis from OmniRoute."""
         url = f"{self.base_url}/chat/completions"
