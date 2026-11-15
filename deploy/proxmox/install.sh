@@ -277,14 +277,22 @@ main() {
     # Wir nutzen einen temporären Ansatz: Dateien auf Host kopieren, dann in Container übernehmen
     local wawi_dir="/wawi"
 
-    # Repository klonen
-    if [ -d "$install_dir" ]; then
-        log_info "Existierendes Verzeichnis gefunden, aktualisiere..."
-        cd "$install_dir"
-        git pull 2>/dev/null || git clone "$git_url" . 2>/dev/null || log_err "Git Klon fehlgeschlagen"
+    # Repository klonen/aktualisieren
+    local git_branch="${GIT_BRANCH:-main}"
+    if [ -d "$install_dir/.git" ]; then
+        log_info "Existierendes Repository gefunden, aktualisiere (Branch: $git_branch)..."
+        git -C "$install_dir" remote set-url origin "$git_url" >/dev/null 2>&1 || true
+        git -C "$install_dir" fetch origin "$git_branch" >/dev/null 2>&1 || git -C "$install_dir" fetch origin >/dev/null 2>&1 || log_warn "git fetch fehlgeschlagen, verwende lokalen Stand"
+        git -C "$install_dir" checkout "$git_branch" >/dev/null 2>&1 || true
+        git -C "$install_dir" reset --hard "origin/$git_branch" >/dev/null 2>&1 || git -C "$install_dir" pull --ff-only >/dev/null 2>&1 || log_warn "Repository konnte nicht vollständig aktualisiert werden (lokaler Stand wird verwendet)"
+    elif [ -d "$install_dir" ] && [ "$(ls -A "$install_dir" 2>/dev/null)" ]; then
+        log_warn "Verzeichnis $install_dir ist kein Git-Repository. Sichere und klone neu..."
+        mv "$install_dir" "${install_dir}.bak.$(date +%s)" || { log_err "Kann $install_dir nicht sichern"; exit 1; }
+        git clone --depth 1 --branch "$git_branch" "$git_url" "$install_dir" || { log_err "Git Klon fehlgeschlagen"; exit 1; }
     else
-        log_info "Klone Repository..."
-        git clone "$git_url" "$install_dir" 2>/dev/null || log_err "Git Klon fehlgeschlagen"
+        log_info "Klone Repository (Branch: $git_branch)..."
+        mkdir -p "$(dirname "$install_dir")"
+        git clone --depth 1 --branch "$git_branch" "$git_url" "$install_dir" || { log_err "Git Klon fehlgeschlagen"; exit 1; }
     fi
 
     cd "$install_dir"
@@ -318,32 +326,36 @@ EOF
         log_info ".env Datei erstellt."
     fi
 
-    # Dependencies installieren im Container-Kontext
-    log_info "Installiere Systemabhängigkeiten..."
-    # Wir kopieren die benötigten Scripte in den Container
-    pct push "$ct_id" "$install_dir" --force 2>/dev/null || {
-        log_warn "pct push fehlgeschlagen, kopiere via tar..."
-        # Fallback: tar basierte Übertragung
-        cd "$install_dir"
-        # Wichtige Dateien übertragen
-    }
+    # Projektdateien in den Container übertragen
+    log_info "Übertrage Projektdateien in den Container (/wawi)..."
+    if ! pct exec "$ct_id" -- mkdir -p /wawi >/dev/null 2>&1; then
+        log_warn "Konnte /wawi im Container nicht erstellen"
+    fi
+    local tmp_tar
+    tmp_tar=$(mktemp /tmp/wawi-src.XXXXXX.tar)
+    if tar -C "$install_dir" --exclude='.git' -cf "$tmp_tar" .; then
+        if ! pct push "$ct_id" "$tmp_tar" /tmp/wawi-src.tar >/dev/null 2>&1 || ! pct exec "$ct_id" -- bash -lc "mkdir -p /wawi && tar -xf /tmp/wawi-src.tar -C /wawi && rm -f /tmp/wawi-src.tar" >/dev/null 2>&1; then
+            log_warn "pct push/tar-Transfer fehlgeschlagen, versuche direkten Stream..."
+            tar -C "$install_dir" --exclude='.git' -cf - . | pct exec "$ct_id" -- tar -C /wawi -xf - >/dev/null 2>&1 || log_warn "Projekttransfer in Container fehlgeschlagen"
+        fi
+    else
+        log_warn "Archiv-Erstellung fehlgeschlagen"
+    fi
+    rm -f "$tmp_tar"
 
     # --- Bootstrap ausführen ---
     log_info "------------------------------------------"
     log_info "[12/15] Führe Bootstrap innerhalb des Containers aus..."
 
-    # Bootstrap Script vorbereiten und in den Container einspielen
-    # Wir nutzen das existente Script aus dem Repository
-    if [ -f "$install_dir/scripts/wawi-bootstrap.sh" ]; then
-        log_info "Starte optimiertes Bootstrap..."
-        # Wir setzen environment Variablen für non-interactive Mode
-        local env_vars="INTERACTIVE=false ADMIN_EMAIL=admin@omni-core.local ADMIN_PASSWORD=SecurePass123!"
-        pct exec "$ct_id" -- bash -c "INTERACTIVE=false ADMIN_EMAIL=admin@omni-core.local ADMIN_PASSWORD=SecurePass123! bash /wawi/scripts/wawi-bootstrap.sh install" 2>/dev/null || {
-            log_warn "Bootstrap im Container fehlgeschlagen, versuche alternative Methode..."
-            # Fallback: Skript lokal ausführen wenn möglich
-            cd "$install_dir"
-            bash scripts/wawi-bootstrap.sh install 2>&1 | head -20 || log_warn "Lokales Bootstrap nicht verfügbar"
+    # Bootstrap innerhalb des Containers ausführen
+    if pct exec "$ct_id" -- test -f /wawi/scripts/wawi-bootstrap.sh >/dev/null 2>&1; then
+        log_info "Starte optimiertes Bootstrap im Container..."
+        pct exec "$ct_id" -- bash -lc "cd /wawi && INTERACTIVE=false ADMIN_EMAIL=admin@omni-core.local ADMIN_PASSWORD=SecurePass123! bash scripts/wawi-bootstrap.sh install" || {
+            log_warn "Bootstrap im Container fehlgeschlagen (Details oben/prüfen)."
         }
+    elif [ -f "$install_dir/scripts/wawi-bootstrap.sh" ]; then
+        log_warn "Bootstrap-Script im Container nicht gefunden, versuche lokalen Fallback..."
+        (cd "$install_dir" && INTERACTIVE=false ADMIN_EMAIL=admin@omni-core.local ADMIN_PASSWORD=SecurePass123! bash scripts/wawi-bootstrap.sh install) || log_warn "Lokales Bootstrap fehlgeschlagen"
     else
         log_warn "Bootstrap Script nicht im Repository gefunden."
     fi
