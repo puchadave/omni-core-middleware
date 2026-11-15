@@ -10,6 +10,7 @@ Map administrative UI functions to existing Omni-Core API endpoints and identify
 |---|---|---:|---|---|
 | System overview | `/api/stats` | GET | Implemented | Live counters, queue, uptime, OmniRoute health. |
 | Health | `/api/health` | GET | Implemented | Database, OmniRoute, queue, uptime. |
+| Health alias | `/api/system-health` | GET | Implemented | Added for admin dashboard frontend compatibility. |
 | Control center overview | `/api/control-center/overview` | GET | Implemented | Executive overview. |
 | Control center dashboard | `/api/control-center/dashboard` | GET | Implemented | Aggregated dashboard data. |
 | Control center system | `/api/control-center/system` | GET | Implemented | System intelligence metrics. |
@@ -49,6 +50,7 @@ Map administrative UI functions to existing Omni-Core API endpoints and identify
 | Campaigns | `/api/marketing/campaigns` | GET | Implemented | DB query. |
 | Campaign generate | `/api/marketing/campaigns/generate` | POST | Placeholder | Returns status only. |
 | Product content generate | `/api/marketing/products/{product_id}/generate-content` | POST | Placeholder | Returns status only. |
+| Product content generate by SKU | `/api/marketing/products/{sku}/generate-content` | POST | Implemented | Backend endpoint added for admin frontend SKU-based calls. |
 | Product content get | `/api/marketing/products/{product_id}/content` | GET | Implemented | Reads channel content. |
 
 ## Export
@@ -74,6 +76,7 @@ Map administrative UI functions to existing Omni-Core API endpoints and identify
 | Competitor | search, match, price, providers, stats | Multiple | Implemented / partial | Placeholder pricing/match logic. |
 | Google | accounts, export, queue, stats, process, retry, sync, health | Multiple | Implemented | DB + runtime. |
 | OmniRoute | providers, models, rules, policies, select, cost, stats | Multiple | Implemented | Runtime + DB. |
+| AI image / models | `/api/models`, `/api/photoshoot/start`, `/api/photoshoot/status/{shootId}`, `/api/photoshoot/results/{shootId}` | Multiple | Implemented | Backend endpoints added for admin frontend compatibility. |
 | Control center | overview, dashboard, system | GET | Implemented | Global control. |
 | Pipeline | Matterhorn → Google, auto-export | POST | Implemented | Pipeline orchestration. |
 

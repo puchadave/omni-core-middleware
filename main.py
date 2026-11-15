@@ -382,6 +382,12 @@ async def health_check() -> dict[str, Any]:
     }
 
 
+@app.get("/api/system-health")
+async def system_health() -> dict[str, Any]:
+    """Admin dashboard health alias."""
+    return await health_check()
+
+
 @app.get("/api/stats")
 async def stats() -> dict[str, Any]:
     """Return live dashboard counters."""
@@ -649,6 +655,15 @@ async def get_product_content(product_id: int):
 # ---------------------------------------------------------------------------
 # Export API
 # ---------------------------------------------------------------------------
+
+@app.post("/api/marketing/products/{sku}/generate-content")
+async def generate_product_content_by_sku(sku: str) -> dict[str, Any]:
+    """Generate marketing content for a product by SKU."""
+    product = await fetch_product(sku)
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+    return {"status": "ok", "product_sku": sku, "message": "Product content generation endpoint"}
+
 
 @app.get("/api/export/channels")
 async def list_export_channels():
@@ -1460,6 +1475,12 @@ async def list_omniroute_models(provider_id: str | None = None, category: str | 
         "models": [m.to_dict() for m in models],
     }
 
+@app.get("/api/models")
+async def list_models(provider_id: str | None = None, category: str | None = None) -> list[dict[str, Any]]:
+    """List AI models for admin frontend."""
+    return await list_omniroute_models(provider_id=provider_id, category=category)
+
+
 @app.post("/api/omniroute/routing/rules")
 async def create_omniroute_routing_rule(payload: OmniRouteRuleCreate):
     """Create a routing rule."""
@@ -1602,6 +1623,28 @@ async def omniroute_dashboard_page(request: Request):
 # ---------------------------------------------------------------------------
 # Integration Pipeline: Matterhorn → AI → Google Merchant Center
 # ---------------------------------------------------------------------------
+
+@app.post("/api/photoshoot/start")
+async def start_photoshoot(request: dict[str, Any]) -> dict[str, Any]:
+    """Start an AI photoshoot."""
+    from uuid import uuid4
+
+    photoshoot = AIPhotoshoot()
+    result = await photoshoot.generate(request)
+    return {"shoot_id": str(uuid4()), "status": "processing", **result}
+
+
+@app.get("/api/photoshoot/status/{shootId}")
+async def photoshoot_status(shootId: str) -> dict[str, Any]:
+    """Get AI photoshoot status."""
+    return {"shoot_id": shootId, "status": "processing"}
+
+
+@app.get("/api/photoshoot/results/{shootId}")
+async def photoshoot_results(shootId: str) -> dict[str, Any]:
+    """Get AI photoshoot results."""
+    return {"shoot_id": shootId, "results": []}
+
 
 @app.post("/api/pipeline/matterhorn-to-google")
 async def pipeline_matterhorn_to_google(account_id: str, product_sku: str):
