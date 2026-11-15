@@ -3269,6 +3269,11 @@ async def sales_marketing_tower_page(request: Request):
 async def photoshoot_page(request: Request):
     return templates.TemplateResponse("photoshoot.html", {"request": request})
 
+
+@app.get("/ui/erp-pim", response_class=HTMLResponse)
+async def ui_erp_pim(request: Request):
+    return templates.TemplateResponse("erp_pim.html", {"request": request})
+
 # --- Supporting APIs (jobs, scheduler, audit, news, knowledge) ---
 
 class JobCreate(BaseModel):

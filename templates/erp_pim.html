@@ -1,0 +1,435 @@
+{% extends "base.html" %}
+{% block title %}Lite ERP / PIM{% endblock %}
+{% block content %}
+<div x-data="erpPimApp()" x-init="init()" class="space-y-4">
+  <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+    <div>
+      <h1 class="text-2xl font-bold">Lite-Warenwirtschaft (ERP / PIM)</h1>
+      <p class="text-sm text-slate-400">Produktstammdaten, Varianten, Bestand, Medien & XML-Import (localStorage + API-Adapter vorbereitet)</p>
+    </div>
+    <div class="flex flex-wrap gap-2">
+      <button @click="exportJSON()" class="px-3 py-2 rounded bg-slate-700 hover:bg-slate-600 text-sm">Export JSON</button>
+      <button @click="exportSQL()" class="px-3 py-2 rounded bg-slate-700 hover:bg-slate-600 text-sm">Export SQL</button>
+      <button @click="confirmReset()" class="px-3 py-2 rounded bg-red-700 hover:bg-red-600 text-sm">Reset</button>
+    </div>
+  </div>
+
+  <!-- Toasts -->
+  <div class="fixed top-4 right-4 z-50 space-y-2 w-80">
+    <template x-for="t in toasts" :key="t.id">
+      <div class="rounded border px-3 py-2 text-sm shadow-lg" :class="t.type==='error'?'bg-red-900/90 border-red-700':'bg-emerald-900/90 border-emerald-700'">
+        <div class="font-medium" x-text="t.title"></div>
+        <div class="text-slate-200" x-text="t.message"></div>
+      </div>
+    </template>
+  </div>
+
+  <!-- Tabs -->
+  <div class="bg-slate-900 border border-slate-800 rounded-lg p-2 flex flex-wrap gap-2 text-sm">
+    <template x-for="tab in tabs" :key="tab.id">
+      <button @click="activeTab=tab.id" class="px-3 py-2 rounded" :class="activeTab===tab.id?'bg-indigo-600':'hover:bg-slate-800'" x-text="tab.label"></button>
+    </template>
+  </div>
+
+  <!-- Dashboard -->
+  <section x-show="activeTab==='dashboard'" class="grid grid-cols-2 md:grid-cols-4 gap-4">
+    <div class="bg-slate-900 border border-slate-800 rounded-lg p-4"><div class="text-slate-400 text-xs">Produkte</div><div class="text-2xl font-bold" x-text="db.products.length"></div></div>
+    <div class="bg-slate-900 border border-slate-800 rounded-lg p-4"><div class="text-slate-400 text-xs">Varianten/SKUs</div><div class="text-2xl font-bold" x-text="db.products.reduce((a,p)=>a+(p.options?.length||0),0)"></div></div>
+    <div class="bg-slate-900 border border-slate-800 rounded-lg p-4"><div class="text-slate-400 text-xs">Bestand gesamt</div><div class="text-2xl font-bold" x-text="db.products.reduce((a,p)=>a+p.options.reduce((s,o)=>s+Number(o.stock||0),0),0)"></div></div>
+    <div class="bg-slate-900 border border-slate-800 rounded-lg p-4"><div class="text-slate-400 text-xs">Marken/Kategorien</div><div class="text-2xl font-bold"><span x-text="db.brands.length"></span>/<span x-text="db.categories.length"></span></div></div>
+    <div class="md:col-span-4 bg-slate-900 border border-slate-800 rounded-lg p-4">
+      <h2 class="font-semibold mb-2">Status</h2>
+      <div class="text-sm text-slate-300">Persistenz: <span class="text-emerald-400">localStorage aktiv</span> · API-Adapter: <span class="text-amber-400">vorbereitet (ApiService)</span> · Letzte Speicherung: <span x-text="lastSaved || '—'"></span></div>
+    </div>
+  </section>
+
+  <!-- Products -->
+  <section x-show="activeTab==='products'" class="space-y-3">
+    <div class="flex flex-col md:flex-row gap-2 md:items-center md:justify-between">
+      <div class="flex flex-1 gap-2">
+        <input x-model="productSearch" placeholder="Suche (Name, ID, Farbe, SKU/EAN)... (/ fokussiert)" @keydown.window.slash.prevent="$el.focus()" class="flex-1 bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm">
+        <select x-model="productCategoryFilter" class="bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm">
+          <option value="">Alle Kategorien</option>
+          <template x-for="c in db.categories" :key="c.category_id"><option :value="c.category_id" x-text="c.category_name"></option></template>
+        </select>
+      </div>
+      <button @click="openProductForm()" class="bg-indigo-600 hover:bg-indigo-500 px-4 py-2 rounded text-sm">+ Produkt</button>
+    </div>
+    <div class="bg-slate-900 border border-slate-800 rounded-lg overflow-auto">
+      <table class="w-full text-sm">
+        <thead class="text-slate-400 bg-slate-950/50"><tr>
+          <th class="text-left p-2">ID</th><th class="text-left p-2">Name</th><th class="text-left p-2">Marke</th><th class="text-left p-2">Kategorie</th><th class="text-left p-2">Preis</th><th class="text-left p-2">Varianten</th><th class="text-left p-2">Bestand</th><th class="text-left p-2">Aktionen</th>
+        </tr></thead>
+        <tbody>
+          <template x-for="p in filteredProducts()" :key="p.product_id">
+            <tr class="border-t border-slate-800 hover:bg-slate-800/40">
+              <td class="p-2" x-text="p.product_id"></td>
+              <td class="p-2"><div class="font-medium" x-text="p.name"></div><div class="text-xs text-slate-400" x-text="p.color+' · '+p.product_type"></div></td>
+              <td class="p-2" x-text="brandName(p.brand_id)"></td>
+              <td class="p-2" x-text="categoryName(p.category_id)"></td>
+              <td class="p-2" x-text="formatPrice(p.price)"></td>
+              <td class="p-2"><span class="px-2 py-0.5 rounded bg-slate-800 text-xs" x-text="(p.options||[]).length+' SKUs'"></span></td>
+              <td class="p-2">
+                <span class="px-2 py-0.5 rounded text-xs" :class="totalStock(p)>0?'bg-emerald-900/60 text-emerald-300':'bg-red-900/60 text-red-300'" x-text="totalStock(p)"></span>
+              </td>
+              <td class="p-2 space-x-2 whitespace-nowrap">
+                <button @click="editProduct(p)" class="text-indigo-400 hover:underline">Bearbeiten</button>
+                <button @click="deleteProduct(p.product_id)" class="text-red-400 hover:underline">Löschen</button>
+              </td>
+            </tr>
+          </template>
+          <tr x-show="filteredProducts().length===0"><td colspan="8" class="p-4 text-slate-400">Keine Produkte gefunden.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Product Form Modal -->
+    <div x-show="productModal.open" x-cloak class="fixed inset-0 z-40 bg-black/70 flex items-start justify-center overflow-auto p-4">
+      <div class="bg-slate-900 border border-slate-700 rounded-lg w-full max-w-5xl p-4 space-y-4" @keydown.escape.window="productModal.open=false">
+        <div class="flex justify-between items-center"><h3 class="text-lg font-semibold" x-text="productModal.editing?'Produkt bearbeiten':'Produkt anlegen'"></h3><button @click="productModal.open=false" class="text-slate-400 hover:text-white">✕</button></div>
+        <div class="grid md:grid-cols-3 gap-3 text-sm">
+          <label class="block">Produkt-ID<input type="number" x-model.number="form.product_id" class="mt-1 w-full bg-slate-800 border border-slate-700 rounded px-2 py-2"></label>
+          <label class="block md:col-span-2">Name<input x-model="form.name" class="mt-1 w-full bg-slate-800 border border-slate-700 rounded px-2 py-2"></label>
+          <label class="block">Marke<select x-model.number="form.brand_id" class="mt-1 w-full bg-slate-800 border border-slate-700 rounded px-2 py-2"><option value="">—</option><template x-for="b in db.brands" :key="b.brand_id"><option :value="b.brand_id" x-text="b.brand_name"></option></template></select></label>
+          <label class="block">Kategorie<select x-model.number="form.category_id" class="mt-1 w-full bg-slate-800 border border-slate-700 rounded px-2 py-2"><option value="">—</option><template x-for="c in db.categories" :key="c.category_id"><option :value="c.category_id" x-text="c.category_path||c.category_name"></option></template></select></label>
+          <label class="block">Preis<input type="number" step="0.01" x-model.number="form.price" class="mt-1 w-full bg-slate-800 border border-slate-700 rounded px-2 py-2"></label>
+          <label class="block">Farbe<input x-model="form.color" class="mt-1 w-full bg-slate-800 border border-slate-700 rounded px-2 py-2"></label>
+          <label class="block">Produkttyp<input x-model="form.product_type" class="mt-1 w-full bg-slate-800 border border-slate-700 rounded px-2 py-2"></label>
+          <label class="block">Erstellt am<input type="datetime-local" x-model="form.creation_date" class="mt-1 w-full bg-slate-800 border border-slate-700 rounded px-2 py-2"></label>
+          <label class="block md:col-span-3">Beschreibung<textarea x-model="form.description" rows="3" class="mt-1 w-full bg-slate-800 border border-slate-700 rounded px-2 py-2"></textarea></label>
+        </div>
+
+        <!-- Options/Variants -->
+        <div class="border border-slate-800 rounded p-3">
+          <div class="flex justify-between items-center mb-2"><h4 class="font-semibold">Varianten / Optionen (SKUs)</h4><button @click="addOption()" class="text-sm bg-slate-700 px-2 py-1 rounded">+ Variante</button></div>
+          <div class="overflow-auto"><table class="w-full text-xs"><thead class="text-slate-400"><tr><th class="p-1 text-left">Option/SKU ID</th><th class="p-1 text-left">Größe/Name</th><th class="p-1 text-left">Bestand</th><th class="p-1 text-left">Lieferzeit (Tage)</th><th class="p-1 text-left">EAN</th><th></th></tr></thead><tbody>
+            <template x-for="(o,idx) in form.options" :key="idx">
+              <tr class="border-t border-slate-800"><td class="p-1"><input x-model="o.option_id" class="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1"></td><td class="p-1"><input x-model="o.option_name" class="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1"></td><td class="p-1"><input type="number" x-model.number="o.stock" class="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1"></td><td class="p-1"><input type="number" x-model.number="o.available_in_days" class="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1"></td><td class="p-1"><input x-model="o.ean" class="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1"></td><td class="p-1"><button @click="form.options.splice(idx,1)" class="text-red-400">✕</button></td></tr>
+            </template>
+          </tbody></table></div>
+        </div>
+
+        <!-- Images -->
+        <div class="border border-slate-800 rounded p-3">
+          <div class="flex justify-between items-center mb-2"><h4 class="font-semibold">Bilder</h4><button @click="addImage()" class="text-sm bg-slate-700 px-2 py-1 rounded">+ Bild</button></div>
+          <template x-for="(img,idx) in form.images" :key="idx">
+            <div class="flex gap-2 mb-2 text-xs"><input type="number" x-model.number="img.image_id" placeholder="Image ID" class="w-28 bg-slate-800 border border-slate-700 rounded px-2 py-1"><input x-model="img.image_url" placeholder="Bild-URL" class="flex-1 bg-slate-800 border border-slate-700 rounded px-2 py-1"><button @click="form.images.splice(idx,1)" class="text-red-400">✕</button></div>
+          </template>
+        </div>
+
+        <!-- Materials -->
+        <div class="border border-slate-800 rounded p-3">
+          <div class="flex justify-between items-center mb-2"><h4 class="font-semibold">Materialien</h4><button @click="addMaterial()" class="text-sm bg-slate-700 px-2 py-1 rounded">+ Material</button></div>
+          <template x-for="(m,idx) in form.materials" :key="idx">
+            <div class="flex gap-2 mb-2 text-xs"><input type="number" x-model.number="m.material_id" placeholder="ID" class="w-24 bg-slate-800 border border-slate-700 rounded px-2 py-1"><input x-model="m.material_name" placeholder="Material" class="flex-1 bg-slate-800 border border-slate-700 rounded px-2 py-1"><input type="number" x-model.number="m.percentage" placeholder="%" class="w-24 bg-slate-800 border border-slate-700 rounded px-2 py-1"><button @click="form.materials.splice(idx,1)" class="text-red-400">✕</button></div>
+          </template>
+        </div>
+
+        <!-- Size Charts -->
+        <div class="border border-slate-800 rounded p-3">
+          <div class="flex justify-between items-center mb-2"><h4 class="font-semibold">Größentabelle</h4><button @click="addSizeChart()" class="text-sm bg-slate-700 px-2 py-1 rounded">+ Zeile</button></div>
+          <div class="overflow-auto"><table class="w-full text-xs"><thead class="text-slate-400"><tr><th class="p-1">Chart ID</th><th class="p-1">Size</th><th class="p-1">Hüfte</th><th class="p-1">Brust</th><th class="p-1">Taille</th><th class="p-1">Länge</th><th></th></tr></thead><tbody>
+            <template x-for="(s,idx) in form.size_charts" :key="idx">
+              <tr class="border-t border-slate-800"><td class="p-1"><input type="number" x-model.number="s.chart_id" class="w-20 bg-slate-800 border border-slate-700 rounded px-1 py-1"></td><td class="p-1"><input x-model="s.size_label" class="w-20 bg-slate-800 border border-slate-700 rounded px-1 py-1"></td><td class="p-1"><input x-model="s.hip_width" class="w-24 bg-slate-800 border border-slate-700 rounded px-1 py-1"></td><td class="p-1"><input x-model="s.chest_circumference" class="w-24 bg-slate-800 border border-slate-700 rounded px-1 py-1"></td><td class="p-1"><input x-model="s.waist_width" class="w-24 bg-slate-800 border border-slate-700 rounded px-1 py-1"></td><td class="p-1"><input x-model="s.total_length" class="w-24 bg-slate-800 border border-slate-700 rounded px-1 py-1"></td><td class="p-1"><button @click="form.size_charts.splice(idx,1)" class="text-red-400">✕</button></td></tr>
+            </template>
+          </tbody></table></div>
+        </div>
+
+        <div class="flex justify-end gap-2">
+          <button @click="productModal.open=false" class="px-4 py-2 rounded bg-slate-700">Abbrechen</button>
+          <button @click="saveProduct()" class="px-4 py-2 rounded bg-indigo-600 hover:bg-indigo-500">Speichern</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Brands -->
+  <section x-show="activeTab==='brands'" class="space-y-3">
+    <div class="flex justify-between items-center"><h2 class="font-semibold">Marken</h2><button @click="addBrand()" class="bg-indigo-600 px-3 py-2 rounded text-sm">+ Marke</button></div>
+    <div class="bg-slate-900 border border-slate-800 rounded-lg overflow-auto"><table class="w-full text-sm"><thead class="text-slate-400"><tr><th class="p-2 text-left">ID</th><th class="p-2 text-left">Name</th><th class="p-2 text-left">Aktionen</th></tr></thead><tbody>
+      <template x-for="b in db.brands" :key="b.brand_id"><tr class="border-t border-slate-800"><td class="p-2" x-text="b.brand_id"></td><td class="p-2" x-text="b.brand_name"></td><td class="p-2 space-x-2"><button @click="editBrand(b)" class="text-indigo-400">Bearbeiten</button><button @click="deleteBrand(b.brand_id)" class="text-red-400">Löschen</button></td></tr></template>
+      <tr x-show="db.brands.length===0"><td colspan="3" class="p-3 text-slate-400">Keine Marken.</td></tr>
+    </tbody></table></div>
+  </section>
+
+  <!-- Categories -->
+  <section x-show="activeTab==='categories'" class="space-y-3">
+    <div class="flex justify-between items-center"><h2 class="font-semibold">Kategorien</h2><button @click="addCategory()" class="bg-indigo-600 px-3 py-2 rounded text-sm">+ Kategorie</button></div>
+    <div class="bg-slate-900 border border-slate-800 rounded-lg overflow-auto"><table class="w-full text-sm"><thead class="text-slate-400"><tr><th class="p-2 text-left">ID</th><th class="p-2 text-left">Name</th><th class="p-2 text-left">Pfad</th><th class="p-2 text-left">Aktionen</th></tr></thead><tbody>
+      <template x-for="c in db.categories" :key="c.category_id"><tr class="border-t border-slate-800"><td class="p-2" x-text="c.category_id"></td><td class="p-2" x-text="c.category_name"></td><td class="p-2 text-slate-300" x-text="c.category_path"></td><td class="p-2 space-x-2"><button @click="editCategory(c)" class="text-indigo-400">Bearbeiten</button><button @click="deleteCategory(c.category_id)" class="text-red-400">Löschen</button></td></tr></template>
+      <tr x-show="db.categories.length===0"><td colspan="4" class="p-3 text-slate-400">Keine Kategorien.</td></tr>
+    </tbody></table></div>
+  </section>
+
+  <!-- XML Import -->
+  <section x-show="activeTab==='import'" class="space-y-4">
+    <div class="bg-slate-900 border border-slate-800 rounded-lg p-4 space-y-3">
+      <h2 class="font-semibold">XML-Import-Manager</h2>
+      <p class="text-sm text-slate-400">XML-Datei hochladen oder Inhalt einfügen. Parser erkennt gängige Produktfelder (id/sku/name/brand/category/price/stock/ean/images/materials/size charts) heuristisch und mappt auf das PIM-Schema.</p>
+      <div class="flex flex-col md:flex-row gap-3">
+        <input type="file" accept=".xml,text/xml,application/xml" @change="onXmlFile($event)" class="text-sm">
+        <button @click="parseXmlInput()" class="bg-slate-700 hover:bg-slate-600 px-3 py-2 rounded text-sm">XML parsen & Preview</button>
+        <button @click="importParsed()" :disabled="!importPreview" class="bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 px-3 py-2 rounded text-sm">Import übernehmen (Merge)</button>
+      </div>
+      <textarea x-model="xmlInput" rows="10" placeholder="XML hier einfügen..." class="w-full bg-slate-950 border border-slate-700 rounded p-2 text-xs font-mono"></textarea>
+      <div x-show="importErrors.length" class="text-sm text-red-300"><div class="font-medium mb-1">Hinweise/Fehler:</div><ul class="list-disc ml-5"><template x-for="e in importErrors"><li x-text="e"></li></template></ul></div>
+    </div>
+    <div x-show="importPreview" class="bg-slate-900 border border-slate-800 rounded-lg p-4">
+      <h3 class="font-semibold mb-2">Import-Vorschau</h3>
+      <div class="grid md:grid-cols-4 gap-2 text-sm mb-3">
+        <div class="bg-slate-950 border border-slate-800 rounded p-2">Produkte: <b x-text="importPreview?.products?.length||0"></b></div>
+        <div class="bg-slate-950 border border-slate-800 rounded p-2">Marken: <b x-text="importPreview?.brands?.length||0"></b></div>
+        <div class="bg-slate-950 border border-slate-800 rounded p-2">Kategorien: <b x-text="importPreview?.categories?.length||0"></b></div>
+        <div class="bg-slate-950 border border-slate-800 rounded p-2">Varianten: <b x-text="(importPreview?.products||[]).reduce((a,p)=>a+(p.options?.length||0),0)"></b></div>
+      </div>
+      <pre class="text-xs bg-slate-950 border border-slate-800 rounded p-2 overflow-auto max-h-80" x-text="JSON.stringify(importPreview, null, 2)"></pre>
+    </div>
+  </section>
+
+  <!-- Settings / API -->
+  <section x-show="activeTab==='settings'" class="space-y-4">
+    <div class="bg-slate-900 border border-slate-800 rounded-lg p-4 space-y-3">
+      <h2 class="font-semibold">Daten & API-Adapter</h2>
+      <div class="text-sm text-slate-300">Client-seitiger State mit localStorage-Persistenz. Vorbereitete Adapter-Schicht für REST/GraphQL (späterer Backend-Anschluss an PostgreSQL/MySQL).</div>
+      <div class="grid md:grid-cols-2 gap-3 text-sm">
+        <label class="block">API Modus<select x-model="apiConfig.mode" @change="saveApiConfig()" class="mt-1 w-full bg-slate-800 border border-slate-700 rounded px-2 py-2"><option value="local">localStorage (aktiv)</option><option value="rest">REST (vorbereitet)</option><option value="graphql">GraphQL (vorbereitet)</option></select></label>
+        <label class="block">API Base URL<input x-model="apiConfig.baseUrl" @change="saveApiConfig()" placeholder="https://api.example.com" class="mt-1 w-full bg-slate-800 border border-slate-700 rounded px-2 py-2"></label>
+      </div>
+      <div class="flex gap-2"><button @click="loadSampleData()" class="bg-slate-700 px-3 py-2 rounded text-sm">Beispieldaten laden</button><button @click="saveNow()" class="bg-indigo-600 px-3 py-2 rounded text-sm">Jetzt speichern</button></div>
+      <pre class="text-xs bg-slate-950 border border-slate-800 rounded p-2 overflow-auto max-h-64" x-text="JSON.stringify({storageKey: STORAGE_KEY, apiConfig, counts:{brands:db.brands.length,categories:db.categories.length,products:db.products.length}}, null, 2)"></pre>
+    </div>
+  </section>
+</div>
+
+<script>
+function erpPimApp(){
+  const STORAGE_KEY = 'omni_erp_pim_v1';
+  const API_CFG_KEY = 'omni_erp_pim_api_v1';
+  const nowIso = () => new Date().toISOString();
+  const deepClone = (o)=>JSON.parse(JSON.stringify(o));
+  const emptyDb = () => ({brands:[], categories:[], products:[]});
+
+  // Prepared API adapter layer (local now, swappable later)
+  const ApiService = {
+    mode: 'local', baseUrl: '',
+    async load(){ return JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null') || emptyDb(); },
+    async save(db){ localStorage.setItem(STORAGE_KEY, JSON.stringify(db)); return {ok:true}; },
+    async reset(){ localStorage.removeItem(STORAGE_KEY); return {ok:true}; },
+    // Future: async request(path, opts){ if(this.mode==='rest') return fetch(this.baseUrl+path,opts)... }
+  };
+
+  return {
+    STORAGE_KEY,
+    tabs: [
+      {id:'dashboard',label:'Dashboard'},
+      {id:'products',label:'Produkte'},
+      {id:'brands',label:'Marken'},
+      {id:'categories',label:'Kategorien'},
+      {id:'import',label:'XML-Import'},
+      {id:'settings',label:'Daten/API'},
+    ],
+    activeTab: 'dashboard',
+    db: emptyDb(),
+    apiConfig: {mode:'local', baseUrl:''},
+    toasts: [],
+    lastSaved: '',
+    productSearch: '',
+    productCategoryFilter: '',
+    productModal: {open:false, editing:false},
+    form: null,
+    xmlInput: '',
+    importPreview: null,
+    importErrors: [],
+
+    async init(){
+      try{ this.apiConfig = JSON.parse(localStorage.getItem(API_CFG_KEY)||'null') || this.apiConfig; }catch(e){}
+      ApiService.mode = this.apiConfig.mode; ApiService.baseUrl = this.apiConfig.baseUrl;
+      this.db = await ApiService.load();
+      if(!this.db || !Array.isArray(this.db.products)) this.db = emptyDb();
+      this.normalizeDb();
+      if(this.db.products.length===0 && this.db.brands.length===0 && this.db.categories.length===0){ this.loadSampleData(false); }
+      this.form = this.emptyProduct();
+    },
+    normalizeDb(){
+      this.db.brands = (this.db.brands||[]).map(b=>({brand_id:Number(b.brand_id)||0, brand_name:String(b.brand_name||'')}));
+      this.db.categories = (this.db.categories||[]).map(c=>({category_id:Number(c.category_id)||0, category_name:String(c.category_name||''), category_path:String(c.category_path||c.category_name||'')}));
+      this.db.products = (this.db.products||[]).map(p=>this.normalizeProduct(p));
+    },
+    normalizeProduct(p){
+      const n = {
+        product_id:Number(p.product_id)||0,
+        name:String(p.name||''),
+        creation_date:String(p.creation_date||nowIso()),
+        brand_id:Number(p.brand_id)||0,
+        category_id:Number(p.category_id)||0,
+        color:String(p.color||''),
+        product_type:String(p.product_type||''),
+        price:Number(p.price)||0,
+        description:String(p.description||''),
+        images:Array.isArray(p.images)?p.images.map(i=>({image_id:Number(i.image_id)||0, product_id:Number(i.product_id||p.product_id)||0, image_url:String(i.image_url||'')})) : [],
+        materials:Array.isArray(p.materials)?p.materials.map(m=>({material_id:Number(m.material_id)||0, product_id:Number(m.product_id||p.product_id)||0, material_name:String(m.material_name||''), percentage:Number(m.percentage)||0})) : [],
+        size_charts:Array.isArray(p.size_charts)?p.size_charts.map(s=>({chart_id:Number(s.chart_id)||0, product_id:Number(s.product_id||p.product_id)||0, size_label:String(s.size_label||''), hip_width:s.hip_width||'', chest_circumference:s.chest_circumference||'', waist_width:s.waist_width||'', total_length:s.total_length||''})) : [],
+        options:Array.isArray(p.options)?p.options.map(o=>({option_id:String(o.option_id||''), product_id:Number(o.product_id||p.product_id)||0, option_name:String(o.option_name||''), stock:Number(o.stock)||0, available_in_days:Number(o.available_in_days)||0, ean:String(o.ean||'')})) : [],
+      };
+      return n;
+    },
+    async persist(){ await ApiService.save(this.db); this.lastSaved = new Date().toLocaleString(); },
+    toast(title,message,type='success'){ const id=Math.random().toString(36).slice(2); this.toasts.push({id,title,message,type}); setTimeout(()=>{ this.toasts=this.toasts.filter(t=>t.id!==id); }, 3500); },
+
+    // Lookups/helpers
+    brandName(id){ return (this.db.brands.find(b=>b.brand_id==id)||{}).brand_name || '—'; },
+    categoryName(id){ return (this.db.categories.find(c=>c.category_id==id)||{}).category_name || '—'; },
+    formatPrice(v){ return new Intl.NumberFormat('de-DE',{style:'currency',currency:'EUR'}).format(Number(v||0)); },
+    totalStock(p){ return (p.options||[]).reduce((s,o)=>s+Number(o.stock||0),0); },
+    nextId(arr, key){ return (arr.reduce((m,x)=>Math.max(m, Number(x[key])||0),0) + 1); },
+
+    filteredProducts(){
+      const q=(this.productSearch||'').toLowerCase().trim();
+      return this.db.products.filter(p=>{
+        if(this.productCategoryFilter && String(p.category_id)!==String(this.productCategoryFilter)) return false;
+        if(!q) return true;
+        const hay=[p.product_id,p.name,p.color,p.product_type,this.brandName(p.brand_id),this.categoryName(p.category_id),...(p.options||[]).flatMap(o=>[o.option_id,o.option_name,o.ean])].join(' ').toLowerCase();
+        return hay.includes(q);
+      });
+    },
+
+    // Product CRUD
+    emptyProduct(){
+      const id = this.nextId(this.db.products,'product_id') || 1;
+      return {product_id:id,name:'',creation_date:nowIso().slice(0,16),brand_id:'',category_id:'',color:'',product_type:'',price:0,description:'',images:[],materials:[],size_charts:[],options:[]};
+    },
+    openProductForm(){ this.productModal={open:true,editing:false}; this.form=this.emptyProduct(); },
+    editProduct(p){ this.productModal={open:true,editing:true}; const f=deepClone(p); if(f.creation_date && f.creation_date.length>16) f.creation_date=f.creation_date.slice(0,16); this.form=f; },
+    async saveProduct(){
+      const f=this.normalizeProduct(this.form);
+      if(!f.name){ this.toast('Validierung','Produktname ist erforderlich','error'); return; }
+      if(!f.product_id){ f.product_id=this.nextId(this.db.products,'product_id'); }
+      f.images.forEach(i=>i.product_id=f.product_id); f.materials.forEach(m=>m.product_id=f.product_id); f.size_charts.forEach(s=>s.product_id=f.product_id); f.options.forEach(o=>o.product_id=f.product_id);
+      const idx=this.db.products.findIndex(p=>p.product_id==f.product_id);
+      if(idx>=0) this.db.products[idx]=f; else this.db.products.unshift(f);
+      await this.persist(); this.productModal.open=false; this.toast('Gespeichert',`Produkt ${f.name} gespeichert`);
+    },
+    async deleteProduct(id){ if(!confirm('Produkt wirklich löschen?')) return; this.db.products=this.db.products.filter(p=>p.product_id!=id); await this.persist(); this.toast('Gelöscht','Produkt entfernt'); },
+    addOption(){ this.form.options.push({option_id:'',product_id:this.form.product_id,option_name:'',stock:0,available_in_days:0,ean:''}); },
+    addImage(){ this.form.images.push({image_id:this.nextId(this.form.images,'image_id'),product_id:this.form.product_id,image_url:''}); },
+    addMaterial(){ this.form.materials.push({material_id:this.nextId(this.form.materials,'material_id'),product_id:this.form.product_id,material_name:'',percentage:0}); },
+    addSizeChart(){ this.form.size_charts.push({chart_id:this.nextId(this.form.size_charts,'chart_id'),product_id:this.form.product_id,size_label:'',hip_width:'',chest_circumference:'',waist_width:'',total_length:''}); },
+
+    // Brands/Categories CRUD (prompt-based quick edit for compactness)
+    async addBrand(){ const name=prompt('Markenname:'); if(!name) return; const id=this.nextId(this.db.brands,'brand_id'); this.db.brands.push({brand_id:id,brand_name:name}); await this.persist(); this.toast('Gespeichert','Marke angelegt'); },
+    async editBrand(b){ const name=prompt('Markenname:', b.brand_name); if(name===null) return; b.brand_name=name; await this.persist(); this.toast('Gespeichert','Marke aktualisiert'); },
+    async deleteBrand(id){ if(!confirm('Marke löschen?')) return; this.db.brands=this.db.brands.filter(b=>b.brand_id!=id); await this.persist(); this.toast('Gelöscht','Marke entfernt'); },
+    async addCategory(){ const name=prompt('Kategoriename:'); if(!name) return; const path=prompt('Kategoriepfad:', name) || name; const id=this.nextId(this.db.categories,'category_id'); this.db.categories.push({category_id:id,category_name:name,category_path:path}); await this.persist(); this.toast('Gespeichert','Kategorie angelegt'); },
+    async editCategory(c){ const name=prompt('Kategoriename:', c.category_name); if(name===null) return; const path=prompt('Kategoriepfad:', c.category_path||name); c.category_name=name; c.category_path=path||name; await this.persist(); this.toast('Gespeichert','Kategorie aktualisiert'); },
+    async deleteCategory(id){ if(!confirm('Kategorie löschen?')) return; this.db.categories=this.db.categories.filter(c=>c.category_id!=id); await this.persist(); this.toast('Gelöscht','Kategorie entfernt'); },
+
+    // Import/Export
+    onXmlFile(e){ const f=e.target.files&&e.target.files[0]; if(!f) return; const r=new FileReader(); r.onload=()=>{ this.xmlInput=String(r.result||''); this.parseXmlInput(); }; r.readAsText(f); },
+    textOf(node, names){ if(!node) return ''; for(const n of names){ const el=node.getElementsByTagName(n)[0]; if(el && el.textContent!=null) return el.textContent.trim(); }
+      // attribute fallback
+      for(const n of names){ if(node.getAttribute && node.getAttribute(n)) return String(node.getAttribute(n)); } return ''; },
+    childrenByNames(node, names){ const out=[]; names.forEach(n=>{ out.push(...Array.from(node.getElementsByTagName(n))); }); return out; },
+    parseXmlInput(){
+      this.importErrors=[]; this.importPreview=null;
+      if(!this.xmlInput || !this.xmlInput.trim()){ this.toast('Import','Kein XML-Inhalt','error'); return; }
+      try{
+        const doc = new DOMParser().parseFromString(this.xmlInput, 'application/xml');
+        if(doc.getElementsByTagName('parsererror').length){ throw new Error('XML Parser-Fehler'); }
+        const prodNodes = ['product','item','artikel','Product','Item'].flatMap(t=>Array.from(doc.getElementsByTagName(t)));
+        if(prodNodes.length===0){ this.importErrors.push('Keine Produktknoten gefunden (erwartet: product/item/artikel).'); }
+        const brandsMap=new Map(), catsMap=new Map(); const products=[];
+        let bIdBase=this.nextId(this.db.brands,'brand_id'), cIdBase=this.nextId(this.db.categories,'category_id'), pIdBase=this.nextId(this.db.products,'product_id');
+        prodNodes.forEach((pn, i)=>{
+          try{
+            const name=this.textOf(pn,['name','title','produktname','Name','Title']) || `Importiertes Produkt ${i+1}`;
+            const pidRaw=this.textOf(pn,['product_id','id','ProductID','artikelnummer']);
+            const product_id = Number(pidRaw)|| (pIdBase++);
+            const brandName=this.textOf(pn,['brand','brand_name','marke','Brand']) || 'Unbekannt';
+            const catName=this.textOf(pn,['category','category_name','kategorie','Category']) || 'Unkategorisiert';
+            const catPath=this.textOf(pn,['category_path','path']) || catName;
+            if(!brandsMap.has(brandName)) brandsMap.set(brandName,{brand_id:bIdBase++, brand_name:brandName});
+            if(!catsMap.has(catPath)) catsMap.set(catPath,{category_id:cIdBase++, category_name:catName, category_path:catPath});
+            const price=Number(this.textOf(pn,['price','preis','Price'])||0);
+            const product={ product_id, name, creation_date: nowIso(), brand_id: brandsMap.get(brandName).brand_id, category_id: catsMap.get(catPath).category_id,
+              color:this.textOf(pn,['color','farbe','Color']), product_type:this.textOf(pn,['product_type','type','typ']), price, description:this.textOf(pn,['description','beschreibung','Description']),
+              images:[], materials:[], size_charts:[], options:[] };
+            // options/variants
+            const optNodes = this.childrenByNames(pn,['option','variant','size','ProductOption','Option']);
+            if(optNodes.length){ optNodes.forEach((on,j)=>{ product.options.push({option_id:this.textOf(on,['option_id','sku','id'])||`${product_id}-${j+1}`, product_id, option_name:this.textOf(on,['option_name','size','name','groesse'])||'', stock:Number(this.textOf(on,['stock','qty','bestand'])||0), available_in_days:Number(this.textOf(on,['available_in_days','delivery_days','lieferzeit'])||0), ean:this.textOf(on,['ean','gtin','barcode'])||''}); }); }
+            else {
+              const sku=this.textOf(pn,['sku','option_id']); const stock=Number(this.textOf(pn,['stock','qty','bestand'])||0); const ean=this.textOf(pn,['ean','gtin']);
+              if(sku||ean||stock) product.options.push({option_id:sku||String(product_id), product_id, option_name:this.textOf(pn,['size','groesse'])||'Default', stock, available_in_days:Number(this.textOf(pn,['available_in_days'])||0), ean:ean||''});
+            }
+            // images
+            const imgNodes=this.childrenByNames(pn,['image','img','bild','Image']);
+            if(imgNodes.length){ imgNodes.forEach((im,j)=>{ const url=(im.textContent||im.getAttribute?.('url')||im.getAttribute?.('src')||'').trim(); if(url) product.images.push({image_id:j+1, product_id, image_url:url}); }); }
+            else { const u=this.textOf(pn,['image_url','image','bild']); if(u) product.images.push({image_id:1, product_id, image_url:u}); }
+            // materials
+            this.childrenByNames(pn,['material','Material']).forEach((mn,j)=>{ product.materials.push({material_id:j+1, product_id, material_name:this.textOf(mn,['material_name','name'])|| (mn.textContent||'').trim(), percentage:Number(this.textOf(mn,['percentage','anteil'])||0)}); });
+            // size charts
+            this.childrenByNames(pn,['size_chart','chart','groesse','SizeChart']).forEach((sn,j)=>{ product.size_charts.push({chart_id:j+1, product_id, size_label:this.textOf(sn,['size_label','size','name'])||'', hip_width:this.textOf(sn,['hip_width','hip']), chest_circumference:this.textOf(sn,['chest_circumference','chest','brust']), waist_width:this.textOf(sn,['waist_width','waist','taille']), total_length:this.textOf(sn,['total_length','length','laenge'])}); });
+            products.push(product);
+          }catch(err){ this.importErrors.push(`Produkt ${i+1}: ${err.message}`); }
+        });
+        this.importPreview={brands:Array.from(brandsMap.values()), categories:Array.from(catsMap.values()), products};
+        this.toast('Preview erstellt', `${products.length} Produkte geparst`);
+      }catch(e){ this.importErrors.push(e.message||String(e)); this.toast('Import-Fehler','XML konnte nicht geparst werden','error'); }
+    },
+    async importParsed(){
+      if(!this.importPreview) return;
+      // merge brands/categories by name/path, products by product_id
+      const bMap=new Map(this.db.brands.map(b=>[b.brand_name.toLowerCase(),b]));
+      this.importPreview.brands.forEach(b=>{ if(!bMap.has(b.brand_name.toLowerCase())){ b.brand_id=this.nextId(this.db.brands,'brand_id'); this.db.brands.push(b); bMap.set(b.brand_name.toLowerCase(),b);} });
+      const cMap=new Map(this.db.categories.map(c=>[(c.category_path||c.category_name).toLowerCase(),c]));
+      this.importPreview.categories.forEach(c=>{ const k=(c.category_path||c.category_name).toLowerCase(); if(!cMap.has(k)){ c.category_id=this.nextId(this.db.categories,'category_id'); this.db.categories.push(c); cMap.set(k,c);} });
+      // remap imported refs to merged ids
+      const impB=new Map(this.importPreview.brands.map(b=>[b.brand_id,b.brand_name.toLowerCase()]));
+      const impC=new Map(this.importPreview.categories.map(c=>[c.category_id,(c.category_path||c.category_name).toLowerCase()]));
+      this.importPreview.products.forEach(p=>{
+        const bKey=impB.get(p.brand_id); if(bKey && bMap.get(bKey)) p.brand_id=bMap.get(bKey).brand_id;
+        const cKey=impC.get(p.category_id); if(cKey && cMap.get(cKey)) p.category_id=cMap.get(cKey).category_id;
+        const idx=this.db.products.findIndex(x=>x.product_id==p.product_id);
+        p=this.normalizeProduct(p);
+        if(idx>=0) this.db.products[idx]=p; else this.db.products.push(p);
+      });
+      await this.persist(); this.toast('Import abgeschlossen', `${this.importPreview.products.length} Produkte übernommen`); this.activeTab='products';
+    },
+    download(filename, content, type){ const blob=new Blob([content],{type}); const url=URL.createObjectURL(blob); const a=document.createElement('a'); a.href=url; a.download=filename; a.click(); setTimeout(()=>URL.revokeObjectURL(url), 1000); },
+    exportJSON(){ this.download(`erp-pim-export-${Date.now()}.json`, JSON.stringify(this.db,null,2), 'application/json'); this.toast('Export','JSON exportiert'); },
+    sqlStr(v){ if(v===null||v===undefined) return 'NULL'; return `'${String(v).replace(/'/g,"''")}'`; },
+    exportSQL(){
+      const lines=['-- Omni-Core Lite ERP/PIM Export','BEGIN;'];
+      this.db.brands.forEach(b=>lines.push(`INSERT INTO brands (brand_id, brand_name) VALUES (${Number(b.brand_id)}, ${this.sqlStr(b.brand_name)});`));
+      this.db.categories.forEach(c=>lines.push(`INSERT INTO categories (category_id, category_name, category_path) VALUES (${Number(c.category_id)}, ${this.sqlStr(c.category_name)}, ${this.sqlStr(c.category_path)});`));
+      this.db.products.forEach(p=>{
+        lines.push(`INSERT INTO products (product_id, name, creation_date, brand_id, category_id, color, product_type, price, description) VALUES (${Number(p.product_id)}, ${this.sqlStr(p.name)}, ${this.sqlStr(p.creation_date)}, ${Number(p.brand_id)||'NULL'}, ${Number(p.category_id)||'NULL'}, ${this.sqlStr(p.color)}, ${this.sqlStr(p.product_type)}, ${Number(p.price)||0}, ${this.sqlStr(p.description)});`);
+        (p.images||[]).forEach(i=>lines.push(`INSERT INTO product_images (image_id, product_id, image_url) VALUES (${Number(i.image_id)}, ${Number(p.product_id)}, ${this.sqlStr(i.image_url)});`));
+        (p.materials||[]).forEach(m=>lines.push(`INSERT INTO product_materials (material_id, product_id, material_name, percentage) VALUES (${Number(m.material_id)}, ${Number(p.product_id)}, ${this.sqlStr(m.material_name)}, ${Number(m.percentage)||0});`));
+        (p.size_charts||[]).forEach(s=>lines.push(`INSERT INTO product_size_charts (chart_id, product_id, size_label, hip_width, chest_circumference, waist_width, total_length) VALUES (${Number(s.chart_id)}, ${Number(p.product_id)}, ${this.sqlStr(s.size_label)}, ${this.sqlStr(s.hip_width||'')}, ${this.sqlStr(s.chest_circumference||'')}, ${this.sqlStr(s.waist_width||'')}, ${this.sqlStr(s.total_length||'')});`));
+        (p.options||[]).forEach(o=>lines.push(`INSERT INTO product_options (option_id, product_id, option_name, stock, available_in_days, ean) VALUES (${this.sqlStr(o.option_id)}, ${Number(p.product_id)}, ${this.sqlStr(o.option_name)}, ${Number(o.stock)||0}, ${Number(o.available_in_days)||0}, ${this.sqlStr(o.ean)});`));
+      });
+      lines.push('COMMIT;');
+      this.download(`erp-pim-export-${Date.now()}.sql`, lines.join('\n'), 'text/sql'); this.toast('Export','SQL-Dump exportiert');
+    },
+    async confirmReset(){ if(!confirm('Alle lokalen ERP/PIM-Daten wirklich zurücksetzen?')) return; await ApiService.reset(); this.db=emptyDb(); await this.persist(); this.toast('Zurückgesetzt','Lokale Daten gelöscht'); },
+    saveApiConfig(){ localStorage.setItem(API_CFG_KEY, JSON.stringify(this.apiConfig)); ApiService.mode=this.apiConfig.mode; ApiService.baseUrl=this.apiConfig.baseUrl; this.toast('Gespeichert','API-Konfiguration gespeichert'); },
+    async saveNow(){ await this.persist(); this.toast('Gespeichert','Daten gespeichert'); },
+
+    async loadSampleData(persist=true){
+      this.db = {
+        brands:[{brand_id:1,brand_name:'Uptempo Core'},{brand_id:2,brand_name:'Neon Pulse'}],
+        categories:[{category_id:1,category_name:'Kleider',category_path:'Damenmode > Kleider > Abendkleider'},{category_id:2,category_name:'Tops',category_path:'Damenmode > Tops'}],
+        products:[{
+          product_id:1001,name:'Rave Mesh Dress',creation_date:nowIso(),brand_id:1,category_id:1,color:'Schwarz',product_type:'Dress',price:79.90,description:'Atmungsaktives Mesh-Kleid für Festivals.',
+          images:[{image_id:1,product_id:1001,image_url:'https://example.com/images/1001-1.jpg'}],
+          materials:[{material_id:1,product_id:1001,material_name:'Polyester',percentage:92},{material_id:2,product_id:1001,material_name:'Elasthan',percentage:8}],
+          size_charts:[{chart_id:1,product_id:1001,size_label:'S',hip_width:'92',chest_circumference:'84',waist_width:'68',total_length:'88'},{chart_id:2,product_id:1001,size_label:'M',hip_width:'96',chest_circumference:'88',waist_width:'72',total_length:'90'}],
+          options:[{option_id:'M1057011',product_id:1001,option_name:'S',stock:12,available_in_days:1,ean:'4012345000011'},{option_id:'M1057012',product_id:1001,option_name:'M',stock:5,available_in_days:2,ean:'4012345000028'}]
+        }]
+      };
+      if(persist){ await this.persist(); this.toast('Beispieldaten','Demo-Daten geladen'); }
+    }
+  }
+}
+</script>
+{% endblock %}
