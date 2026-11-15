@@ -1,31 +1,40 @@
 """Content AI Engine for Omni-Core E-Commerce Middleware.
 
 Provides AI-powered content generation and analysis using the Omni-Route Gateway.
-This service transforms raw product data into high-quality E-Commerce copy
-and performs trend/pricing analysis.
+This service transforms raw product data into high-quality E-Commerce copy,
+structured SEO metadata, and performs intelligent pricing/trim analysis.
+
+The engine is designed to work with the -10% stock buffer logic,
+channel overrides, and integrates seamlessly with the Omni-Core Middleware pipeline.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from typing import Any, Dict, List, Optional
 
 from .omni_router_client import OmniRouterClient
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("omni.content_ai")
 
 # Default prompts for content generation
 DEFAULT_PROMPTS: dict[str, str] = {
     "product_description": (
-        "You are an expert E-Commerce copywriter specializing in fashion retail. "
-        "Generate a compelling product description that drives sales. "
-        "The description should be engaging, benefit-focused, and optimized for conversion."
+        "You are an expert E-Commerce AI copywriter specializing in fashion retail. "
+        "Generate a compelling, conversion-focused product description. "
+        "Always output valid JSON with the following structure: "
+        "{'optimized_title': '...', 'description': '...', 'bullet_points': [...], "
+        "'seo_keywords': [...], 'meta_title': '...', 'meta_description': '...'}"
     ),
     "trend_analysis": (
         "You are a fashion trend analyst with deep knowledge of the European market. "
         "Analyze the following products and identify trends, seasonality, and pricing strategy. "
-        "Consider current market conditions, competitor pricing, and seasonal patterns."
+        "Consider current market conditions, competitor pricing, and seasonal patterns. "
+        "Output valid JSON: {'trend_score': 0-10, 'suggested_price': float, "
+        "'margin_recommendation': 'competitive|normal|high_recovery', "
+        "'restock_recommendation': 'urgent|moderate|normal'}"
     ),
 }
 
@@ -35,10 +44,11 @@ class ContentAIEngine:
     AI-powered content generation and analysis engine for E-Commerce products.
 
     Uses the Omni-Route Gateway to transform raw product data into
-    high-quality marketing copy and perform intelligent pricing analysis.
+    high-quality marketing copy, structured SEO metadata, and performs
+    intelligent pricing analysis with stock buffer considerations.
 
-    The engine is designed to work with the -10% stock buffer logic
-    and integrates seamlessly with the Omni-Core Middleware pipeline.
+    The engine integrates with the -10% stock buffer logic and
+    supports channel-specific overrides via the channel_overrides table.
     """
 
     def __init__(self, omni_router_client: OmniRouterClient | None = None):
@@ -51,92 +61,117 @@ class ContentAIEngine:
         self.omni_router: OmniRouterClient = omni_router_client or OmniRouterClient()
 
     # -------------------------------------------------------------------------
-    # Product Description Optimization
+    # Rich Product Content Generation
     # -------------------------------------------------------------------------
 
-    async def optimize_product_description(
+    async def generate_rich_content(
         self,
-        raw_title: str,
-        raw_description: str,
+        title: str,
         category: str,
-    ) -> dict[str, str]:
+        supplier_price: float,
+        raw_attrs: dict[str, Any],
+    ) -> dict[str, Any]:
         """
-        Generate SEO-optimized product copy from raw product data.
+        Generate SEO-optimized, sales-driven product copy from raw product data.
 
         Creates:
-        - A compelling, sales-focused title (max 60 characters for SEO)
-        - An emotional, benefit-focused product description
-        - Key features bullet points
-        - Meta tags (title and description for search engines)
+        - optimized_title: SEO title (max 70 chars)
+        - description: HTML-formatted product description with benefit bullets
+        - bullet_points: 3-5 key benefit highlights
+        - seo_keywords: 5-8 relevant search terms
+        - meta_title: Meta title tag (max 70 chars)
+        - meta_description: Meta description (150-160 chars)
 
-        :param raw_title: Original product title from the supplier
-        :param raw_description: Raw description text from the supplier
+        :param title: Original product title from supplier
         :param category: Product category (used for context-sensitive generation)
-        :return: Dictionary with optimized copy components
+        :param supplier_price: Supplier price from Matterhorn/CSV
+        :param raw_attrs: Dictionary of additional attributes (color, size, material, etc.)
+        :return: Dictionary with rich content components
         """
         system_prompt: str = (
-            "You are an expert E-Commerce copywriter specializing in fashion retail. "
-            "Generate compelling, conversion-focused product copy. "
-            "Always output valid JSON with the following structure: "
-            "{'seo_title': '...', 'description': '...', 'features': ['...'], 'meta_tags': {'title': '...', 'description': '...'}}"
+            "You are an expert E-Commerce AI copywriter specializing in fashion retail. "
+            "Generate conversion-focused, SEO-optimized product copy. "
+            "Always output valid JSON with the exact keys: "
+            "'optimized_title', 'description', 'bullet_points', 'seo_keywords', "
+            "'meta_title', 'meta_description'."
         )
 
+        # Build a comprehensive user prompt with all product data
+        attrs_str: str = json.dumps(raw_attrs, ensure_ascii=False, indent=2)
         user_prompt: str = (
-            f"Product Title: '{raw_title}'\n"
-            f"Product Description: '{raw_description}'\n"
-            f"Category: {category}\n"
-            "Generate the following output as valid JSON:\n"
-            "- seo_title: A concise, keyword-rich title (max 60 chars) for SEO\n"
-            "- description: A compelling, benefit-focused product description (150-300 chars)\n"
-            "- features: A list of 3-5 key features/benefits\n"
-            "- meta_tags: An object with 'title' (max 60 chars) and 'description' (150-160 chars) for meta tags"
+            f"Produkt-Daten:\n"
+            f"- Titel: {title}\n"
+            f"- Kategorie: {category}\n"
+            f"- Lieferanten-Preis: {supplier_price} EUR\n"
+            f"- Zusatz-Attribute: {attrs_str}\n\n"
+            "Erzeuge folgenden JSON-Output (kein umschließendes ```json```):\n"
+            "{"
+            f"'optimized_title': '<verkaufsstarker Titel max 70 Zeichen>', "
+            f"'description': '<HTML-formatierte Beschreibung mit Vorteils-Paragraphen>', "
+            f"'bullet_points': ['<Kernvorteil 1>', '<Kernvorteil 2>', '<Kernvorteil 3>']"
+            f", 'seo_keywords': ['<Suchbegriff 1>', '<Suchbegriff 2>', '<Suchbegriff 3>', '<Suchbegriff 4>', '<Suchbegriff 5>']"
+            f", 'meta_title': '<Meta-Titel max 70 Zeichen>', "
+            f"'meta_description': '<Meta-Beschreibung 150-160 Zeichen>'"
+            "}"
         )
 
         try:
-            response: dict[str, Any] | None = await self.omni_router.get_structured_response(
+            response: dict[str, Any] = await self.omni_router.get_structured_response(
                 system_prompt, user_prompt, response_format={"type": "json_object"}
             )
 
-            if response and isinstance(response, dict):
+            # Validate that we have the expected keys
+            expected_keys = {
+                "optimized_title",
+                "description",
+                "bullet_points",
+                "seo_keywords",
+                "meta_title",
+                "meta_description",
+            }
+            if response and isinstance(response, dict) and expected_keys.issubset(response.keys()):
                 return {
-                    "seo_title": response.get("seo_title", raw_title[:60]),
-                    "description": response.get("description", raw_description),
-                    "features": response.get("features", []),
-                    "meta_tags": response.get("meta_tags", {
-                        "title": raw_title[:60],
-                        "description": raw_description[:160],
-                    }),
+                    "optimized_title": response.get("optimized_title", title[:70]),
+                    "description": response.get("description", f"<p>{title} aus der Kategorie {category}</p>"),
+                    "bullet_points": response.get("bullet_points", [
+                        "Hochwertiges Produkt",
+                        "Langlebig & Robust",
+                        "Exklusives Design",
+                    ]),
+                    "seo_keywords": response.get("seo_keywords", [category, "Mode", "Online-Shop"]),
+                    "meta_title": response.get("meta_title", title[:70]),
+                    "meta_description": response.get(
+                        "meta_description",
+                        f"{title} - Entdecken Sie {category} online im Shop",
+                    )[:160],
                 }
-        except Exception as e:
-            logger.warning(f"AI description generation failed: {e}")
 
-        # Fallback: generate basic copy from raw data
-        return {
-            "seo_title": raw_title[:60],
-            "description": raw_description or raw_title,
-            "features": self._extract_basic_features(raw_title, raw_description),
-            "meta_tags": {
-                "title": raw_title[:60],
-                "description": (raw_description or raw_title)[:160],
-            },
-        }
+            # Fallback if response structure is unexpected
+            logger.warning("AI response missing expected keys, using fallback")
+            return self._fallback_content(title, category)
+
+        except Exception as e:
+            logger.warning(f"Rich content generation failed: {e}")
+            return self._fallback_content(title, category)
 
     @staticmethod
-    def _extract_basic_features(title: str, description: str) -> list[str]:
-        """Extract basic feature keywords from title and description."""
-        features: list[str] = []
-        if title:
-            features.append(title[:50])
-        if description:
-            # Extract first few sentences as feature-like points
-            sentences = description.split(". ")[:3]
-            for sentence in sentences:
-                if sentence.strip():
-                    features.append(sentence.strip()[:80])
-        return features or ["Hochwertiges Produkt"]
+    def _fallback_content(title: str, category: str) -> dict[str, Any]:
+        """Fallback content generation when AI is unavailable."""
+        return {
+            "optimized_title": title[:70],
+            "description": f"<p>{title} aus der Kategorie {category}. Hochwertige Verarbeitung und ansprechendes Design.</p>",
+            "bullet_points": [
+                "Hochwertiges Produkt",
+                "Langlebig & Robust",
+                "Exklusives Design",
+            ],
+            "seo_keywords": [category, "Mode", "Online-Shop"],
+            "meta_title": title[:70],
+            "meta_description": f"{title} - Entdecken Sie {category} online im Shop"[:160],
+        }
 
     # -------------------------------------------------------------------------
-    # Trend & Pricing Analysis
+    # Trend & Pricing Analysis with Stock Buffer
     # -------------------------------------------------------------------------
 
     async def analyze_trends_and_pricing(
@@ -151,9 +186,9 @@ class ContentAIEngine:
         - Category-based trend analysis
         - Cost-plus pricing with margin calculation
 
-        :param products_batch: List of product dictionaries from the import pipeline.
+        :param products_batch: List of product dicts from the import pipeline.
             Each product should have: 'supplier_price', 'stock', 'category', 'sku'
-        :return: List of product dictionaries with added 'trend_score', 'suggested_price',
+        :return: List of product dicts with added 'trend_score', 'suggested_price',
             'margin_recommendation', and 'restock_recommendation' fields.
         """
         if not products_batch:
@@ -180,14 +215,14 @@ class ContentAIEngine:
 
                 # Calculate margin recommendations based on stock level
                 supplier_price: float = product.get("supplier_price", 0.0)
-                margin_percent: float = 0.25  # 25% default margin
 
-                # Base cost calculation
-                base_cost: float = supplier_price
+                # Base retail price calculation (195% margin)
+                retail_price: float = round(supplier_price * 1.95, 2)
+                product_result["suggested_price"] = retail_price
 
-                # Margin calculation with stock consideration
+                # Margin adjustment based on stock level
                 if buffered_stock <= 0:
-                    # Out of stock - higher margin, focus on revenue recovery
+                    # Out of stock - high margin, focus on revenue recovery
                     product_result["margin_recommendation"] = "high_recovery"
                     margin_adjustment: float = 0.35  # 35% margin for slow-moving stock
                 elif buffered_stock < 10:
@@ -199,83 +234,120 @@ class ContentAIEngine:
                     product_result["margin_recommendation"] = "competitive"
                     margin_adjustment: float = 0.18
 
-                # Calculate suggested retail price
-                suggested_price: float = round(supplier_price / (1 - margin_adjustment), 2)
+                # Refined suggested price with margin adjustment
+                if margin_adjustment > 0:
+                    adjusted_price: float = round(
+                        supplier_price / (1.0 - margin_adjustment), 2
+                    )
+                else:
+                    adjusted_price = retail_price
+                product_result["suggested_price"] = adjusted_price
 
                 # Trend score based on stock level and price competitiveness
                 if buffered_stock > 50:
-                    product_result["trend_score"] = 7.0  # High trend potential (overstock, need clearance)
+                    product_result["trend_score"] = 7.0  # High trend potential (overstock)
                 elif buffered_stock > 10:
                     product_result["trend_score"] = 5.0  # Moderate trend potential
                 else:
                     product_result["trend_score"] = 2.0  # Low stock, niche product
 
-                product_result["suggested_price"] = suggested_price
-                product_result["restock_recommendation"] = (
-                    "urgent" if buffered_stock <= 0
-                    else "moderate" if buffered_stock < 10
-                    else "normal"
-                )
+                # Restock recommendation
+                if buffered_stock <= 0:
+                    product_result["restock_recommendation"] = "urgent"
+                elif buffered_stock < 10:
+                    product_result["restock_recommendation"] = "moderate"
+                else:
+                    product_result["restock_recommendation"] = "normal"
 
                 results.append(product_result)
 
             except Exception as e:
                 logger.warning(f"Trend/pricing analysis failed for product: {e}")
-                results.append({
-                    "sku": product.get("sku", "unknown"),
-                    "category": product.get("category", "unknown"),
-                    "trend_score": 0.0,
-                    "suggested_price": product.get("supplier_price", 0.0),
-                    "margin_recommendation": "normal",
-                    "restock_recommendation": "normal",
-                })
-
-        return results
-
-    async def batch_optimize_descriptions(
-        self,
-        products_data: list[dict[str, Any]],
-    ) -> list[dict[str, Any]]:
-        """
-        Optimize descriptions for a batch of products concurrently.
-
-        :param products_data: List of product dicts with 'raw_title', 'raw_description', 'category'
-        :return: List of product dicts with added 'optimized_title', 'ai_description', 'features', 'meta_tags'
-        """
-        if not products_data:
-            return []
-
-        # Create tasks for concurrent processing
-        tasks: list = []
-        for product_data in products_data:
-            task = asyncio.create_task(
-                self.optimize_product_description(
-                    raw_title=product_data.get("raw_title", ""),
-                    raw_description=product_data.get("raw_description", ""),
-                    category=product_data.get("category", ""),
+                results.append(
+                    {
+                        "sku": product.get("sku", "unknown"),
+                        "category": product.get("category", "unknown"),
+                        "trend_score": 0.0,
+                        "suggested_price": product.get("supplier_price", 0.0),
+                        "margin_recommendation": "normal",
+                        "restock_recommendation": "normal",
+                    }
                 )
-            )
-            tasks.append((product_data, task))
-
-        # Wait for all tasks to complete
-        results: list[dict[str, Any]] = []
-        for product_data, task in tasks:
-            try:
-                optimized: dict[str, str] = await task
-                result = dict(product_data)
-                result["optimized_title"] = optimized.get("seo_title", product_data.get("raw_title", ""))
-                result["ai_description"] = optimized.get("description", product_data.get("raw_description", ""))
-                result["features"] = optimized.get("features", [])
-                result["meta_tags"] = optimized.get("meta_tags", {})
-                results.append(result)
-            except Exception as e:
-                logger.warning(f"Failed to optimize description for product: {e}")
-                # Fallback: keep original data
-                result = dict(product_data)
-                result["optimized_title"] = product_data.get("raw_title", "")
-                result["ai_description"] = product_data.get("raw_description", "")
-                result["features"] = []
-                result["meta_tags"] = {}
-                results.append(result)
 
         return results
+
+    # -------------------------------------------------------------------------
+    # Channel-Specific Override Generation
+    # -------------------------------------------------------------------------
+
+    async def generate_channel_override(
+        self,
+        sku: str,
+        channel_name: str,
+        base_title: str,
+        base_description: str,
+        base_price: float,
+        attributes: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """
+        Generate platform-specific content overrides for a given sales channel.
+
+        :param sku: Product SKU
+        :param channel_name: Target channel ('shopify', 'amazon', 'google_shopping')
+        :param base_title: Base product title
+        :param base_description: Base product description
+        :param base_price: Base product price
+        :param attributes: Product attributes dictionary
+        :return: Dictionary with channel-specific overrides
+        """
+        system_prompt: str = (
+            f"You are an E-Commerce platform specialist for {channel_name}. "
+            f"Generate platform-optimized product copy. "
+            f"Always output valid JSON with keys: "
+            f"'custom_title', 'custom_description', 'custom_price', 'is_published'."
+        )
+
+        attrs_str: str = json.dumps(attributes or {}, ensure_ascii=False)
+        user_prompt: str = (
+            f"Produkt-Daten:\n"
+            f"- SKU: {sku}\n"
+            f"- Kanal: {channel_name}\n"
+            f"- Basis-Titel: {base_title}\n"
+            f"- Basis-Beschreibung: {base_description}\n"
+            f"- EK-Preis: {base_price} EUR\n"
+            f"- Attribute: {attrs_str}\n\n"
+            "Erzeuge JSON-Output:"
+            f"{{\"custom_title\": \"...\", \"custom_description\": \"...\", "
+            f"'custom_price\": <preis>, \"is_published\": true}}"
+        )
+
+        try:
+            response: dict[str, Any] = await self.omni_router.get_structured_response(
+                system_prompt, user_prompt, response_format={"type": "json_object"}
+            )
+
+            if isinstance(response, dict):
+                return {
+                    "custom_title": response.get("custom_title", base_title),
+                    "custom_description": response.get(
+                        "custom_description", base_description
+                    ),
+                    "custom_price": response.get("custom_price", base_price),
+                    "is_published": response.get("is_published", True),
+                }
+
+            return {
+                "custom_title": base_title,
+                "custom_description": base_description,
+                "custom_price": base_price,
+                "is_published": True,
+            }
+
+        except Exception as e:
+            logger.warning(f"Channel override generation failed for {sku}/{channel_name}: {e}")
+            return {
+                "custom_title": base_title,
+                "custom_description": base_description,
+                "custom_price": base_price,
+                "is_published": True,
+            }
