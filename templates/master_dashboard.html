@@ -1,98 +1,22 @@
-<!DOCTYPE html>
-<html lang="de" class="dark" data-theme="system">
-<head>
-    <meta charset="UTF-8"><title>Omni-Core Master Control</title>
-    <script src="https://cdn.tailwindcss@4.0.0/dist/tailwind.min.js"></script>
-    <script src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js" defer></script>
-</head>
-<body class="bg-gray-950 text-gray-100 font-sans antialiased min-h-screen p-6">
-    <header class="border-b border-gray-800 bg-gray-900 px-6 py-4 flex justify-between items-center rounded-xl mb-6">
-        <h1 class="text-xl font-bold">OMNI-CORE <span class="text-blue-500">MASTER COMMAND</span></h1>
-        <a href="/settings" class="bg-gray-800 px-4 py-2 rounded text-sm">⚙️ Einstellungen</a>
-    </header>
-    <main class="space-y-6">
-        <div class="grid grid-cols-2 gap-6 mb-6">
-            <div class="bg-gray-900 border border-gray-800 p-5 rounded-xl">
-                <h3 class="text-gray-400 text-sm">KI-Gateway</h3>
-                <div class="text-2xl font-bold text-green-400" x-text="health.omniroute.status">...</div>
-                <div class="text-sm text-gray-500 mt-1" x-text="health.omniroute.latency_ms !== null ? health.omniroute.latency_ms + ' ms' : 'N/A'">...</div>
-            </div>
-            <div class="bg-gray-900 border border-gray-800 p-5 rounded-xl">
-                <h3 class="text-gray-400 text-sm">Produkte</h3>
-                <div class="text-2xl font-bold text-blue-400" x-text="stats.total_products">...</div>
-            </div>
-            <div class="bg-gray-900 border border-gray-800 p-5 rounded-xl">
-                <h3 class="text-gray-400 text-sm">Fehler</h3>
-                <div class="text-2xl font-bold text-red-400" x-text="stats.error_count">...</div>
-            </div>
-            <div class="bg-gray-900 border border-gray-800 p-5 rounded-xl">
-                <h3 class="text-gray-400 text-sm">Queue</h3>
-                <div class="text-2xl font-bold text-yellow-400" x-text="queue_size">0</div>
-            </div>
-        </div>
-
-        <div class="grid grid-cols-2 gap-6 mb-6">
-            <div class="bg-gray-900 border border-gray-800 p-5 rounded-xl">
-                <h3 class="text-gray-400 text-sm">Shopware</h3>
-                <div class="text-xl font-bold" :class="{'text-green-400': shopware.connected, 'text-red-400': !shopware.connected}">
-                    <span x-text="shopware.status">...</span>
-                </div>
-            </div>
-            <div class="bg-gray-900 border border-gray-800 p-5 rounded-xl">
-                <h3 class="text-gray-400 text-sm">eBay</h3>
-                <div class="text-xl font-bold" :class="{'text-green-400': ebay.connected, 'text-red-400': !ebay.connected}">
-                    <span x-text="ebay.status">...</span>
-                </div>
-            </div>
-            <div class="bg-gray-900 border border-gray-800 p-5 rounded-xl">
-                <h3 class="text-gray-400 text-sm">Amazon</h3>
-                <div class="text-xl font-bold" :class="{'text-green-400': amazon.connected, 'text-red-400': !amazon.connected}">
-                    <span x-text="amazon.status">...</span>
-                </div>
-            </div>
-            <div class="bg-gray-900 border border-gray-800 p-5 rounded-xl">
-                <h3 class="text-gray-400 text-sm">Kaufland</h3>
-                <div class="text-xl font-bold" :class="{'text-green-400': kaufland.connected, 'text-red-400': !kaufland.connected}">
-                    <span x-text="kaufland.status">...</span>
-                </div>
-            </div>
-        </div>
-
-        <div class="bg-gray-900 border border-gray-800 p-5 rounded-xl">
-            <h3 class="text-gray-400 text-sm">Etsy</h3>
-            <div class="text-xl font-bold" :class="{'text-green-400': etsy.connected, 'text-red-400': !etsy.connected}">
-                <span x-text="etsy.status">...</span>
-            </div>
-        </div>
-    </main>
-
-    <script>
-        function systemMonitor() {
-            return {
-                health: { omniroute: { status: 'loading', latency_ms: null } },
-                stats: { total_products: 0, error_count: 0 },
-                shopware: { connected: false, status: 'loading' },
-                ebay: { connected: false, status: 'loading' },
-                amazon: { connected: false, status: 'loading' },
-                kaufland: { connected: false, status: 'loading' },
-                etsy: { connected: false, status: 'loading' },
-                async init() {
-                    await this.poll();
-                },
-                async poll() {
-                    let res = await fetch('/api/system-health');
-                    let data = await res.json();
-                    this.health = data.omniroute;
-                    this.stats = data;
-                    this.shopware = data.shops.shopware;
-                    this.ebay = data.shops.ebay;
-                    this.amazon = data.shops.amazon;
-                    this.kaufland = data.shops.kaufland;
-                    this.etsy = data.shops.etsy;
-                    setTimeout(() => this.poll(), 5000);
-                }
-            }
-        }
-    </script>
-</body>
-</html>
+{% extends "base.html" %}
+{% block title %}Master Dashboard | Omni-Core{% endblock %}
+{% block content %}
+<div x-data="mdPage()" x-init="load()" class="space-y-5 max-w-7xl mx-auto">
+  <div class="flex justify-between items-end"><div><h1 class="text-2xl md:text-3xl font-bold">Master Dashboard</h1><p class="text-slate-400">Konsolidierte Enterprise-Übersicht (Health, KPIs, Events, Integrationen)</p></div><button @click="load()" class="bg-slate-700 hover:bg-slate-600 px-4 py-2 rounded text-sm">Aktualisieren</button></div>
+  <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+    <div class="bg-slate-900 border border-slate-800 rounded-lg p-4"><div class="text-xs text-slate-400 uppercase">Produkte</div><div class="text-3xl font-bold mt-1" x-text="(stats||{}).product_count ?? '—'"></div></div>
+    <div class="bg-slate-900 border border-slate-800 rounded-lg p-4"><div class="text-xs text-slate-400 uppercase">Offene Orders</div><div class="text-3xl font-bold mt-1" x-text="(stats||{}).pending_order_count ?? '—'"></div></div>
+    <div class="bg-slate-900 border border-slate-800 rounded-lg p-4"><div class="text-xs text-slate-400 uppercase">Event Bus</div><div class="text-xl font-bold mt-1" :class="(events||{}).running?'text-emerald-400':'text-amber-400'" x-text="(events||{}).running?'Running':'Nicht aktiv'"></div></div>
+    <div class="bg-slate-900 border border-slate-800 rounded-lg p-4"><div class="text-xs text-slate-400 uppercase">DB</div><div class="text-xl font-bold mt-1" x-text="(health||{}).database || '—'"></div></div>
+  </div>
+  <div class="grid lg:grid-cols-2 gap-4">
+    <div class="bg-slate-900 border border-slate-800 rounded-lg p-4"><h2 class="font-semibold mb-2">Control Center Snapshot</h2><pre class="text-xs bg-slate-950 border border-slate-800 rounded p-3 overflow-auto max-h-96" x-text="JSON.stringify(cc,null,2)"></pre></div>
+    <div class="bg-slate-900 border border-slate-800 rounded-lg p-4"><h2 class="font-semibold mb-2">Integrationen & Events</h2><pre class="text-xs bg-slate-950 border border-slate-800 rounded p-3 overflow-auto max-h-96" x-text="JSON.stringify({integrations:integ, events:events},null,2)"></pre></div>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+function mdPage(){return{stats:null,health:null,events:null,cc:null,integ:null,async load(){const g=async u=>{try{return await apiFetch(u)}catch(e){return {error:e.message}}}; [this.stats,this.health,this.events,this.cc,this.integ]=await Promise.all([g('/api/stats'),g('/api/health'),g('/api/events/stats'),g('/api/control-center/dashboard'),g('/api/integrations/status')]);}}}
+</script>
+{% endblock %}

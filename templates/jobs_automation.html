@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+{% block title %}Jobs & Automation | Omni-Core{% endblock %}
+{% block content %}
+<div x-data="jobsPage()" x-init="init()" class="space-y-4 max-w-7xl mx-auto">
+  <div class="flex flex-col md:flex-row md:items-end md:justify-between gap-3">
+    <div>
+      <h1 class="text-2xl md:text-3xl font-bold">Jobs & Automation</h1>
+      <p class="text-slate-400">Persistente Jobs, Scheduler-Konfiguration, Status, Retry/Cancel.</p>
+    </div>
+    <button @click="refresh()" class="bg-slate-700 hover:bg-slate-600 px-4 py-2 rounded text-sm">Aktualisieren</button>
+  </div>
+  <template x-if="msg"><div class="rounded border p-3 text-sm" :class="err?'border-red-700 bg-red-900/30 text-red-200':'border-emerald-700 bg-emerald-900/30 text-emerald-200'" x-text="msg"></div></template>
+
+  <div class="grid lg:grid-cols-2 gap-4">
+    <div class="bg-slate-900 border border-slate-800 rounded-lg p-4 space-y-3">
+      <h2 class="font-semibold">Job erstellen</h2>
+      <div class="grid grid-cols-2 gap-2 text-sm">
+        <label class="col-span-2">Typ<select x-model="newJob.type" class="mt-1 w-full bg-slate-800 border border-slate-700 rounded px-3 py-2"><option value="matterhorn_import">matterhorn_import</option><option value="trend_analysis">trend_analysis</option><option value="generic">generic</option></select></label>
+        <label>Mode<select x-model="newJob.mode" class="mt-1 w-full bg-slate-800 border border-slate-700 rounded px-3 py-2"><option>safe</option><option>partial</option><option>full</option><option>dry_run</option></select></label>
+        <label>Async<input type="checkbox" x-model="newJob.async" class="ml-2"></label>
+        <label class="col-span-2">Payload (JSON)<textarea x-model="newJob.payloadText" rows="3" class="mt-1 w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 font-mono text-xs"></textarea></label>
+      </div>
+      <button @click="createJob()" class="bg-indigo-600 hover:bg-indigo-500 px-4 py-2 rounded text-sm">Job anlegen / ausführen</button>
+    </div>
+
+    <div class="bg-slate-900 border border-slate-800 rounded-lg p-4 space-y-3">
+      <h2 class="font-semibold">Scheduler-Konfiguration</h2>
+      <div class="grid grid-cols-2 gap-2 text-sm">
+        <label>Job-Typ<input x-model="sched.job_type" class="mt-1 w-full bg-slate-800 border border-slate-700 rounded px-3 py-2" placeholder="matterhorn_import"></label>
+        <label>Intervall (Sek.)<input x-model.number="sched.interval_seconds" type="number" class="mt-1 w-full bg-slate-800 border border-slate-700 rounded px-3 py-2"></label>
+        <label class="flex items-center gap-2"><input type="checkbox" x-model="sched.enabled"> Aktiviert</label>
+        <label class="col-span-2">Payload (JSON)<textarea x-model="sched.payloadText" rows="2" class="mt-1 w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 font-mono text-xs"></textarea></label>
+      </div>
+      <button @click="saveScheduler()" class="bg-indigo-600 hover:bg-indigo-500 px-4 py-2 rounded text-sm">Scheduler speichern</button>
+      <pre class="text-xs bg-slate-950 border border-slate-800 rounded p-3 overflow-auto max-h-48" x-text="fmt(scheduler)"></pre>
+    </div>
+  </div>
+
+  <div class="bg-slate-900 border border-slate-800 rounded-lg p-4">
+    <div class="flex items-center justify-between mb-2"><h2 class="font-semibold">Jobs</h2><span class="text-xs text-slate-400" x-text="'Anzahl: '+(jobs.count||0)"></span></div>
+    <template x-if="loading"><div class="text-sm text-slate-400">Lade…</div></template>
+    <template x-if="!loading && (!jobs.items || jobs.items.length===0)"><div class="text-sm text-amber-300">Keine Jobs vorhanden.</div></template>
+    <div class="overflow-auto"><table class="min-w-full text-sm" x-show="jobs.items && jobs.items.length">
+      <thead class="text-slate-400 text-left"><tr><th class="py-2 pr-3">Typ</th><th class="py-2 pr-3">Status</th><th class="py-2 pr-3">Versuche</th><th class="py-2 pr-3">Run at</th><th class="py-2 pr-3">Erstellt</th><th class="py-2 pr-3">Aktion</th></tr></thead>
+      <tbody>
+        <template x-for="j in jobs.items" :key="j.id">
+          <tr class="border-t border-slate-800 align-top">
+            <td class="py-2 pr-3"><div x-text="j.type"></div><div class="text-xs text-slate-500 font-mono" x-text="j.id"></div></td>
+            <td class="py-2 pr-3" :class="j.status==='succeeded'?'text-emerald-400':(j.status==='failed'?'text-red-400':(j.status==='running'?'text-blue-400':'text-slate-300'))" x-text="j.status"></td>
+            <td class="py-2 pr-3" x-text="(j.attempts||0)+'/'+(j.max_attempts||0)"></td>
+            <td class="py-2 pr-3 text-xs" x-text="j.run_at||''"></td>
+            <td class="py-2 pr-3 text-xs" x-text="j.created_at||''"></td>
+            <td class="py-2 pr-3 space-x-2 whitespace-nowrap">
+              <button @click="jobAction(j.id,'retry')" class="px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-xs">Retry</button>
+              <button @click="jobAction(j.id,'cancel')" class="px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-xs">Cancel</button>
+            </td>
+          </tr>
+        </template>
+      </tbody>
+    </table></div>
+  </div>
+
+  <div class="bg-slate-900 border border-slate-800 rounded-lg p-4">
+    <h2 class="font-semibold mb-2">Import Runs (Historie)</h2>
+    <pre class="text-xs bg-slate-950 border border-slate-800 rounded p-3 overflow-auto max-h-72" x-text="fmt(importRuns)"></pre>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+function jobsPage(){
+  return {
+    loading:false,msg:'',err:false,jobs:{items:[]},scheduler:{items:[]},importRuns:[],
+    newJob:{type:'matterhorn_import',mode:'safe',async:true,payloadText:'{"mode":"safe"}'},
+    sched:{job_type:'matterhorn_import',enabled:false,interval_seconds:86400,payloadText:'{"mode":"safe"}'},
+    async init(){ await this.refresh(); },
+    async refresh(){ this.loading=true; this.msg=''; this.err=false; try{ const [j,s,r]=await Promise.all([apiFetch('/api/jobs?limit=100'), apiFetch('/api/scheduler/config'), apiFetch('/api/import-runs?limit=20')]); this.jobs=j; this.scheduler=s; this.importRuns=r; }catch(e){ this.msg=e.message; this.err=true; } this.loading=false; },
+    fmt(d){ try{return JSON.stringify(d,null,2);}catch(_){return String(d);} },
+    parseJson(t){ try{return t&&t.trim()?JSON.parse(t):{};}catch(e){throw new Error('Ungültiges JSON: '+e.message);} },
+    async createJob(){
+      this.msg=''; this.err=false;
+      try{
+        let payload=this.parseJson(this.newJob.payloadText||'{}');
+        if(this.newJob.type==='matterhorn_import'){ payload.mode = payload.mode || this.newJob.mode; payload.dry_run = payload.mode==='dry_run'; }
+        if(this.newJob.type==='matterhorn_import' && this.newJob.async){ payload = Object.assign({mode:this.newJob.mode, dry_run:this.newJob.mode==='dry_run'}, payload); const r = await apiFetch('/api/import/matterhorn',{method:'POST',body:JSON.stringify({mode:this.newJob.mode, dry_run:this.newJob.mode==='dry_run', async_job:true})}); this.msg='Import-Job eingeplant: '+(r.job_id||'ok'); }
+        else { const r = await apiFetch('/api/jobs',{method:'POST',body:JSON.stringify({type:this.newJob.type,payload})}); this.msg='Job erstellt: '+(r.id||'ok'); }
+        await this.refresh();
+      }catch(e){ this.msg=e.message; this.err=true; }
+    },
+    async saveScheduler(){ this.msg=''; this.err=false; try{ const payload=this.parseJson(this.sched.payloadText||'{}'); await apiFetch('/api/scheduler/config',{method:'POST',body:JSON.stringify({job_type:this.sched.job_type,enabled:this.sched.enabled,interval_seconds:Number(this.sched.interval_seconds||3600),payload})}); this.msg='Scheduler gespeichert.'; await this.refresh(); }catch(e){ this.msg=e.message; this.err=true; } },
+    async jobAction(id,action){ this.msg=''; this.err=false; try{ await apiFetch('/api/jobs/'+id+'/'+action,{method:'POST'}); this.msg='Aktion ausgeführt: '+action; await this.refresh(); }catch(e){ this.msg=e.message; this.err=true; } }
+  }
+}
+</script>
+{% endblock %}

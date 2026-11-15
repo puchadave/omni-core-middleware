@@ -1,89 +1,23 @@
-<!DOCTYPE html>
-<html lang="de" class="dark">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Omni-Core ERP & BI | Produkte</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
-</head>
-<body class="bg-gray-900 text-gray-100 min-h-screen" x-data="products()">
-    <nav class="bg-gray-800 border-b border-gray-700 sticky top-0 z-40">
-        <div class="container mx-auto px-4 py-3 flex items-center justify-between">
-            <a href="/" class="text-xl font-bold text-white">OMNI-CORE <span class="text-indigo-400">ERP & BI</span></a>
-            <div class="flex items-center space-x-4">
-                <a href="/" class="text-gray-300 hover:text-white">Dashboard</a>
-                <a href="/admin/products" class="text-gray-300 hover:text-white">Produkte</a>
-                <a href="/admin/orders" class="text-gray-300 hover:text-white">Bestellungen</a>
-                <a href="/admin/settings" class="text-gray-300 hover:text-white">Einstellungen</a>
-            </div>
-        </div>
-    </nav>
-
-    <main class="container mx-auto px-4 py-6">
-        <header class="mb-8">
-            <h1 class="text-3xl font-bold text-white">Produkt-Katalog</h1>
-            <p class="text-gray-400">Alle synchronisierten Produkte mit Bestands-Puffer und Preiskalkulation</p>
-        </header>
-
-        <div class="flex items-center justify-between mb-4">
-            <input type="text" x-model="search" placeholder="Suche nach SKU oder Titel..." class="bg-gray-700 border border-gray-600 rounded px-3 py-2 text-white w-80">
-            <div class="flex space-x-2">
-                <a href="/api/export/shopify.csv" class="bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded">Shopify CSV</a>
-                <a href="/api/export/google-shopping.xml" class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded">Google Shopping XML</a>
-            </div>
-        </div>
-
-        <div class="bg-gray-800 rounded-lg border border-gray-700 overflow-hidden">
-            <table class="w-full text-sm">
-                <thead class="bg-gray-700">
-                    <tr>
-                        <th class="text-left p-3">SKU</th>
-                        <th class="text-left p-3">Titel</th>
-                        <th class="text-left p-3">Kategorie</th>
-                        <th class="text-right p-3">EK-Preis</th>
-                        <th class="text-right p-3">VK-Preis</th>
-                        <th class="text-right p-3">Bestand (gepuffert)</th>
-                        <th class="text-center p-3">Status</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    <template x-for="product in filteredProducts" :key="product.sku">
-                        <tr class="border-t border-gray-700 hover:bg-gray-700">
-                            <td class="p-3 font-mono" x-text="product.sku"></td>
-                            <td class="p-3" x-text="product.title"></td>
-                            <td class="p-3" x-text="product.category || '-'"></td>
-                            <td class="p-3 text-right" x-text="product.supplier_price ? product.supplier_price.toFixed(2) + ' €' : '0.00 €'"></td>
-                            <td class="p-3 text-right" x-text="calculatePrice(product.supplier_price)"></td>
-                            <td class="p-3 text-right" x-text="product.stock"></td>
-                            <td class="p-3 text-center">
-                                <span :class="product.status === 'active' ? 'text-green-400' : product.status === 'paused' ? 'text-yellow-400' : 'text-red-400'" x-text="product.status"></span>
-                            </td>
-                        </tr>
-                    </template>
-                </tbody>
-            </table>
-        </div>
-    </main>
-
-    <script>
-        function products() {
-            return {
-                products: {{ products | tojson }},
-                search: '',
-                get filteredProducts() {
-                    if (!this.search) return this.products;
-                    const q = this.search.toLowerCase();
-                    return this.products.filter(p => p.sku.toLowerCase().includes(q) || p.title.toLowerCase().includes(q));
-                },
-                calculatePrice(supplierPrice) {
-                    if (!supplierPrice) return '0.00 €';
-                    const base = supplierPrice + 2.50 + 1.50 + 4.95;
-                    const denominator = (1 - 0.15) * (1 - 0.25);
-                    return (base / denominator).toFixed(2) + ' €';
-                }
-            }
-        }
-    </script>
-</body>
-</html>
+{% extends "base.html" %}
+{% block title %}Products | Omni-Core{% endblock %}
+{% block content %}
+<div x-data="prodPage()" x-init="load()" class="space-y-4 max-w-7xl mx-auto">
+  <div class="flex justify-between items-end"><div><h1 class="text-2xl font-bold">Products</h1><p class="text-slate-400">Produktliste, Suche, Filter und Status</p></div><button @click="load()" class="bg-slate-700 hover:bg-slate-600 px-4 py-2 rounded text-sm">Aktualisieren</button></div>
+  <div class="bg-slate-900 border border-slate-800 rounded-lg p-4 flex flex-wrap gap-2">
+    <input x-model="q" placeholder="Suche SKU/Titel/Kategorie" class="flex-1 min-w-[220px] bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm">
+    <select x-model="status" class="bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm"><option value="">Alle Status</option><option>active</option><option>draft</option><option>paused</option><option>archived</option></select>
+  </div>
+  <template x-if="error"><div class="rounded border border-red-700 bg-red-900/30 p-3 text-sm text-red-200" x-text="error"></div></template>
+  <template x-if="!error && filtered().length===0"><div class="rounded border border-amber-700 bg-amber-900/20 p-3 text-sm text-amber-200">Keine Produkte vorhanden oder Filter ohne Treffer.</div></template>
+  <div class="bg-slate-900 border border-slate-800 rounded-lg overflow-auto" x-show="filtered().length">
+    <table class="w-full text-sm"><thead class="text-slate-400 bg-slate-950/50"><tr><th class="p-2 text-left">SKU</th><th class="p-2 text-left">Titel</th><th class="p-2 text-left">Kategorie</th><th class="p-2 text-left">Preis</th><th class="p-2 text-left">Bestand</th><th class="p-2 text-left">Status</th></tr></thead><tbody>
+      <template x-for="p in filtered()" :key="p.sku"><tr class="border-t border-slate-800 hover:bg-slate-800/40"><td class="p-2 font-mono text-xs" x-text="p.sku"></td><td class="p-2" x-text="p.ai_title||p.title||'—'"></td><td class="p-2" x-text="p.category||'—'"></td><td class="p-2" x-text="p.supplier_price ?? '—'"></td><td class="p-2" x-text="p.stock ?? 0"></td><td class="p-2" x-text="p.status||'—'"></td></tr></template>
+    </tbody></table>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+function prodPage(){return{items:[],q:'',status:'',error:'',async load(){this.error=''; try{this.items=await apiFetch('/api/products?limit=1000'); if(!Array.isArray(this.items)) this.items=[];}catch(e){this.error=e.message; this.items=[];}},filtered(){const q=(this.q||'').toLowerCase(); return this.items.filter(p=>{if(this.status && String(p.status)!==this.status) return false; if(!q) return true; return [p.sku,p.title,p.ai_title,p.category].some(v=>String(v||'').toLowerCase().includes(q));});}}}
+</script>
+{% endblock %}

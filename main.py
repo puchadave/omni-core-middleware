@@ -9,19 +9,22 @@ from __future__ import annotations
 
 import asyncio
 import csv
+import base64
 import hashlib
 import hmac
 import io
 import json
 import logging
 import os
+import secrets
 import time
+import uuid
 import xml.etree.ElementTree as ET
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator
 
-from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
@@ -39,6 +42,37 @@ from database import (
     list_products,
     list_settings,
     recent_import_runs,
+    job_create,
+    job_list,
+    job_get,
+    job_update,
+    job_claim_next,
+    job_complete,
+    job_fail,
+    job_cancel,
+    job_retry,
+    scheduler_list,
+    scheduler_upsert,
+    scheduler_mark_run,
+    matterhorn_get_config,
+    matterhorn_set_config,
+    matterhorn_list_feeds,
+    matterhorn_upsert_feed,
+    matterhorn_delete_feed,
+    matterhorn_list_mappings,
+    matterhorn_upsert_mapping,
+    matterhorn_delete_mapping,
+    matterhorn_list_previews,
+    matterhorn_get_preview,
+    list_import_runs,
+    news_list_sources,
+    news_upsert_source,
+    news_list_items,
+    news_add_item,
+    knowledge_list,
+    knowledge_upsert,
+    audit_list,
+    analytics_overview,
     recent_logs,
     refresh_all_bundle_stocks,
     reserve_order_stock,
@@ -46,6 +80,7 @@ from database import (
     update_order_status,
     upsert_product,
     write_log,
+    iam_get_user_by_email, iam_get_user, iam_list_users, iam_update_user, iam_ensure_role, iam_assign_role, iam_list_roles, iam_list_permissions, iam_grant_permission, iam_create_session, iam_get_session, iam_revoke_session, iam_touch_session, iam_get_user_roles, iam_create_user,
 )
 from services.fulfillment import FulfillmentService
 from services.inventory_guard import InventoryGuard
@@ -76,7 +111,39 @@ logger = logging.getLogger(__name__)
 
 SECRET_KEY_MARKERS = ("api_key", "token", "secret", "password", "credential")
 SESSION_COOKIE_NAME = "omni_session"
+CSRF_COOKIE_NAME = "csrf_token"
 SESSION_TTL_SECONDS = 8 * 60 * 60
+STATE_CHANGING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+
+# RBAC: permission required by (method, path_prefix). Most-specific/longest prefix wins.
+# "*" permission or superadmin/internal/api-key sessions bypass checks.
+RBAC_RULES: list[tuple[str, tuple[str, ...], str]] = [
+    ("GET", ("/api/iam/", "/ui/security"), "users.manage"),
+    ("POST", ("/api/iam/",), "users.manage"),
+    ("PUT", ("/api/iam/",), "users.manage"),
+    ("DELETE", ("/api/iam/",), "users.manage"),
+    ("POST", ("/api/settings",), "system.configure"),
+    ("GET", ("/api/settings", "/ui/settings", "/settings"), "system.configure"),
+    ("POST", ("/api/matterhorn/", "/api/import/matterhorn"), "matterhorn.configure"),
+    ("GET", ("/api/matterhorn/", "/ui/matterhorn-import"), "matterhorn.configure"),
+    ("POST", ("/api/shopware/",), "shopware.configure"),
+    ("GET", ("/api/shopware/", "/ui/shopware"), "shopware.configure"),
+    ("POST", ("/api/omniroute/", "/api/ai/"), "ai.configure"),
+    ("GET", ("/api/omniroute/", "/ui/ai-control", "/omniroute"), "ai.configure"),
+    ("POST", ("/api/pricing/",), "pricing.write"),
+    ("GET", ("/api/pricing/", "/ui/pricing-center"), "pricing.read"),
+    ("POST", ("/api/bundles",), "bundles.manage"),
+    ("GET", ("/api/bundles", "/ui/bundle-studio"), "products.read"),
+    ("POST", ("/api/products",), "products.write"),
+    ("PUT", ("/api/products",), "products.write"),
+    ("DELETE", ("/api/products",), "products.write"),
+    ("GET", ("/api/products", "/ui/products", "/admin/products"), "products.read"),
+    ("GET", ("/api/orders", "/ui/orders", "/admin/orders"), "products.read"),
+    ("GET", ("/api/audit-log", "/api/logs", "/ui/audit-log"), "audit.read"),
+    ("GET", ("/api/jobs", "/ui/jobs-automation"), "system.configure"),
+    ("POST", ("/api/jobs",), "system.configure"),
+]
+
 
 
 class SettingsUpdate(BaseModel):
@@ -113,6 +180,48 @@ class PricingRequest(BaseModel):
     supplier_price: float = Field(ge=0, le=1_000_000)
 
 
+
+class JobCreateRequest(BaseModel):
+    type: str = Field(min_length=1, max_length=100)
+    payload: dict[str, Any] = Field(default_factory=dict)
+    run_at: str | None = None
+    max_attempts: int = Field(default=3, ge=1, le=20)
+
+class SchedulerConfigRequest(BaseModel):
+    job_type: str = Field(min_length=1, max_length=100)
+    enabled: bool = True
+    interval_seconds: int = Field(default=3600, ge=30, le=31_536_000)
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+class MatterhornConfigPayload(BaseModel):
+    config: dict[str, Any] = Field(default_factory=dict)
+
+class MatterhornFeedPayload(BaseModel):
+    id: str | None = None
+    name: str = "Matterhorn Feed"
+    feed_url: str = ""
+    feed_type: str = "xml"
+    enabled: bool = True
+    config_json: dict[str, Any] = Field(default_factory=dict)
+
+class MatterhornMappingPayload(BaseModel):
+    id: str | None = None
+    source_field: str = ""
+    target_field: str = ""
+    transform: str = ""
+    enabled: bool = True
+    config_json: dict[str, Any] = Field(default_factory=dict)
+
+class MatterhornImportRequest(BaseModel):
+    mode: str = Field(default="safe")  # safe|partial|full|dry_run
+    feed_url: str | None = None
+    preview_id: str | None = None
+    confirm_full_without_preview: bool = False
+    dry_run: bool = False
+    async_job: bool = False
+
+
+
 class AppRuntime:
     """Small in-process runtime state; it deliberately contains no durable data."""
 
@@ -120,6 +229,8 @@ class AppRuntime:
         self.jobs: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=1_000)
         self.worker_task: asyncio.Task[None] | None = None
         self.trend_task: asyncio.Task[None] | None = None
+        self.scheduler_task: asyncio.Task[None] | None = None
+        self.persistent_job_task: asyncio.Task[None] | None = None
         self.importer = MatterhornUniversalImporter()
         self.fulfillment = FulfillmentService()
         self.pricing = PricingEngine()
@@ -229,6 +340,107 @@ async def trend_scheduler() -> None:
         await asyncio.sleep(7 * 24 * 60 * 60)
 
 
+
+
+async def execute_persistent_job(job: dict[str, Any]) -> dict[str, Any]:
+    jtype = str(job.get("type") or "")
+    payload = job.get("payload_json") or job.get("payload") or {}
+    if isinstance(payload, str):
+        try: payload = json.loads(payload)
+        except Exception: payload = {}
+    if jtype == "matterhorn_import":
+        return await runtime.importer.import_products(
+            source=str(payload.get("source") or "matterhorn_xml"),
+            feed_url=payload.get("feed_url"),
+            mode=str(payload.get("mode") or "safe"),
+            dry_run=bool(payload.get("dry_run", False)),
+            preview_id=payload.get("preview_id"),
+            confirm_full_without_preview=bool(payload.get("confirm_full_without_preview", False)),
+        )
+    if jtype == "trend_analysis":
+        if runtime.omniroute is None:
+            raise RuntimeError("OmniRoute not configured")
+        return await TrendEngine(runtime.omniroute).run_weekly_trend_job()
+    if jtype == "fulfillment":
+        await _handle_fulfillment_job(payload if "order_id" in payload else job)
+        return {"status": "dispatched_or_processed"}
+    # generic no-op job
+    await write_log("INFO", "job_executed", f"Executed job type {jtype}", {"job_id": job.get("id")})
+    return {"status": "ok", "type": jtype}
+
+
+async def persistent_job_worker() -> None:
+    """Poll DB-backed jobs and execute them with status tracking."""
+    while True:
+        try:
+            job = await job_claim_next(worker_id="default-worker")
+            if not job:
+                await asyncio.sleep(2)
+                continue
+            jid = str(job.get("id"))
+            try:
+                result = await execute_persistent_job(job)
+                await job_complete(jid, result if isinstance(result, dict) else {"result": result})
+                await publish_runtime_event("job.completed", {"job_id": jid, "type": job.get("type")}, source="job_worker", entity_id=jid)
+            except Exception as exc:
+                logger.exception("Persistent job failed: %s", jid)
+                await job_fail(jid, str(exc), retry=True, delay_seconds=30)
+                await publish_runtime_event("job.failed", {"job_id": jid, "type": job.get("type"), "error": str(exc)[:500]}, source="job_worker", entity_id=jid)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Persistent job worker loop error")
+            await asyncio.sleep(2)
+
+
+async def scheduler_loop() -> None:
+    """Evaluate scheduler_config and enqueue due jobs."""
+    from datetime import datetime, timezone, timedelta
+    # seed defaults
+    defaults = [
+        ("matterhorn_import", 24*3600, {"mode": "safe"}),
+        ("trend_analysis", 7*24*3600, {}),
+    ]
+    for jt, interval, payload in defaults:
+        try:
+            await scheduler_upsert(job_type=jt, enabled=False if jt=="matterhorn_import" else True, interval_seconds=interval, payload=payload)
+        except Exception:
+            pass
+    while True:
+        try:
+            configs = await scheduler_list()
+            now_dt = datetime.now(timezone.utc)
+            for cfg in configs:
+                enabled = cfg.get('enabled')
+                if isinstance(enabled, str): enabled = enabled.lower() in ('1','true','yes')
+                if not enabled:
+                    continue
+                job_type = str(cfg.get('job_type'))
+                interval = int(cfg.get('interval_seconds') or 3600)
+                last = cfg.get('last_run_at')
+                due = True
+                if last:
+                    try:
+                        last_dt = datetime.fromisoformat(str(last).replace('Z','+00:00'))
+                        if last_dt.tzinfo is None: last_dt = last_dt.replace(tzinfo=timezone.utc)
+                        due = (now_dt - last_dt).total_seconds() >= interval
+                    except Exception:
+                        due = True
+                if due:
+                    payload = cfg.get('payload_json') or {}
+                    if isinstance(payload, str):
+                        try: payload = json.loads(payload)
+                        except Exception: payload = {}
+                    await job_create(job_type=job_type, payload=payload, created_by="scheduler")
+                    await scheduler_mark_run(job_type, status="enqueued")
+                    await write_log("INFO", "scheduler_enqueued", f"Scheduled job enqueued: {job_type}", {"interval_seconds": interval})
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Scheduler loop error")
+        await asyncio.sleep(30)
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     """Initialize storage, services and workers; cancel them cleanly on shutdown."""
@@ -236,6 +448,8 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     await configure_omniroute()
     runtime.worker_task = asyncio.create_task(fulfillment_worker(), name="fulfillment-worker")
     runtime.trend_task = asyncio.create_task(trend_scheduler(), name="trend-scheduler")
+    runtime.persistent_job_task = asyncio.create_task(persistent_job_worker(), name="persistent-job-worker")
+    runtime.scheduler_task = asyncio.create_task(scheduler_loop(), name="scheduler-loop")
     # Initialize Shopware services
     runtime.shopware_export_manager = ExportManager(
         connection_manager=ShopwareConnectionManager("", "", ""),
@@ -277,10 +491,10 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
-        for task in (runtime.worker_task, runtime.trend_task):
+        for task in (runtime.worker_task, runtime.trend_task, runtime.persistent_job_task, runtime.scheduler_task):
             if task is not None:
                 task.cancel()
-        tasks = [task for task in (runtime.worker_task, runtime.trend_task) if task is not None]
+        tasks = [task for task in (runtime.worker_task, runtime.trend_task, runtime.persistent_job_task, runtime.scheduler_task) if task is not None]
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
         try:
@@ -301,80 +515,333 @@ app = FastAPI(
 
 _INTERNAL_API_KEY_HEADER = "X-Internal-API-Key"
 _INTERNAL_API_EXCLUDED_PATHS = frozenset({"/api/health", "/docs", "/redoc", "/openapi.json"})
+_AUTH_EXCLUDED_PATHS = frozenset({"/login", "/api/auth/login", "/api/auth/logout", "/api/auth/csrf"})
+_CSRF_EXEMPT_PATHS = frozenset({"/api/auth/login", "/api/auth/logout", "/api/auth/csrf"})
 
 
-def _session_token() -> str:
-    """Create a short-lived stateless browser session token."""
-    issued = str(int(time.time()))
-    secret = os.getenv("INTERNAL_API_KEY", "").strip()
-    signature = hmac.new(secret.encode(), issued.encode(), hashlib.sha256).hexdigest()
-    return f"{issued}.{signature}"
+def _auth_secret() -> str:
+    return (os.getenv("SESSION_SECRET") or os.getenv("INTERNAL_API_KEY") or "dev-insecure-secret").strip()
 
 
-def _valid_session(token: str) -> bool:
-    """Validate the signed browser session token and its TTL."""
-    if not token or "." not in token:
-        return False
-    issued, signature = token.split(".", 1)
-    if not issued.isdigit():
-        return False
-    if int(time.time()) - int(issued) > SESSION_TTL_SECONDS:
-        return False
-    secret = os.getenv("INTERNAL_API_KEY", "").strip()
-    expected = hmac.new(secret.encode(), issued.encode(), hashlib.sha256).hexdigest()
-    return bool(secret) and hmac.compare_digest(signature, expected)
+def _sign(data: str) -> str:
+    return hmac.new(_auth_secret().encode(), data.encode(), hashlib.sha256).hexdigest()
+
+
+def _b64url_encode(raw: bytes) -> str:
+    return base64.urlsafe_b64encode(raw).decode().rstrip("=")
+
+
+def _b64url_decode(data: str) -> bytes:
+    pad = "=" * (-len(data) % 4)
+    return base64.urlsafe_b64decode((data + pad).encode())
+
+
+def _issue_session_token(*, principal_type: str, user_id: str = "", role: str = "admin", sid: str = "") -> str:
+    payload = {
+        "typ": principal_type,  # api_key | user
+        "uid": user_id,
+        "role": role,
+        "sid": sid or str(uuid.uuid4()),
+        "iat": int(time.time()),
+        "exp": int(time.time()) + SESSION_TTL_SECONDS,
+        "nonce": secrets.token_hex(8),
+    }
+    body = _b64url_encode(json.dumps(payload, separators=(",", ":")).encode())
+    return f"v1.{body}.{_sign(body)}"
+
+
+def _decode_session_token(token: str) -> dict[str, Any] | None:
+    if not token:
+        return None
+    # legacy format: <issued_ts>.<hmac>
+    if token.count(".") == 1:
+        issued, signature = token.split(".", 1)
+        if issued.isdigit():
+            expected = hmac.new((os.getenv("INTERNAL_API_KEY", "").strip() or _auth_secret()).encode(), issued.encode(), hashlib.sha256).hexdigest()
+            if hmac.compare_digest(signature, expected) and int(time.time()) - int(issued) <= SESSION_TTL_SECONDS:
+                return {"typ": "api_key", "uid": "internal-api-key", "role": "SUPERADMIN", "iat": int(issued), "exp": int(issued) + SESSION_TTL_SECONDS, "sid": "legacy"}
+        return None
+    if not token.startswith("v1."):
+        return None
+    try:
+        _, body, sig = token.split(".", 2)
+    except ValueError:
+        return None
+    if not hmac.compare_digest(sig, _sign(body)):
+        return None
+    try:
+        payload = json.loads(_b64url_decode(body).decode())
+    except Exception:
+        return None
+    if int(payload.get("exp", 0)) < int(time.time()):
+        return None
+    return payload
+
+
+def _new_csrf_token() -> str:
+    return secrets.token_urlsafe(32)
+
+
+def _set_auth_cookies(request: Request, response: Response, session_token: str) -> str:
+    csrf = _new_csrf_token()
+    secure = request.url.scheme == "https"
+    response.set_cookie(SESSION_COOKIE_NAME, session_token, max_age=SESSION_TTL_SECONDS, httponly=True, samesite="lax", secure=secure, path="/")
+    # readable by JS for header injection
+    response.set_cookie(CSRF_COOKIE_NAME, csrf, max_age=SESSION_TTL_SECONDS, httponly=False, samesite="lax", secure=secure, path="/")
+    return csrf
+
+
+def _clear_auth_cookies(response: Response) -> None:
+    response.delete_cookie(SESSION_COOKIE_NAME, path="/")
+    response.delete_cookie(CSRF_COOKIE_NAME, path="/")
+
+
+async def _resolve_principal(request: Request) -> dict[str, Any]:
+    # 1) Internal API key header (programmatic, full access, CSRF not required)
+    provided_api_key = request.headers.get(_INTERNAL_API_KEY_HEADER, "")
+    expected_api_key = os.getenv("INTERNAL_API_KEY", "").strip()
+    if provided_api_key and expected_api_key and hmac.compare_digest(provided_api_key, expected_api_key):
+        return {"authenticated": True, "via": "api_key_header", "role": "SUPERADMIN", "permissions": ["*"], "user_id": "internal-api-key", "user": {"id": "internal-api-key", "email": "internal@local", "display_name": "Internal API Key", "role": "SUPERADMIN"}}
+
+    # 2) Browser/session cookie
+    token = request.cookies.get(SESSION_COOKIE_NAME, "")
+    payload = _decode_session_token(token)
+    if not payload:
+        return {"authenticated": False}
+
+    # legacy/internal session token => superadmin
+    if payload.get("typ") == "api_key":
+        return {"authenticated": True, "via": "session_internal", "role": "SUPERADMIN", "permissions": ["*"], "user_id": str(payload.get("uid") or "internal"), "session": payload, "user": {"id": "internal", "email": "internal@local", "display_name": "Internal Session", "role": "SUPERADMIN"}}
+
+    # DB-backed user session
+    sid = str(payload.get("sid") or "")
+    sess = await iam_get_session(sid) if sid else None
+    if not sess or bool(sess.get("revoked")):
+        return {"authenticated": False}
+    expires_at = sess.get("expires_at")
+    if expires_at:
+        try:
+            exp_dt = datetime.fromisoformat(str(expires_at).replace("Z", "+00:00")) if isinstance(expires_at, str) else expires_at
+            if exp_dt.tzinfo is None:
+                exp_dt = exp_dt.replace(tzinfo=timezone.utc)
+            if exp_dt < datetime.now(timezone.utc):
+                return {"authenticated": False}
+        except Exception:
+            pass
+    user_id = str(payload.get("uid") or sess.get("user_id") or "")
+    user = await iam_get_user(user_id) if user_id else None
+    if not user or not bool(user.get("is_active", True)):
+        return {"authenticated": False}
+    roles = await iam_get_user_roles(user_id)
+    if bool(user.get("is_superadmin")) and "SUPERADMIN" not in roles:
+        roles.append("SUPERADMIN")
+    if not roles:
+        roles = [str(payload.get("role") or "VIEWER")]
+    perms: set[str] = set()
+    for r in roles:
+        for p in await iam_list_permissions(role_name=r):
+            perms.add(str(p.get("permission")))
+    if "SUPERADMIN" in roles:
+        perms.add("*")
+    return {
+        "authenticated": True,
+        "via": "session_user",
+        "role": roles[0],
+        "roles": roles,
+        "permissions": sorted(perms),
+        "user_id": user_id,
+        "session": payload,
+        "user": {"id": user.get("id"), "email": user.get("email"), "display_name": user.get("display_name") or user.get("username"), "roles": roles},
+    }
+
+
+def _required_permission(method: str, path: str) -> str | None:
+    candidates = [(m, pfx, perm) for (m, prefixes, perm) in RBAC_RULES for pfx in prefixes if m == method and path.startswith(pfx)]
+    if not candidates:
+        return None
+    # longest prefix wins
+    candidates.sort(key=lambda x: len(x[1]), reverse=True)
+    return candidates[0][2]
+
+
+def _has_permission(principal: dict[str, Any], permission: str | None) -> bool:
+    if not permission:
+        return True
+    perms = set(principal.get("permissions") or [])
+    if "*" in perms or principal.get("role") == "SUPERADMIN":
+        return True
+    return permission in perms
+
+
+def _csrf_valid(request: Request) -> bool:
+    cookie = request.cookies.get(CSRF_COOKIE_NAME, "")
+    header = request.headers.get("X-CSRF-Token") or request.headers.get("X-CSRFToken") or ""
+    return bool(cookie) and bool(header) and secrets.compare_digest(cookie, header)
 
 
 @app.middleware("http")
-async def internal_api_key_middleware(request: Request, call_next):
-    if request.url.path in _INTERNAL_API_EXCLUDED_PATHS or request.url.path in {"/login", "/api/auth/login", "/api/auth/logout"}:
-        return await call_next(request)
+async def security_middleware(request: Request, call_next):
+    path = request.url.path
+    method = request.method.upper()
+    request.state.principal = {"authenticated": False}
 
-    provided_api_key = request.headers.get(_INTERNAL_API_KEY_HEADER, "")
-    session_token = request.cookies.get(SESSION_COOKIE_NAME, "")
-    expected_api_key = os.getenv("INTERNAL_API_KEY", "").strip()
-    authenticated = bool(expected_api_key) and (
-        hmac.compare_digest(provided_api_key, expected_api_key) or _valid_session(session_token)
-    )
-    if not authenticated:
-        if request.url.path.startswith("/api/"):
+    if path in _INTERNAL_API_EXCLUDED_PATHS or path in _AUTH_EXCLUDED_PATHS:
+        response = await call_next(request)
+        # ensure csrf cookie exists for browser sessions on safe responses to pages
+        if method == "GET" and not path.startswith("/api/") and request.cookies.get(SESSION_COOKIE_NAME) and not request.cookies.get(CSRF_COOKIE_NAME):
+            response.set_cookie(CSRF_COOKIE_NAME, _new_csrf_token(), max_age=SESSION_TTL_SECONDS, httponly=False, samesite="lax", secure=request.url.scheme == "https", path="/")
+        return response
+
+    principal = await _resolve_principal(request)
+    request.state.principal = principal
+    if not principal.get("authenticated"):
+        if path.startswith("/api/"):
             return JSONResponse(status_code=401, content={"detail": "Unauthorized"})
-        return Response(status_code=303, headers={"Location": "/login"})
-    return await call_next(request)
+        return RedirectResponse(url="/login", status_code=303)
+
+    # CSRF: enforce for browser-session authenticated state-changing requests
+    if method in STATE_CHANGING_METHODS and path not in _CSRF_EXEMPT_PATHS and principal.get("via") != "api_key_header":
+        # allow if no browser cookie/session context? principal came from session cookie in our resolver except api_key_header
+        if not _csrf_valid(request):
+            return JSONResponse(status_code=403, content={"detail": "CSRF token missing or invalid"})
+
+    # RBAC
+    required = _required_permission(method, path)
+    if not _has_permission(principal, required):
+        if path.startswith("/api/"):
+            return JSONResponse(status_code=403, content={"detail": "Forbidden", "required_permission": required})
+        return JSONResponse(status_code=403, content={"detail": "Forbidden"})
+
+    response = await call_next(request)
+    # attach csrf cookie for authenticated browser GET pages if missing
+    if method == "GET" and not path.startswith("/api/") and request.cookies.get(SESSION_COOKIE_NAME) and not request.cookies.get(CSRF_COOKIE_NAME):
+        response.set_cookie(CSRF_COOKIE_NAME, _new_csrf_token(), max_age=SESSION_TTL_SECONDS, httponly=False, samesite="lax", secure=request.url.scheme == "https", path="/")
+    return response
+
+
+def get_current_principal(request: Request) -> dict[str, Any]:
+    p = getattr(request.state, "principal", None)
+    if not p or not p.get("authenticated"):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    return p
+
+
+@app.get("/logout")
+async def logout(request: Request):
+    token = request.cookies.get(SESSION_COOKIE_NAME, "")
+    payload = _decode_session_token(token) or {}
+    sid = str(payload.get("sid") or "")
+    if sid and sid != "legacy":
+        try:
+            await iam_revoke_session(sid)
+        except Exception:
+            pass
+    response = RedirectResponse(url="/login", status_code=303)
+    _clear_auth_cookies(response)
+    return response
 
 
 @app.get("/login", response_class=HTMLResponse)
 async def login_page(request: Request) -> HTMLResponse:
-    """Render the local control-plane login page."""
-    return templates.TemplateResponse("login.html", {"request": request})
+    """Render the control-plane login page."""
+    return templates.TemplateResponse(request, "login.html", {"request": request})
 
 
 class LoginRequest(BaseModel):
-    api_key: str = Field(min_length=1, max_length=4096)
+    api_key: str | None = Field(default=None, max_length=4096)
+    email: str | None = Field(default=None, max_length=320)
+    username: str | None = Field(default=None, max_length=320)
+    password: str | None = Field(default=None, max_length=4096)
+
+
+async def _bootstrap_iam_if_possible() -> None:
+    try:
+        from services.iam_core import bootstrap_defaults
+        await bootstrap_defaults()
+        # optional initial superadmin
+        admin_email = (os.getenv("ADMIN_EMAIL") or "").strip().lower()
+        admin_password = os.getenv("ADMIN_PASSWORD") or ""
+        if admin_email and admin_password:
+            from services.iam_core import hash_password
+            existing = await iam_get_user_by_email(admin_email)
+            if not existing:
+                user = await iam_create_user(email=admin_email, password_hash=hash_password(admin_password), display_name=os.getenv("ADMIN_DISPLAY_NAME") or "Administrator", username=admin_email, is_superadmin=True)
+                await iam_assign_role(user.get("id"), "SUPERADMIN")
+    except Exception:
+        logger.exception("IAM bootstrap skipped/failed")
 
 
 @app.post("/api/auth/login")
-async def login(request: Request, payload: LoginRequest, response: Response) -> dict[str, str]:
-    """Authenticate a browser session using the configured internal API key."""
-    expected = os.getenv("INTERNAL_API_KEY", "").strip()
-    if not expected or not hmac.compare_digest(payload.api_key, expected):
-        raise HTTPException(status_code=401, detail="Invalid API key")
-    response.set_cookie(
-        SESSION_COOKIE_NAME,
-        _session_token(),
-        max_age=SESSION_TTL_SECONDS,
-        httponly=True,
-        samesite="lax",
-        secure=request.url.scheme == "https",
-    )
-    return {"status": "ok", "message": "Authenticated"}
+async def login(request: Request, payload: LoginRequest, response: Response) -> dict[str, Any]:
+    """Authenticate via internal API key (compat) or IAM user credentials."""
+    await _bootstrap_iam_if_possible()
+    expected_api_key = os.getenv("INTERNAL_API_KEY", "").strip()
+
+    # 1) Legacy/internal API key login (backward compatible)
+    if payload.api_key:
+        if not expected_api_key or not hmac.compare_digest(payload.api_key, expected_api_key):
+            raise HTTPException(status_code=401, detail="Invalid API key")
+        token = _issue_session_token(principal_type="api_key", user_id="internal-api-key", role="SUPERADMIN")
+        _set_auth_cookies(request, response, token)
+        await write_log("INFO", "auth_login", "Internal API key session login")
+        return {"status": "ok", "message": "Authenticated", "principal": {"type": "api_key", "role": "SUPERADMIN"}}
+
+    # 2) User credential login
+    identifier = (payload.email or payload.username or "").strip().lower()
+    if not identifier or not payload.password:
+        raise HTTPException(status_code=400, detail="email/username and password or api_key required")
+    user = await iam_get_user_by_email(identifier)
+    if not user:
+        # try username lookup by scanning (small table) fallback
+        for u in await iam_list_users(limit=500):
+            if str(u.get("username") or "").lower() == identifier:
+                user = await iam_get_user(str(u.get("id")))
+                break
+    if not user or not bool(user.get("is_active", True)):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    from services.iam_core import verify_password
+    if not verify_password(payload.password, str(user.get("password_hash") or "")):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    roles = await iam_get_user_roles(str(user.get("id")))
+    if bool(user.get("is_superadmin")) and "SUPERADMIN" not in roles:
+        roles.append("SUPERADMIN")
+    role = roles[0] if roles else "VIEWER"
+    sid = str(uuid.uuid4())
+    token = _issue_session_token(principal_type="user", user_id=str(user.get("id")), role=role, sid=sid)
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+    expires_at = datetime.now(timezone.utc).replace(microsecond=0).timestamp() + SESSION_TTL_SECONDS
+    expires_iso = datetime.fromtimestamp(expires_at, tz=timezone.utc).isoformat()
+    await iam_create_session(session_id=sid, user_id=str(user.get("id")), session_token_hash=token_hash, ip_address=str(request.client.host if request.client else ""), user_agent=str(request.headers.get("user-agent", ""))[:500], expires_at=expires_iso)
+    _set_auth_cookies(request, response, token)
+    await write_log("INFO", "auth_login", f"User login: {user.get('email')}", {"user_id": user.get("id"), "role": role})
+    return {"status": "ok", "message": "Authenticated", "principal": {"type": "user", "user_id": user.get("id"), "email": user.get("email"), "role": role, "roles": roles}}
 
 
 @app.post("/api/auth/logout")
-async def logout(response: Response) -> dict[str, str]:
-    """Clear the browser session cookie."""
-    response.delete_cookie(SESSION_COOKIE_NAME)
+async def logout_api(request: Request, response: Response) -> dict[str, str]:
+    """Clear browser session and revoke DB session if present."""
+    token = request.cookies.get(SESSION_COOKIE_NAME, "")
+    payload = _decode_session_token(token) or {}
+    sid = str(payload.get("sid") or "")
+    if sid and sid != "legacy":
+        try:
+            await iam_revoke_session(sid)
+        except Exception:
+            pass
+    _clear_auth_cookies(response)
     return {"status": "ok"}
+
+
+@app.get("/api/auth/me")
+async def auth_me(principal: dict[str, Any] = Depends(get_current_principal)) -> dict[str, Any]:
+    return {"authenticated": True, "principal": {k: v for k, v in principal.items() if k != "session"}}
+
+
+@app.get("/api/auth/csrf")
+async def auth_csrf(request: Request, response: Response) -> dict[str, str]:
+    token = request.cookies.get(CSRF_COOKIE_NAME) or _new_csrf_token()
+    response.set_cookie(CSRF_COOKIE_NAME, token, max_age=SESSION_TTL_SECONDS, httponly=False, samesite="lax", secure=request.url.scheme == "https", path="/")
+    return {"csrf_token": token}
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -397,19 +864,19 @@ async def dashboard(request: Request) -> HTMLResponse:
 @app.get("/admin/products", response_class=HTMLResponse)
 async def products_page(request: Request) -> HTMLResponse:
     """Render product administration."""
-    return templates.TemplateResponse("products.html", {"request": request, "products": await list_products(100)})
+    return templates.TemplateResponse(request, "products.html", {"request": request, "products": await list_products(100)})
 
 
 @app.get("/admin/orders", response_class=HTMLResponse)
 async def orders_page(request: Request) -> HTMLResponse:
     """Render order administration."""
-    return templates.TemplateResponse("orders.html", {"request": request, "orders": await list_orders(100)})
+    return templates.TemplateResponse(request, "orders.html", {"request": request, "orders": await list_orders(100)})
 
 
 @app.get("/settings", response_class=HTMLResponse)
 async def settings_page(request: Request) -> HTMLResponse:
     """Render settings with database-masked secrets."""
-    return templates.TemplateResponse("settings.html", {"request": request, "settings": await list_settings()})
+    return templates.TemplateResponse(request, "settings.html", {"request": request, "settings": await list_settings()})
 
 
 @app.get("/api/health")
@@ -537,9 +1004,17 @@ async def orders(
 
 
 @app.post("/api/import/matterhorn")
-async def import_matterhorn() -> dict[str, Any]:
-    """Synchronously run a safe Matterhorn import and return its result."""
-    return await runtime.importer.import_products()
+async def import_matterhorn(payload: MatterhornImportRequest | None = None) -> dict[str, Any]:
+    """Run Matterhorn import (safe/partial/full/dry_run) or enqueue as persistent job."""
+    req = payload or MatterhornImportRequest()
+    mode = (req.mode or "safe").lower()
+    if req.async_job:
+        job = await job_create(job_type="matterhorn_import", payload={"feed_url": req.feed_url, "mode": mode, "dry_run": req.dry_run or mode=="dry_run", "preview_id": req.preview_id, "confirm_full_without_preview": req.confirm_full_without_preview}, created_by="api")
+        return {"status": "queued", "job_id": job.get("id"), "mode": mode}
+    result = await runtime.importer.import_products(feed_url=req.feed_url, mode=mode, dry_run=req.dry_run or mode=="dry_run", preview_id=req.preview_id, confirm_full_without_preview=req.confirm_full_without_preview)
+    if result.get("status") == "blocked":
+        raise HTTPException(status_code=409, detail=result)
+    return result
 
 
 @app.get("/api/import-runs")
@@ -612,6 +1087,227 @@ if __name__ == "__main__":
     import uvicorn
 
     uvicorn.run("main:app", host="0.0.0.0", port=8000, loop="uvloop")
+
+
+# ── Persistent Jobs & Scheduler APIs ──────────────────────────────────────
+
+@app.get("/api/jobs")
+async def api_jobs(status: str | None = Query(default=None), type: str | None = Query(default=None), limit: int = Query(default=100, ge=1, le=500)):
+    items = await job_list(limit=limit, status=status, job_type=type)
+    # normalize json fields for UI
+    out=[]
+    for j in items:
+        d=dict(j)
+        for k in ("payload_json","result_json"):
+            if isinstance(d.get(k), str):
+                try: d[k]=json.loads(d[k])
+                except Exception: pass
+        out.append(d)
+    return {"items": out, "count": len(out)}
+
+@app.post("/api/jobs", status_code=201)
+async def api_job_create(payload: JobCreateRequest):
+    job = await job_create(job_type=payload.type, payload=payload.payload, run_at=payload.run_at, max_attempts=payload.max_attempts, created_by="api")
+    await publish_runtime_event("job.created", {"job_id": job.get("id"), "type": payload.type}, source="api", entity_id=str(job.get("id")))
+    return job
+
+@app.get("/api/jobs/{job_id}")
+async def api_job_get(job_id: str):
+    job = await job_get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    d=dict(job)
+    for k in ("payload_json","result_json"):
+        if isinstance(d.get(k), str):
+            try: d[k]=json.loads(d[k])
+            except Exception: pass
+    return d
+
+@app.post("/api/jobs/{job_id}/cancel")
+async def api_job_cancel(job_id: str):
+    ok = await job_cancel(job_id)
+    if not ok: raise HTTPException(status_code=404, detail="Job not found or not cancellable")
+    return {"status": "ok", "job_id": job_id, "action": "cancelled"}
+
+@app.post("/api/jobs/{job_id}/retry")
+async def api_job_retry(job_id: str):
+    ok = await job_retry(job_id)
+    if not ok: raise HTTPException(status_code=404, detail="Job not found")
+    return {"status": "ok", "job_id": job_id, "action": "retry"}
+
+@app.get("/api/scheduler/config")
+async def api_scheduler_config():
+    items = await scheduler_list()
+    out=[]
+    for c in items:
+        d=dict(c)
+        if isinstance(d.get('payload_json'), str):
+            try: d['payload_json']=json.loads(d['payload_json'])
+            except Exception: pass
+        out.append(d)
+    return {"items": out, "count": len(out)}
+
+@app.post("/api/scheduler/config")
+async def api_scheduler_upsert(payload: SchedulerConfigRequest):
+    cfg = await scheduler_upsert(job_type=payload.job_type, enabled=payload.enabled, interval_seconds=payload.interval_seconds, payload=payload.payload)
+    await write_log("INFO", "scheduler_config_updated", f"Scheduler config updated: {payload.job_type}", {"enabled": payload.enabled, "interval_seconds": payload.interval_seconds})
+    return cfg
+
+# ── Matterhorn Connector APIs (config/feeds/mappings/preview/history) ────
+
+@app.get("/api/matterhorn/config")
+async def api_matterhorn_config_get():
+    cfg = await matterhorn_get_config()
+    # include effective settings hints
+    cfg.setdefault("feed_url", {"value": await get_setting("matterhorn_feed_url") or ""})
+    cfg.setdefault("buffer_percent", {"value": 10})
+    return {"config": cfg}
+
+@app.put("/api/matterhorn/config")
+async def api_matterhorn_config_put(payload: MatterhornConfigPayload):
+    for k,v in (payload.config or {}).items():
+        if not isinstance(v, dict): v = {"value": v}
+        await matterhorn_set_config(str(k), v)
+        if k == "feed_url":
+            val = v.get("value") if isinstance(v, dict) else v
+            if val: await set_setting("matterhorn_feed_url", str(val))
+    return {"status": "ok", "config": await matterhorn_get_config()}
+
+@app.get("/api/matterhorn/status")
+async def api_matterhorn_status():
+    feeds = await matterhorn_list_feeds()
+    runs = await recent_import_runs(10)
+    previews = await matterhorn_list_previews(5)
+    configured = bool(feeds) or bool(await get_setting("matterhorn_feed_url"))
+    return {"configured": configured, "feeds_count": len(feeds), "recent_runs": runs, "recent_previews": previews, "buffer_percent": 10}
+
+@app.get("/api/matterhorn/feeds")
+async def api_matterhorn_feeds():
+    return {"items": await matterhorn_list_feeds()}
+
+@app.post("/api/matterhorn/feeds")
+async def api_matterhorn_feed_upsert(payload: MatterhornFeedPayload):
+    return await matterhorn_upsert_feed(payload.model_dump())
+
+@app.delete("/api/matterhorn/feeds/{feed_id}")
+async def api_matterhorn_feed_delete(feed_id: str):
+    ok = await matterhorn_delete_feed(feed_id)
+    if not ok: raise HTTPException(status_code=404, detail="Feed not found")
+    return {"status": "deleted", "id": feed_id}
+
+@app.get("/api/matterhorn/mappings")
+async def api_matterhorn_mappings():
+    return {"items": await matterhorn_list_mappings()}
+
+@app.post("/api/matterhorn/mappings")
+async def api_matterhorn_mapping_upsert(payload: MatterhornMappingPayload):
+    return await matterhorn_upsert_mapping(payload.model_dump())
+
+@app.delete("/api/matterhorn/mappings/{mapping_id}")
+async def api_matterhorn_mapping_delete(mapping_id: str):
+    ok = await matterhorn_delete_mapping(mapping_id)
+    if not ok: raise HTTPException(status_code=404, detail="Mapping not found")
+    return {"status": "deleted", "id": mapping_id}
+
+@app.get("/api/import/matterhorn/preview")
+async def api_matterhorn_preview(feed_url: str | None = Query(default=None), save: int = Query(default=1), limit: int = Query(default=50, ge=1, le=200)):
+    return await runtime.importer.preview_products(feed_url=feed_url, save=bool(save), limit=limit)
+
+@app.get("/api/matterhorn/previews")
+async def api_matterhorn_previews(limit: int = Query(default=50, ge=1, le=200)):
+    return {"items": await matterhorn_list_previews(limit=limit)}
+
+@app.get("/api/matterhorn/previews/{preview_id}")
+async def api_matterhorn_preview_get(preview_id: str):
+    item = await matterhorn_get_preview(preview_id)
+    if not item: raise HTTPException(status_code=404, detail="Preview not found")
+    return item
+
+@app.get("/api/matterhorn/history")
+async def api_matterhorn_history(limit: int = Query(default=50, ge=1, le=200)):
+    return {"runs": await recent_import_runs(limit), "previews": await matterhorn_list_previews(min(limit,50))}
+
+
+
+
+# ── Audit / Analytics / News / Knowledge / Bundles Intelligence APIs ─────
+
+@app.get("/api/audit-log")
+async def api_audit_log(limit: int = Query(default=200, ge=1, le=1000)):
+    return {"items": await audit_list(limit=limit), "count": min(limit, 1000)}
+
+@app.get("/api/analytics")
+async def api_analytics():
+    return await analytics_overview()
+
+@app.get("/api/bundles/intelligence")
+async def api_bundles_intelligence():
+    bundles_data = await list_bundles()
+    products = await list_products(500)
+    active_products = [p for p in products if not p.get('is_bundle') and str(p.get('status'))=='active' and int(p.get('stock') or 0)>0]
+    by_cat: dict[str, list] = {}
+    for p in active_products:
+        by_cat.setdefault(str(p.get('category') or 'uncategorized'), []).append(p)
+    suggestions=[]
+    for cat, items in by_cat.items():
+        if len(items) >= 2:
+            suggestions.append({"category": cat, "candidate_skus": [i.get('sku') for i in items[:4]], "reason": "same_category_stock_available"})
+    return {"bundles": bundles_data, "suggestions": suggestions[:20], "summary": {"bundle_count": len(bundles_data), "suggestion_count": len(suggestions[:20])}}
+
+class NewsSourcePayload(BaseModel):
+    id: str | None = None
+    name: str
+    url: str = ""
+    category: str = "general"
+    enabled: bool = True
+    config_json: dict[str, Any] = Field(default_factory=dict)
+
+class NewsItemPayload(BaseModel):
+    id: str | None = None
+    source_id: str = ""
+    title: str
+    url: str = ""
+    summary: str = ""
+    category: str = "general"
+    published_at: str | None = None
+    metadata_json: dict[str, Any] = Field(default_factory=dict)
+
+class KnowledgePayload(BaseModel):
+    id: str | None = None
+    title: str
+    content: str = ""
+    category: str = "general"
+    tags: list[str] = Field(default_factory=list)
+    source: str = ""
+    metadata_json: dict[str, Any] = Field(default_factory=dict)
+
+@app.get("/api/news/sources")
+async def api_news_sources():
+    return {"items": await news_list_sources()}
+
+@app.post("/api/news/sources")
+async def api_news_source_upsert(payload: NewsSourcePayload):
+    return await news_upsert_source(payload.model_dump())
+
+@app.get("/api/news/items")
+async def api_news_items(limit: int = Query(default=100, ge=1, le=500), category: str | None = Query(default=None)):
+    return {"items": await news_list_items(limit=limit, category=category)}
+
+@app.post("/api/news/items")
+async def api_news_item_create(payload: NewsItemPayload):
+    return await news_add_item(payload.model_dump())
+
+@app.get("/api/knowledge")
+async def api_knowledge_list(limit: int = Query(default=100, ge=1, le=500)):
+    return {"items": await knowledge_list(limit=limit)}
+
+@app.post("/api/knowledge")
+async def api_knowledge_upsert(payload: KnowledgePayload):
+    d = payload.model_dump(); d['tags_json'] = d.pop('tags', [])
+    return await knowledge_upsert(d)
+
+
+
 # ---------------------------------------------------------------------------
 # Sales API
 # ---------------------------------------------------------------------------
@@ -1640,12 +2336,12 @@ async def omniroute_stats():
 @app.get("/google", response_class=HTMLResponse)
 async def google_dashboard_page(request: Request):
     """Google Merchant Center dashboard page."""
-    return templates.TemplateResponse("google_dashboard.html", {"request": request})
+    return templates.TemplateResponse(request, "google_dashboard.html", {"request": request})
 
 @app.get("/google/export", response_class=HTMLResponse)
 async def google_export_page(request: Request):
     """Google Merchant Center export page."""
-    return templates.TemplateResponse("google_export.html", {"request": request})
+    return templates.TemplateResponse(request, "google_export.html", {"request": request})
 
 # ---------------------------------------------------------------------------
 # WebIF Pages - OmniRoute Control Center
@@ -1654,7 +2350,7 @@ async def google_export_page(request: Request):
 @app.get("/omniroute", response_class=HTMLResponse)
 async def omniroute_dashboard_page(request: Request):
     """OmniRoute Control Center dashboard page."""
-    return templates.TemplateResponse("omniroute_dashboard.html", {"request": request})
+    return templates.TemplateResponse(request, "omniroute_dashboard.html", {"request": request})
 
 # ---------------------------------------------------------------------------
 # Integration Pipeline: Matterhorn → AI → Google Merchant Center
@@ -1779,7 +2475,7 @@ async def control_center_dashboard() -> dict[str, Any]:
 @app.get("/control-center", response_class=HTMLResponse)
 async def control_center_page(request: Request) -> HTMLResponse:
     """Render the unified global control center."""
-    return templates.TemplateResponse("control_center.html", {"request": request})
+    return templates.TemplateResponse(request, "control_center.html", {"request": request})
 
 
 @app.get("/api/control-center/system")
@@ -1788,6 +2484,99 @@ async def control_center_system() -> dict[str, Any]:
     if runtime.control_center is None:
         raise HTTPException(status_code=503, detail="Control center not initialized")
     return await runtime.control_center.get_system_intelligence()
+
+
+
+
+# ── Complete WebUI navigation routes (pages & states) ────────────────────
+
+@app.get("/ui/master-dashboard", response_class=HTMLResponse)
+async def ui_master_dashboard(request: Request):
+    return templates.TemplateResponse(request, "master_dashboard.html", {"request": request})
+
+@app.get("/ui/products", response_class=HTMLResponse)
+async def ui_products(request: Request):
+    return templates.TemplateResponse(request, "products.html", {"request": request})
+
+@app.get("/ui/inventory", response_class=HTMLResponse)
+async def ui_inventory(request: Request):
+    return templates.TemplateResponse(request, "inventory.html", {"request": request})
+
+@app.get("/ui/orders", response_class=HTMLResponse)
+async def ui_orders(request: Request):
+    return templates.TemplateResponse(request, "orders.html", {"request": request})
+
+@app.get("/ui/pricing-center", response_class=HTMLResponse)
+async def ui_pricing_center(request: Request):
+    return templates.TemplateResponse(request, "pricing_center.html", {"request": request})
+
+@app.get("/ui/bundle-studio", response_class=HTMLResponse)
+async def ui_bundle_studio(request: Request):
+    return templates.TemplateResponse(request, "bundle_studio.html", {"request": request})
+
+@app.get("/ui/erp-pim", response_class=HTMLResponse)
+async def ui_erp_pim(request: Request):
+    return templates.TemplateResponse(request, "erp_pim.html", {"request": request})
+
+@app.get("/ui/matterhorn-import", response_class=HTMLResponse)
+async def ui_matterhorn_import(request: Request):
+    return templates.TemplateResponse(request, "matterhorn_import.html", {"request": request})
+
+@app.get("/ui/shopware", response_class=HTMLResponse)
+async def ui_shopware(request: Request):
+    return templates.TemplateResponse(request, "shopware.html", {"request": request})
+
+@app.get("/ui/integrations", response_class=HTMLResponse)
+async def ui_integrations(request: Request):
+    return templates.TemplateResponse(request, "integrations.html", {"request": request})
+
+@app.get("/ui/marketplaces", response_class=HTMLResponse)
+async def ui_marketplaces(request: Request):
+    return templates.TemplateResponse(request, "marketplaces.html", {"request": request})
+
+@app.get("/ui/ai-control", response_class=HTMLResponse)
+async def ui_ai_control(request: Request):
+    return templates.TemplateResponse(request, "ai_control.html", {"request": request})
+
+@app.get("/ui/ai-photoshooting", response_class=HTMLResponse)
+async def ui_ai_photoshooting(request: Request):
+    return templates.TemplateResponse(request, "ai_photoshooting.html", {"request": request})
+
+@app.get("/ui/model-management", response_class=HTMLResponse)
+async def ui_model_management(request: Request):
+    return templates.TemplateResponse(request, "model_management.html", {"request": request})
+
+@app.get("/ui/competitor-intelligence", response_class=HTMLResponse)
+async def ui_competitor_intelligence(request: Request):
+    return templates.TemplateResponse(request, "competitor_intelligence.html", {"request": request})
+
+@app.get("/ui/trend-intelligence", response_class=HTMLResponse)
+async def ui_trend_intelligence(request: Request):
+    return templates.TemplateResponse(request, "trend_intelligence.html", {"request": request})
+
+@app.get("/ui/news-events", response_class=HTMLResponse)
+async def ui_news_events(request: Request):
+    return templates.TemplateResponse(request, "news_events.html", {"request": request})
+
+@app.get("/ui/knowledge-base", response_class=HTMLResponse)
+async def ui_knowledge_base(request: Request):
+    return templates.TemplateResponse(request, "knowledge_base.html", {"request": request})
+
+@app.get("/ui/jobs-automation", response_class=HTMLResponse)
+async def ui_jobs_automation(request: Request):
+    return templates.TemplateResponse(request, "jobs_automation.html", {"request": request})
+
+@app.get("/ui/analytics", response_class=HTMLResponse)
+async def ui_analytics(request: Request):
+    return templates.TemplateResponse(request, "analytics.html", {"request": request})
+
+@app.get("/ui/audit-log", response_class=HTMLResponse)
+async def ui_audit_log(request: Request):
+    return templates.TemplateResponse(request, "audit_log.html", {"request": request})
+
+@app.get("/ui/settings", response_class=HTMLResponse)
+async def ui_settings(request: Request):
+    return templates.TemplateResponse(request, "settings.html", {"request": request})
 
 
 # ── Event Bus & Internal Communication (Phase 4) ─────────────────────────
@@ -1978,19 +2767,19 @@ async def api_iam_permissions(role: str | None = Query(default=None)) -> list[di
 
 @app.get("/ui/gtin-intelligence", response_class=HTMLResponse)
 async def ui_gtin_intelligence(request: Request):
-    return templates.TemplateResponse("gtin_intelligence.html", {"request": request})
+    return templates.TemplateResponse(request, "gtin_intelligence.html", {"request": request})
 
 
 @app.get("/ui/security", response_class=HTMLResponse)
 async def ui_security_iam(request: Request):
-    return templates.TemplateResponse("security_iam.html", {"request": request})
+    return templates.TemplateResponse(request, "security_iam.html", {"request": request})
 
 
 @app.get("/ui/content-studio", response_class=HTMLResponse)
 async def ui_content_studio(request: Request):
-    return templates.TemplateResponse("content_studio.html", {"request": request})
+    return templates.TemplateResponse(request, "content_studio.html", {"request": request})
 
 
 @app.get("/ui/internal-communication", response_class=HTMLResponse)
 async def ui_internal_communication(request: Request):
-    return templates.TemplateResponse("internal_communication.html", {"request": request})
+    return templates.TemplateResponse(request, "internal_communication.html", {"request": request})

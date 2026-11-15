@@ -1,7 +1,56 @@
 <!DOCTYPE html>
-<html lang="de"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Omni-Core | Anmeldung</title>
-<style>:root{color-scheme:dark;--line:#243047;--text:#e5e7eb;--muted:#94a3b8;--accent:#60a5fa}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;background:radial-gradient(circle at 50% 20%,#16213b 0,#080b12 55%);font-family:system-ui,sans-serif;color:var(--text)}.card{width:min(420px,calc(100% - 32px));background:#111827ee;border:1px solid var(--line);border-radius:18px;padding:32px;box-shadow:0 20px 80px #0008}.brand{font-weight:800;letter-spacing:.08em}.brand span{color:var(--accent)}h1{font-size:22px;margin:28px 0 8px}.muted{color:var(--muted);font-size:14px;line-height:1.5}label{display:block;margin:24px 0 8px;font-size:13px}input{width:100%;padding:12px 14px;border-radius:10px;border:1px solid var(--line);background:#0b1220;color:var(--text)}button{width:100%;margin-top:18px;padding:12px;border:0;border-radius:10px;background:var(--accent);color:#06101f;font-weight:800;cursor:pointer}.error{margin-top:14px;color:#fca5a5;font-size:13px;min-height:18px}</style></head>
-<body><form class="card" id="login"><div class="brand">OMNI-CORE <span>CONTROL CENTER</span></div><h1>Interne Anmeldung</h1><p class="muted">Der Control Plane API-Zugriff ist geschützt. Verwende den konfigurierten <code>INTERNAL_API_KEY</code>.</p><label for="key">Internal API Key</label><input id="key" type="password" autocomplete="current-password" required autofocus><button id="submit">Anmelden</button><div class="error" id="error"></div></form>
-<script>
-document.getElementById('login').addEventListener('submit',async function(e){e.preventDefault();var b=document.getElementById('submit'),x=document.getElementById('error');b.disabled=true;x.textContent='';try{var r=await fetch('/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({api_key:document.getElementById('key').value})});if(!r.ok)throw new Error('Ungültiger API-Key');location.href='/';}catch(err){x.textContent=err.message;b.disabled=false;}});
-</script></body></html>
+<html lang="de" class="h-full">
+<head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Omni-Core | Anmeldung</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="h-full min-h-screen bg-slate-950 text-slate-100 flex items-center justify-center p-4">
+  <div class="w-full max-w-md bg-slate-900 border border-slate-800 rounded-xl p-6 shadow-xl">
+    <div class="mb-5">
+      <div class="text-xl font-extrabold">OMNI-CORE <span class="text-indigo-400">Control</span></div>
+      <h1 class="text-2xl font-bold mt-3">Anmeldung</h1>
+      <p class="text-sm text-slate-400 mt-1">Melde dich mit Benutzerkonto (E-Mail/Benutzername + Passwort) an. Alternativ, falls konfiguriert, mit internem API-Key.</p>
+    </div>
+
+    <form id="login-form" class="space-y-3">
+      <div>
+        <label class="text-sm text-slate-300">E-Mail oder Benutzername</label>
+        <input id="identifier" autocomplete="username" class="mt-1 w-full bg-slate-800 border border-slate-700 rounded px-3 py-2" placeholder="admin@example.com">
+      </div>
+      <div>
+        <label class="text-sm text-slate-300">Passwort</label>
+        <input id="password" type="password" autocomplete="current-password" class="mt-1 w-full bg-slate-800 border border-slate-700 rounded px-3 py-2" placeholder="••••••••">
+      </div>
+      <button class="w-full bg-indigo-600 hover:bg-indigo-500 rounded px-4 py-2 font-semibold">Anmelden</button>
+    </form>
+
+    <div class="my-4 flex items-center gap-3 text-xs text-slate-500"><div class="h-px bg-slate-800 flex-1"></div><span>oder</span><div class="h-px bg-slate-800 flex-1"></div></div>
+
+    <form id="apikey-form" class="space-y-3">
+      <div>
+        <label class="text-sm text-slate-300">Internal API Key</label>
+        <input id="api-key" type="password" autocomplete="off" class="mt-1 w-full bg-slate-800 border border-slate-700 rounded px-3 py-2" placeholder="INTERNAL_API_KEY">
+      </div>
+      <button class="w-full bg-slate-700 hover:bg-slate-600 rounded px-4 py-2 font-semibold">Mit API-Key anmelden</button>
+    </form>
+
+    <div id="error" class="mt-3 text-sm text-red-300 min-h-[1.25rem]"></div>
+    <p class="text-xs text-slate-500 mt-4">Sitzung erfolgt per sicherem HttpOnly-Cookie; schreibende Browser-Anfragen sind CSRF-geschützt. Programmatischer Zugriff weiterhin via <code>X-Internal-API-Key</code> möglich.</p>
+  </div>
+  <script>
+    const err = document.getElementById('error');
+    async function doLogin(body){
+      err.textContent='';
+      try{
+        const r = await fetch('/api/auth/login', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+        const d = await r.json().catch(()=>({}));
+        if(!r.ok) throw new Error(d.detail || 'Anmeldung fehlgeschlagen');
+        location.href = '/';
+      }catch(e){ err.textContent = e.message || 'Anmeldung fehlgeschlagen'; }
+    }
+    document.getElementById('login-form').addEventListener('submit', (e)=>{ e.preventDefault(); doLogin({email: document.getElementById('identifier').value.trim(), password: document.getElementById('password').value}); });
+    document.getElementById('apikey-form').addEventListener('submit', (e)=>{ e.preventDefault(); doLogin({api_key: document.getElementById('api-key').value}); });
+  </script>
+</body>
+</html>

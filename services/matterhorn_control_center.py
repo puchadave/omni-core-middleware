@@ -283,7 +283,7 @@ class MatterhornControlCenter:
         and operation statistics.
         """
         if not self.api_client or not self.api_client.connection:
-            return {"error": "API client not initialized"
+            return {"error": "API client not initialized"}
 
         conn = self.api_client.connection
 

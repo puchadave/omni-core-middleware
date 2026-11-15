@@ -779,6 +779,9 @@ POSTGRES_SCHEMA: tuple[str, ...] = (
     """CREATE TABLE IF NOT EXISTS iam_permissions (id TEXT PRIMARY KEY, role_name TEXT NOT NULL, permission TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), UNIQUE(role_name, permission))""",
     """CREATE TABLE IF NOT EXISTS iam_user_roles (user_id TEXT NOT NULL, role_name TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), UNIQUE(user_id, role_name))""",
     """CREATE TABLE IF NOT EXISTS iam_sessions (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, session_token_hash TEXT NOT NULL, ip_address TEXT NOT NULL DEFAULT '', user_agent TEXT NOT NULL DEFAULT '', expires_at TIMESTAMPTZ, revoked BOOLEAN NOT NULL DEFAULT FALSE, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), last_seen_at TIMESTAMPTZ)""",
+    """CREATE TABLE IF NOT EXISTS news_sources (id TEXT PRIMARY KEY, name TEXT NOT NULL, url TEXT NOT NULL DEFAULT '', category TEXT NOT NULL DEFAULT 'general', enabled BOOLEAN NOT NULL DEFAULT TRUE, config_json JSONB NOT NULL DEFAULT '{}', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())""",
+    """CREATE TABLE IF NOT EXISTS news_items (id TEXT PRIMARY KEY, source_id TEXT NOT NULL DEFAULT '', title TEXT NOT NULL, url TEXT NOT NULL DEFAULT '', summary TEXT NOT NULL DEFAULT '', category TEXT NOT NULL DEFAULT 'general', published_at TIMESTAMPTZ, metadata_json JSONB NOT NULL DEFAULT '{}', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())""",
+    """CREATE TABLE IF NOT EXISTS knowledge_entries (id TEXT PRIMARY KEY, title TEXT NOT NULL, content TEXT NOT NULL DEFAULT '', category TEXT NOT NULL DEFAULT 'general', tags_json JSONB NOT NULL DEFAULT '[]', source TEXT NOT NULL DEFAULT '', metadata_json JSONB NOT NULL DEFAULT '{}', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())"""
 
 )
 
@@ -1496,6 +1499,93 @@ CREATE TABLE IF NOT EXISTS iam_sessions (
     revoked INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     last_seen_at TEXT
+);
+
+
+CREATE TABLE IF NOT EXISTS jobs (
+    id TEXT PRIMARY KEY,
+    type TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','running','succeeded','failed','cancelled','retry')),
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    result_json TEXT NOT NULL DEFAULT '{}',
+    error_message TEXT NOT NULL DEFAULT '',
+    attempts INTEGER NOT NULL DEFAULT 0,
+    max_attempts INTEGER NOT NULL DEFAULT 3,
+    run_at TEXT NOT NULL,
+    locked_by TEXT NOT NULL DEFAULT '',
+    locked_at TEXT,
+    started_at TEXT,
+    finished_at TEXT,
+    created_by TEXT NOT NULL DEFAULT '',
+    correlation_id TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_jobs_status_run_at ON jobs(status, run_at);
+CREATE INDEX IF NOT EXISTS idx_jobs_type_created ON jobs(type, created_at);
+CREATE TABLE IF NOT EXISTS scheduler_config (
+    id TEXT PRIMARY KEY,
+    job_type TEXT NOT NULL UNIQUE,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    interval_seconds INTEGER NOT NULL DEFAULT 3600,
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    last_run_at TEXT,
+    next_run_at TEXT,
+    last_status TEXT NOT NULL DEFAULT '',
+    last_error TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS matterhorn_config (
+    key TEXT PRIMARY KEY,
+    value_json TEXT NOT NULL DEFAULT '{}',
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS matterhorn_feeds (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    feed_url TEXT NOT NULL,
+    feed_type TEXT NOT NULL DEFAULT 'xml',
+    enabled INTEGER NOT NULL DEFAULT 1,
+    config_json TEXT NOT NULL DEFAULT '{}',
+    last_preview_at TEXT,
+    last_import_at TEXT,
+    last_status TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS matterhorn_mappings (
+    id TEXT PRIMARY KEY,
+    source_field TEXT NOT NULL,
+    target_field TEXT NOT NULL,
+    transform TEXT NOT NULL DEFAULT '',
+    enabled INTEGER NOT NULL DEFAULT 1,
+    config_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS matterhorn_import_previews (
+    id TEXT PRIMARY KEY,
+    feed_url TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'created',
+    summary_json TEXT NOT NULL DEFAULT '{}',
+    items_json TEXT NOT NULL DEFAULT '[]',
+    validation_json TEXT NOT NULL DEFAULT '{}',
+    source_hash TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS news_sources (
+    id TEXT PRIMARY KEY, name TEXT NOT NULL, url TEXT NOT NULL DEFAULT '', category TEXT NOT NULL DEFAULT 'general',
+    enabled INTEGER NOT NULL DEFAULT 1, config_json TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS news_items (
+    id TEXT PRIMARY KEY, source_id TEXT NOT NULL DEFAULT '', title TEXT NOT NULL, url TEXT NOT NULL DEFAULT '', summary TEXT NOT NULL DEFAULT '',
+    category TEXT NOT NULL DEFAULT 'general', published_at TEXT, metadata_json TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS knowledge_entries (
+    id TEXT PRIMARY KEY, title TEXT NOT NULL, content TEXT NOT NULL DEFAULT '', category TEXT NOT NULL DEFAULT 'general',
+    tags_json TEXT NOT NULL DEFAULT '[]', source TEXT NOT NULL DEFAULT '', metadata_json TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL, updated_at TEXT NOT NULL
 );
 
 """
@@ -2888,3 +2978,568 @@ async def iam_grant_permission(role_name: str, permission: str) -> None:
         return
     async with get_connection() as db:
         await db.execute("INSERT OR IGNORE INTO iam_permissions(id,role_name,permission) VALUES (?,?,?)", (pid,role_name,permission)); await db.commit()
+
+
+
+async def iam_create_session(*, session_id: str, user_id: str, session_token_hash: str, ip_address: str = "", user_agent: str = "", expires_at: str | None = None) -> dict[str, Any]:
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO iam_sessions(id,user_id,session_token_hash,ip_address,user_agent,expires_at,revoked,created_at,last_seen_at) VALUES ($1,$2,$3,$4,$5,$6,FALSE,NOW(),NOW())",
+                session_id, user_id, session_token_hash, ip_address, user_agent, expires_at,
+            )
+            row = await conn.fetchrow("SELECT * FROM iam_sessions WHERE id=$1", session_id)
+        return dict(row) if row else {"id": session_id}
+    async with get_connection() as db:
+        now = utc_now()
+        await db.execute(
+            "INSERT INTO iam_sessions(id,user_id,session_token_hash,ip_address,user_agent,expires_at,revoked,created_at,last_seen_at) VALUES (?,?,?,?,?,?,0,?,?)",
+            (session_id, user_id, session_token_hash, ip_address, user_agent, expires_at, now, now),
+        )
+        await db.commit()
+        cur = await db.execute("SELECT * FROM iam_sessions WHERE id=?", (session_id,))
+        row = await cur.fetchone(); await cur.close()
+        return dict(row) if row else {"id": session_id}
+
+
+async def iam_get_session(session_id: str) -> dict[str, Any] | None:
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT * FROM iam_sessions WHERE id=$1", session_id)
+        return dict(row) if row else None
+    async with get_connection() as db:
+        cur = await db.execute("SELECT * FROM iam_sessions WHERE id=?", (session_id,))
+        row = await cur.fetchone(); await cur.close()
+        return dict(row) if row else None
+
+
+async def iam_revoke_session(session_id: str) -> None:
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            await conn.execute("UPDATE iam_sessions SET revoked=TRUE WHERE id=$1", session_id)
+        return
+    async with get_connection() as db:
+        await db.execute("UPDATE iam_sessions SET revoked=1 WHERE id=?", (session_id,))
+        await db.commit()
+
+
+async def iam_touch_session(session_id: str) -> None:
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            await conn.execute("UPDATE iam_sessions SET last_seen_at=NOW() WHERE id=$1", session_id)
+        return
+    async with get_connection() as db:
+        await db.execute("UPDATE iam_sessions SET last_seen_at=? WHERE id=?", (utc_now(), session_id))
+        await db.commit()
+
+
+async def iam_get_user_roles(user_id: str) -> list[str]:
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("SELECT role_name FROM iam_user_roles WHERE user_id=$1", user_id)
+        return [str(r["role_name"]) for r in rows]
+    async with get_connection() as db:
+        cur = await db.execute("SELECT role_name FROM iam_user_roles WHERE user_id=?", (user_id,))
+        rows = await cur.fetchall(); await cur.close()
+        return [str(r["role_name"]) for r in rows]
+
+# ── Persistent Job System helpers ─────────────────────────────────────────
+
+async def job_create(*, job_type: str, payload: dict[str, Any] | None = None, run_at: str | None = None, max_attempts: int = 3, created_by: str = "", correlation_id: str = "") -> dict[str, Any]:
+    import uuid as _uuid
+    jid = str(_uuid.uuid4())
+    now = utc_now()
+    payload_json = json.dumps(payload or {}, ensure_ascii=False, default=str)
+    run_at_val = run_at or now
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "INSERT INTO jobs(id,type,status,payload_json,result_json,error_message,attempts,max_attempts,run_at,created_by,correlation_id,created_at,updated_at) VALUES ($1,$2,'pending',$3::jsonb,'{}'::jsonb,'',0,$4,$5,$6,$7,NOW(),NOW()) RETURNING *",
+                jid, job_type, payload_json, max_attempts, run_at_val, created_by, correlation_id,
+            )
+        return dict(row) if row else {"id": jid}
+    async with get_connection() as db:
+        await db.execute(
+            "INSERT INTO jobs(id,type,status,payload_json,result_json,error_message,attempts,max_attempts,run_at,created_by,correlation_id,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (jid, job_type, "pending", payload_json, "{}", "", 0, max_attempts, run_at_val, created_by, correlation_id, now, now),
+        )
+        await db.commit()
+        cur = await db.execute("SELECT * FROM jobs WHERE id=?", (jid,))
+        row = await cur.fetchone(); await cur.close()
+        return dict(row) if row else {"id": jid}
+
+
+async def job_list(*, limit: int = 100, status: str | None = None, job_type: str | None = None) -> list[dict[str, Any]]:
+    if uses_postgres():
+        pool = await get_pg_pool()
+        q = "SELECT * FROM jobs WHERE 1=1"; args=[]; i=1
+        if status: q += f" AND status=${i}"; args.append(status); i+=1
+        if job_type: q += f" AND type=${i}"; args.append(job_type); i+=1
+        q += f" ORDER BY created_at DESC LIMIT ${i}"; args.append(limit)
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(q, *args)
+        return [dict(r) for r in rows]
+    async with get_connection() as db:
+        q = "SELECT * FROM jobs WHERE 1=1"; args=[]
+        if status: q += " AND status=?"; args.append(status)
+        if job_type: q += " AND type=?"; args.append(job_type)
+        q += " ORDER BY created_at DESC LIMIT ?"; args.append(limit)
+        cur = await db.execute(q, tuple(args))
+        rows = await cur.fetchall(); await cur.close()
+        return [dict(r) for r in rows]
+
+
+async def job_get(job_id: str) -> dict[str, Any] | None:
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT * FROM jobs WHERE id=$1", job_id)
+        return dict(row) if row else None
+    async with get_connection() as db:
+        cur = await db.execute("SELECT * FROM jobs WHERE id=?", (job_id,))
+        row = await cur.fetchone(); await cur.close()
+        return dict(row) if row else None
+
+
+async def job_update(job_id: str, **fields: Any) -> bool:
+    if not fields: return False
+    if uses_postgres():
+        sets=[]; vals=[]; i=1
+        for k,v in fields.items():
+            if k in {"payload_json","result_json"} and not isinstance(v,str): v=json.dumps(v,ensure_ascii=False,default=str)
+            sets.append(f"{k}=${i}"); vals.append(v); i+=1
+        sets.append("updated_at=NOW()")
+        vals.append(job_id)
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            res = await conn.execute(f"UPDATE jobs SET {', '.join(sets)} WHERE id=${i}", *vals)
+        return res.endswith('1')
+    async with get_connection() as db:
+        sets=[]; vals=[]
+        for k,v in fields.items():
+            if k in {"payload_json","result_json"} and not isinstance(v,str): v=json.dumps(v,ensure_ascii=False,default=str)
+            sets.append(f"{k}=?"); vals.append(v)
+        sets.append("updated_at=?"); vals.append(utc_now()); vals.append(job_id)
+        cur = await db.execute(f"UPDATE jobs SET {', '.join(sets)} WHERE id=?", tuple(vals))
+        await db.commit(); ok = cur.rowcount>0; await cur.close(); return ok
+
+
+async def job_claim_next(worker_id: str = "worker-1") -> dict[str, Any] | None:
+    now = utc_now()
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """UPDATE jobs SET status='running', locked_by=$1, locked_at=NOW(), started_at=COALESCE(started_at,NOW()), attempts=attempts+1, updated_at=NOW()
+                   WHERE id=(SELECT id FROM jobs WHERE status IN ('pending','retry') AND run_at <= NOW() ORDER BY run_at ASC, created_at ASC FOR UPDATE SKIP LOCKED LIMIT 1)
+                   RETURNING *""", worker_id)
+        return dict(row) if row else None
+    async with get_connection() as db:
+        cur = await db.execute("SELECT id FROM jobs WHERE status IN ('pending','retry') AND run_at <= ? ORDER BY run_at ASC, created_at ASC LIMIT 1", (now,))
+        row = await cur.fetchone(); await cur.close()
+        if not row: return None
+        jid = row['id'] if isinstance(row, dict) or hasattr(row,'keys') else row[0]
+        await db.execute("UPDATE jobs SET status='running', locked_by=?, locked_at=?, started_at=COALESCE(started_at,?), attempts=attempts+1, updated_at=? WHERE id=? AND status IN ('pending','retry')", (worker_id, now, now, now, jid))
+        await db.commit()
+        return await job_get(str(jid))
+
+
+async def job_complete(job_id: str, result: dict[str, Any] | None = None) -> None:
+    await job_update(job_id, status='succeeded', result_json=result or {}, finished_at=utc_now(), error_message='')
+
+
+async def job_fail(job_id: str, error: str, *, retry: bool = False, delay_seconds: int = 60) -> None:
+    j = await job_get(job_id) or {}
+    attempts = int(j.get('attempts') or 0)
+    max_attempts = int(j.get('max_attempts') or 3)
+    if retry and attempts < max_attempts:
+        from datetime import datetime, timedelta, timezone
+        run_at = (datetime.now(timezone.utc) + timedelta(seconds=delay_seconds)).isoformat()
+        await job_update(job_id, status='retry', error_message=str(error)[:2000], run_at=run_at)
+    else:
+        await job_update(job_id, status='failed', error_message=str(error)[:2000], finished_at=utc_now())
+
+
+async def job_cancel(job_id: str) -> bool:
+    j = await job_get(job_id)
+    if not j or j.get('status') in ('succeeded','failed','cancelled'): return False
+    return await job_update(job_id, status='cancelled', finished_at=utc_now())
+
+
+async def job_retry(job_id: str) -> bool:
+    j = await job_get(job_id)
+    if not j: return False
+    return await job_update(job_id, status='retry', run_at=utc_now(), error_message='')
+
+
+# ── Scheduler config helpers ──────────────────────────────────────────────
+
+async def scheduler_list() -> list[dict[str, Any]]:
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("SELECT * FROM scheduler_config ORDER BY job_type ASC")
+        return [dict(r) for r in rows]
+    async with get_connection() as db:
+        cur = await db.execute("SELECT * FROM scheduler_config ORDER BY job_type ASC")
+        rows = await cur.fetchall(); await cur.close()
+        return [dict(r) for r in rows]
+
+
+async def scheduler_upsert(*, job_type: str, enabled: bool = True, interval_seconds: int = 3600, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    import uuid as _uuid
+    sid = f"sched_{job_type}"
+    now = utc_now()
+    payload_json = json.dumps(payload or {}, ensure_ascii=False, default=str)
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO scheduler_config(id,job_type,enabled,interval_seconds,payload_json,created_at,updated_at)
+                   VALUES ($1,$2,$3,$4,$5::jsonb,NOW(),NOW())
+                   ON CONFLICT(job_type) DO UPDATE SET enabled=EXCLUDED.enabled, interval_seconds=EXCLUDED.interval_seconds, payload_json=EXCLUDED.payload_json, updated_at=NOW()""",
+                sid, job_type, enabled, interval_seconds, payload_json)
+            row = await conn.fetchrow("SELECT * FROM scheduler_config WHERE job_type=$1", job_type)
+        return dict(row) if row else {"job_type": job_type}
+    async with get_connection() as db:
+        await db.execute(
+            """INSERT INTO scheduler_config(id,job_type,enabled,interval_seconds,payload_json,created_at,updated_at)
+               VALUES (?,?,?,?,?,?,?)
+               ON CONFLICT(job_type) DO UPDATE SET enabled=excluded.enabled, interval_seconds=excluded.interval_seconds, payload_json=excluded.payload_json, updated_at=excluded.updated_at""",
+            (sid, job_type, 1 if enabled else 0, interval_seconds, payload_json, now, now))
+        await db.commit()
+        cur = await db.execute("SELECT * FROM scheduler_config WHERE job_type=?", (job_type,))
+        row = await cur.fetchone(); await cur.close()
+        return dict(row) if row else {"job_type": job_type}
+
+
+async def scheduler_mark_run(job_type: str, *, status: str = "", error: str = "") -> None:
+    now = utc_now()
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            await conn.execute("UPDATE scheduler_config SET last_run_at=NOW(), last_status=$1, last_error=$2, updated_at=NOW() WHERE job_type=$3", status, error[:1000], job_type)
+        return
+    async with get_connection() as db:
+        await db.execute("UPDATE scheduler_config SET last_run_at=?, last_status=?, last_error=?, updated_at=? WHERE job_type=?", (now, status, error[:1000], now, job_type))
+        await db.commit()
+
+
+# ── Matterhorn config/feeds/mappings/previews helpers ─────────────────────
+
+async def matterhorn_get_config() -> dict[str, Any]:
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("SELECT key, value_json FROM matterhorn_config")
+        return {r['key']: (r['value_json'] if isinstance(r['value_json'], dict) else json.loads(r['value_json'] or '{}')) for r in rows}
+    async with get_connection() as db:
+        cur = await db.execute("SELECT key, value_json FROM matterhorn_config")
+        rows = await cur.fetchall(); await cur.close()
+        out={}
+        for r in rows:
+            d=dict(r); v=d.get('value_json')
+            if isinstance(v,str):
+                try: v=json.loads(v)
+                except Exception: v={}
+            out[d['key']]=v or {}
+        return out
+
+
+async def matterhorn_set_config(key: str, value: dict[str, Any]) -> None:
+    now = utc_now(); vj=json.dumps(value, ensure_ascii=False, default=str)
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            await conn.execute("INSERT INTO matterhorn_config(key,value_json,updated_at) VALUES ($1,$2::jsonb,NOW()) ON CONFLICT(key) DO UPDATE SET value_json=EXCLUDED.value_json, updated_at=NOW()", key, vj)
+        return
+    async with get_connection() as db:
+        await db.execute("INSERT INTO matterhorn_config(key,value_json,updated_at) VALUES (?,?,?) ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json, updated_at=excluded.updated_at", (key, vj, now))
+        await db.commit()
+
+
+async def matterhorn_list_feeds() -> list[dict[str, Any]]:
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("SELECT * FROM matterhorn_feeds ORDER BY updated_at DESC")
+        return [dict(r) for r in rows]
+    async with get_connection() as db:
+        cur = await db.execute("SELECT * FROM matterhorn_feeds ORDER BY updated_at DESC")
+        rows = await cur.fetchall(); await cur.close()
+        return [dict(r) for r in rows]
+
+
+async def matterhorn_upsert_feed(feed: dict[str, Any]) -> dict[str, Any]:
+    import uuid as _uuid
+    fid = str(feed.get('id') or _uuid.uuid4())
+    now = utc_now(); cfg=json.dumps(feed.get('config_json') or feed.get('config') or {}, ensure_ascii=False, default=str)
+    enabled = feed.get('enabled', True)
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            await conn.execute("""INSERT INTO matterhorn_feeds(id,name,feed_url,feed_type,enabled,config_json,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6::jsonb,NOW(),NOW())
+                ON CONFLICT(id) DO UPDATE SET name=EXCLUDED.name, feed_url=EXCLUDED.feed_url, feed_type=EXCLUDED.feed_type, enabled=EXCLUDED.enabled, config_json=EXCLUDED.config_json, updated_at=NOW()""",
+                fid, feed.get('name') or 'Feed', feed.get('feed_url') or '', feed.get('feed_type') or 'xml', bool(enabled), cfg)
+            row = await conn.fetchrow("SELECT * FROM matterhorn_feeds WHERE id=$1", fid)
+        return dict(row) if row else {"id": fid}
+    async with get_connection() as db:
+        await db.execute("""INSERT INTO matterhorn_feeds(id,name,feed_url,feed_type,enabled,config_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)
+            ON CONFLICT(id) DO UPDATE SET name=excluded.name, feed_url=excluded.feed_url, feed_type=excluded.feed_type, enabled=excluded.enabled, config_json=excluded.config_json, updated_at=excluded.updated_at""",
+            (fid, feed.get('name') or 'Feed', feed.get('feed_url') or '', feed.get('feed_type') or 'xml', 1 if enabled else 0, cfg, now, now))
+        await db.commit()
+        cur = await db.execute("SELECT * FROM matterhorn_feeds WHERE id=?", (fid,))
+        row = await cur.fetchone(); await cur.close()
+        return dict(row) if row else {"id": fid}
+
+
+async def matterhorn_delete_feed(feed_id: str) -> bool:
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            res = await conn.execute("DELETE FROM matterhorn_feeds WHERE id=$1", feed_id)
+        return res.endswith('1')
+    async with get_connection() as db:
+        cur = await db.execute("DELETE FROM matterhorn_feeds WHERE id=?", (feed_id,))
+        await db.commit(); ok=cur.rowcount>0; await cur.close(); return ok
+
+
+async def matterhorn_list_mappings() -> list[dict[str, Any]]:
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("SELECT * FROM matterhorn_mappings ORDER BY updated_at DESC")
+        return [dict(r) for r in rows]
+    async with get_connection() as db:
+        cur = await db.execute("SELECT * FROM matterhorn_mappings ORDER BY updated_at DESC")
+        rows = await cur.fetchall(); await cur.close()
+        return [dict(r) for r in rows]
+
+
+async def matterhorn_upsert_mapping(mapping: dict[str, Any]) -> dict[str, Any]:
+    import uuid as _uuid
+    mid = str(mapping.get('id') or _uuid.uuid4())
+    now = utc_now(); cfg=json.dumps(mapping.get('config_json') or mapping.get('config') or {}, ensure_ascii=False, default=str)
+    enabled = mapping.get('enabled', True)
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            await conn.execute("""INSERT INTO matterhorn_mappings(id,source_field,target_field,transform,enabled,config_json,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6::jsonb,NOW(),NOW())
+                ON CONFLICT(id) DO UPDATE SET source_field=EXCLUDED.source_field, target_field=EXCLUDED.target_field, transform=EXCLUDED.transform, enabled=EXCLUDED.enabled, config_json=EXCLUDED.config_json, updated_at=NOW()""",
+                mid, mapping.get('source_field') or '', mapping.get('target_field') or '', mapping.get('transform') or '', bool(enabled), cfg)
+            row = await conn.fetchrow("SELECT * FROM matterhorn_mappings WHERE id=$1", mid)
+        return dict(row) if row else {"id": mid}
+    async with get_connection() as db:
+        await db.execute("""INSERT INTO matterhorn_mappings(id,source_field,target_field,transform,enabled,config_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)
+            ON CONFLICT(id) DO UPDATE SET source_field=excluded.source_field, target_field=excluded.target_field, transform=excluded.transform, enabled=excluded.enabled, config_json=excluded.config_json, updated_at=excluded.updated_at""",
+            (mid, mapping.get('source_field') or '', mapping.get('target_field') or '', mapping.get('transform') or '', 1 if enabled else 0, cfg, now, now))
+        await db.commit()
+        cur = await db.execute("SELECT * FROM matterhorn_mappings WHERE id=?", (mid,))
+        row = await cur.fetchone(); await cur.close()
+        return dict(row) if row else {"id": mid}
+
+
+async def matterhorn_delete_mapping(mapping_id: str) -> bool:
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            res = await conn.execute("DELETE FROM matterhorn_mappings WHERE id=$1", mapping_id)
+        return res.endswith('1')
+    async with get_connection() as db:
+        cur = await db.execute("DELETE FROM matterhorn_mappings WHERE id=?", (mapping_id,))
+        await db.commit(); ok=cur.rowcount>0; await cur.close(); return ok
+
+
+async def matterhorn_save_preview(*, preview_id: str, feed_url: str, status: str, summary: dict[str, Any], items: list[dict[str, Any]], validation: dict[str, Any], source_hash: str = "") -> dict[str, Any]:
+    now = utc_now()
+    sj=json.dumps(summary,ensure_ascii=False,default=str); ij=json.dumps(items,ensure_ascii=False,default=str); vj=json.dumps(validation,ensure_ascii=False,default=str)
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            await conn.execute("INSERT INTO matterhorn_import_previews(id,feed_url,status,summary_json,items_json,validation_json,source_hash,created_at) VALUES ($1,$2,$3,$4::jsonb,$5::jsonb,$6::jsonb,$7,NOW())", preview_id, feed_url, status, sj, ij, vj, source_hash)
+            row = await conn.fetchrow("SELECT * FROM matterhorn_import_previews WHERE id=$1", preview_id)
+        return dict(row) if row else {"id": preview_id}
+    async with get_connection() as db:
+        await db.execute("INSERT INTO matterhorn_import_previews(id,feed_url,status,summary_json,items_json,validation_json,source_hash,created_at) VALUES (?,?,?,?,?,?,?,?)", (preview_id, feed_url, status, sj, ij, vj, source_hash, now))
+        await db.commit()
+        cur = await db.execute("SELECT * FROM matterhorn_import_previews WHERE id=?", (preview_id,))
+        row = await cur.fetchone(); await cur.close()
+        return dict(row) if row else {"id": preview_id}
+
+
+async def matterhorn_list_previews(limit: int = 50) -> list[dict[str, Any]]:
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("SELECT id, feed_url, status, summary_json, validation_json, source_hash, created_at FROM matterhorn_import_previews ORDER BY created_at DESC LIMIT $1", limit)
+        return [dict(r) for r in rows]
+    async with get_connection() as db:
+        cur = await db.execute("SELECT id, feed_url, status, summary_json, validation_json, source_hash, created_at FROM matterhorn_import_previews ORDER BY created_at DESC LIMIT ?", (limit,))
+        rows = await cur.fetchall(); await cur.close()
+        out=[]
+        for r in rows:
+            d=dict(r)
+            for k in ("summary_json","validation_json"):
+                if isinstance(d.get(k), str):
+                    try: d[k]=json.loads(d[k])
+                    except Exception: pass
+            out.append(d)
+        return out
+
+
+async def matterhorn_get_preview(preview_id: str) -> dict[str, Any] | None:
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT * FROM matterhorn_import_previews WHERE id=$1", preview_id)
+        return dict(row) if row else None
+    async with get_connection() as db:
+        cur = await db.execute("SELECT * FROM matterhorn_import_previews WHERE id=?", (preview_id,))
+        row = await cur.fetchone(); await cur.close()
+        if not row: return None
+        d=dict(row)
+        for k in ("summary_json","items_json","validation_json"):
+            if isinstance(d.get(k), str):
+                try: d[k]=json.loads(d[k])
+                except Exception: pass
+        return d
+
+
+async def list_import_runs(limit: int = 10) -> list[dict[str, Any]]:
+    return await recent_import_runs(limit)
+
+# ── News & Knowledge helpers ──────────────────────────────────────────────
+
+async def news_list_sources() -> list[dict[str, Any]]:
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("SELECT * FROM news_sources ORDER BY updated_at DESC")
+        return [dict(r) for r in rows]
+    async with get_connection() as db:
+        cur = await db.execute("SELECT * FROM news_sources ORDER BY updated_at DESC")
+        rows = await cur.fetchall(); await cur.close()
+        return [dict(r) for r in rows]
+
+
+async def news_upsert_source(src: dict[str, Any]) -> dict[str, Any]:
+    import uuid as _uuid
+    sid = str(src.get('id') or _uuid.uuid4()); now = utc_now()
+    cfg = json.dumps(src.get('config_json') or src.get('config') or {}, ensure_ascii=False, default=str)
+    enabled = src.get('enabled', True)
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            await conn.execute("""INSERT INTO news_sources(id,name,url,category,enabled,config_json,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6::jsonb,NOW(),NOW())
+                ON CONFLICT(id) DO UPDATE SET name=EXCLUDED.name,url=EXCLUDED.url,category=EXCLUDED.category,enabled=EXCLUDED.enabled,config_json=EXCLUDED.config_json,updated_at=NOW()""",
+                sid, src.get('name') or 'Source', src.get('url') or '', src.get('category') or 'general', bool(enabled), cfg)
+            row = await conn.fetchrow("SELECT * FROM news_sources WHERE id=$1", sid)
+        return dict(row) if row else {"id": sid}
+    async with get_connection() as db:
+        await db.execute("""INSERT INTO news_sources(id,name,url,category,enabled,config_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)
+            ON CONFLICT(id) DO UPDATE SET name=excluded.name,url=excluded.url,category=excluded.category,enabled=excluded.enabled,config_json=excluded.config_json,updated_at=excluded.updated_at""",
+            (sid, src.get('name') or 'Source', src.get('url') or '', src.get('category') or 'general', 1 if enabled else 0, cfg, now, now))
+        await db.commit(); cur = await db.execute("SELECT * FROM news_sources WHERE id=?", (sid,)); row=await cur.fetchone(); await cur.close()
+        return dict(row) if row else {"id": sid}
+
+
+async def news_list_items(limit: int = 100, category: str | None = None) -> list[dict[str, Any]]:
+    if uses_postgres():
+        pool = await get_pg_pool()
+        q = "SELECT * FROM news_items"; args=[]; i=1
+        if category: q += f" WHERE category=${i}"; args.append(category); i+=1
+        q += f" ORDER BY created_at DESC LIMIT ${i}"; args.append(limit)
+        async with pool.acquire() as conn: rows = await conn.fetch(q, *args)
+        return [dict(r) for r in rows]
+    async with get_connection() as db:
+        q = "SELECT * FROM news_items"; args=[]
+        if category: q += " WHERE category=?"; args.append(category)
+        q += " ORDER BY created_at DESC LIMIT ?"; args.append(limit)
+        cur = await db.execute(q, tuple(args)); rows=await cur.fetchall(); await cur.close()
+        return [dict(r) for r in rows]
+
+
+async def news_add_item(item: dict[str, Any]) -> dict[str, Any]:
+    import uuid as _uuid
+    iid = str(item.get('id') or _uuid.uuid4()); now = utc_now()
+    meta = json.dumps(item.get('metadata_json') or item.get('metadata') or {}, ensure_ascii=False, default=str)
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            await conn.execute("INSERT INTO news_items(id,source_id,title,url,summary,category,published_at,metadata_json,created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,NOW())",
+                iid, str(item.get('source_id') or ''), str(item.get('title') or ''), str(item.get('url') or ''), str(item.get('summary') or ''), str(item.get('category') or 'general'), item.get('published_at'), meta)
+            row = await conn.fetchrow("SELECT * FROM news_items WHERE id=$1", iid)
+        return dict(row) if row else {"id": iid}
+    async with get_connection() as db:
+        await db.execute("INSERT INTO news_items(id,source_id,title,url,summary,category,published_at,metadata_json,created_at) VALUES (?,?,?,?,?,?,?,?,?)",
+            (iid, str(item.get('source_id') or ''), str(item.get('title') or ''), str(item.get('url') or ''), str(item.get('summary') or ''), str(item.get('category') or 'general'), item.get('published_at'), meta, now))
+        await db.commit(); cur=await db.execute("SELECT * FROM news_items WHERE id=?", (iid,)); row=await cur.fetchone(); await cur.close()
+        return dict(row) if row else {"id": iid}
+
+
+async def knowledge_list(limit: int = 100) -> list[dict[str, Any]]:
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("SELECT * FROM knowledge_entries ORDER BY updated_at DESC LIMIT $1", limit)
+        return [dict(r) for r in rows]
+    async with get_connection() as db:
+        cur = await db.execute("SELECT * FROM knowledge_entries ORDER BY updated_at DESC LIMIT ?", (limit,))
+        rows = await cur.fetchall(); await cur.close()
+        return [dict(r) for r in rows]
+
+
+async def knowledge_upsert(entry: dict[str, Any]) -> dict[str, Any]:
+    import uuid as _uuid
+    eid = str(entry.get('id') or _uuid.uuid4()); now = utc_now()
+    tags = json.dumps(entry.get('tags_json') or entry.get('tags') or [], ensure_ascii=False, default=str)
+    meta = json.dumps(entry.get('metadata_json') or entry.get('metadata') or {}, ensure_ascii=False, default=str)
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            await conn.execute("""INSERT INTO knowledge_entries(id,title,content,category,tags_json,source,metadata_json,created_at,updated_at) VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7::jsonb,NOW(),NOW())
+                ON CONFLICT(id) DO UPDATE SET title=EXCLUDED.title,content=EXCLUDED.content,category=EXCLUDED.category,tags_json=EXCLUDED.tags_json,source=EXCLUDED.source,metadata_json=EXCLUDED.metadata_json,updated_at=NOW()""",
+                eid, entry.get('title') or '', entry.get('content') or '', entry.get('category') or 'general', tags, entry.get('source') or '', meta)
+            row = await conn.fetchrow("SELECT * FROM knowledge_entries WHERE id=$1", eid)
+        return dict(row) if row else {"id": eid}
+    async with get_connection() as db:
+        await db.execute("""INSERT INTO knowledge_entries(id,title,content,category,tags_json,source,metadata_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(id) DO UPDATE SET title=excluded.title,content=excluded.content,category=excluded.category,tags_json=excluded.tags_json,source=excluded.source,metadata_json=excluded.metadata_json,updated_at=excluded.updated_at""",
+            (eid, entry.get('title') or '', entry.get('content') or '', entry.get('category') or 'general', tags, entry.get('source') or '', meta, now, now))
+        await db.commit(); cur=await db.execute("SELECT * FROM knowledge_entries WHERE id=?", (eid,)); row=await cur.fetchone(); await cur.close()
+        return dict(row) if row else {"id": eid}
+
+
+async def audit_list(limit: int = 200) -> list[dict[str, Any]]:
+    """Unified audit view over structured system logs (best-effort)."""
+    logs = await recent_logs(limit=min(max(limit,1),500))
+    out=[]
+    for l in logs:
+        d=dict(l)
+        ctx = d.get('context_json')
+        if isinstance(ctx, str):
+            try: d['context_json']=json.loads(ctx)
+            except Exception: pass
+        out.append(d)
+    return out
+
+
+async def analytics_overview() -> dict[str, Any]:
+    """Compute lightweight analytics/KPIs from available real data."""
+    metrics = await count_dashboard_metrics()
+    runs = await recent_import_runs(20)
+    jobs = await job_list(limit=50)
+    ok_runs = sum(1 for r in runs if str(r.get('status'))=='success')
+    failed_jobs = sum(1 for j in jobs if str(j.get('status'))=='failed')
+    return {
+        "metrics": metrics,
+        "imports": {"recent": len(runs), "successful_recent": ok_runs},
+        "jobs": {"recent": len(jobs), "failed_recent": failed_jobs},
+        "generated_at": utc_now(),
+    }

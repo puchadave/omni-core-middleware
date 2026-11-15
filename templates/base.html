@@ -65,7 +65,7 @@
       </nav>
       <div class="p-3 border-t border-slate-800 text-xs text-slate-400 flex items-center justify-between">
         <a href="/login" class="hover:text-white">Login</a>
-        <a href="/logout" class="hover:text-white">Logout</a>
+        <button onclick="logoutSession()" class="hover:text-white">Logout</button>
       </div>
     </aside>
 
@@ -73,7 +73,7 @@
     <div class="lg:pl-72 flex-1 flex flex-col min-w-0">
       <header class="lg:hidden sticky top-0 z-30 bg-slate-900/95 backdrop-blur border-b border-slate-800 px-4 py-3 flex items-center justify-between">
         <a href="/" class="font-bold">OMNI-CORE</a>
-        <button @click="open=!open" class="px-3 py-1.5 rounded bg-slate-800 border border-slate-700 text-sm">Menü</button>
+        <div class="flex gap-2"><button @click="open=!open" class="px-3 py-1.5 rounded bg-slate-800 border border-slate-700 text-sm">Menü</button><button onclick="logoutSession()" class="px-3 py-1.5 rounded bg-slate-800 border border-slate-700 text-sm">Logout</button></div>
       </header>
       <div x-show="open" x-cloak class="lg:hidden border-b border-slate-800 bg-slate-900 p-3 space-y-1 text-sm">
         <template x-for="l in [['/','Dashboard'],['/control-center','Control Center'],['/ui/products','Products'],['/ui/matterhorn-import','Matterhorn'],['/ui/shopware','Shopware'],['/ui/gtin-intelligence','GTIN'],['/ui/content-studio','Content'],['/ui/jobs-automation','Jobs'],['/ui/security','Security'],['/ui/settings','Settings']]" :key="l[0]">
@@ -88,12 +88,36 @@
   </div>
 
   <script>
+    function getCookie(name){
+      const parts = document.cookie.split(';').map(s=>s.trim());
+      for(const p of parts){ if(p.startsWith(name+'=')) return decodeURIComponent(p.slice(name.length+1)); }
+      return '';
+    }
+    async function ensureCsrf(){
+      let t = getCookie('csrf_token');
+      if(!t){ try{ const r = await fetch('/api/auth/csrf'); const d = await r.json(); t = d.csrf_token || getCookie('csrf_token'); }catch(e){} }
+      return t || '';
+    }
     async function apiFetch(url, opts={}){
-      const r = await fetch(url, Object.assign({headers:{'Content-Type':'application/json','Accept':'application/json'}}, opts));
+      opts = Object.assign({}, opts);
+      const method = (opts.method || 'GET').toUpperCase();
+      const headers = Object.assign({'Accept':'application/json'}, opts.headers || {});
+      const hasBody = opts.body != null;
+      if(hasBody && !(opts.body instanceof FormData) && !headers['Content-Type']) headers['Content-Type'] = 'application/json';
+      if(['POST','PUT','PATCH','DELETE'].includes(method)){
+        const csrf = await ensureCsrf();
+        if(csrf) headers['X-CSRF-Token'] = csrf;
+      }
+      opts.headers = headers;
+      const r = await fetch(url, opts);
       const ct = r.headers.get('content-type')||'';
       const data = ct.includes('application/json') ? await r.json().catch(()=>null) : await r.text();
       if(!r.ok){ const msg = data && (data.detail||data.error||data.message) ? (data.detail||data.error||data.message) : ('HTTP '+r.status); throw new Error(typeof msg==='string'?msg:JSON.stringify(msg)); }
       return data;
+    }
+    async function logoutSession(){
+      try{ await apiFetch('/api/auth/logout', {method:'POST'}); }catch(e){}
+      window.location.href = '/login';
     }
   </script>
   {% block scripts %}{% endblock %}

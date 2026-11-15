@@ -1,185 +1,42 @@
-<!DOCTYPE html>
-<html lang="de" class="dark">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Omni-Core ERP & BI | Master Dashboard</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
-    <style>
-        .live-dot { animation: pulse 2s infinite; }
-        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
-    </style>
-</head>
-<body class="bg-gray-900 text-gray-100 min-h-screen" x-data="dashboard()" x-init="init()">
-    <nav class="bg-gray-800 border-b border-gray-700 sticky top-0 z-40">
-        <div class="container mx-auto px-4 py-3 flex items-center justify-between">
-            <a href="/" class="text-xl font-bold text-white">OMNI-CORE <span class="text-indigo-400">ERP & BI</span></a>
-            <div class="flex items-center space-x-4">
-                <a href="/" class="text-gray-300 hover:text-white">Dashboard</a>
-                <a href="/admin/products" class="text-gray-300 hover:text-white">Produkte</a>
-                <a href="/admin/orders" class="text-gray-300 hover:text-white">Bestellungen</a>
-                <a href="/admin/settings" class="text-gray-300 hover:text-white">Einstellungen</a>
-            </div>
-        </div>
-    </nav>
-
-    <main class="container mx-auto px-4 py-6">
-        <header class="mb-8">
-            <h1 class="text-3xl font-bold text-white">Master Control Center</h1>
-            <p class="text-gray-400">Enterprise E-Commerce Middleware & BI Platform</p>
-        </header>
-
-        <!-- Live Status Bar -->
-        <div class="bg-gray-800 rounded-lg p-4 mb-6 border border-gray-700">
-            <div class="flex items-center justify-between">
-                <div class="flex items-center space-x-4">
-                    <span class="flex h-3 w-3 relative">
-                        <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
-                        <span class="relative inline-flex rounded-full h-3 w-3 bg-green-500"></span>
-                    </span>
-                    <span class="text-sm font-medium">System Live</span>
-                </div>
-                <div class="text-sm text-gray-400" x-text="'Uptime: ' + uptime + 's | Queue: ' + queueSize + ' | DB: ' + dbType"></div>
-            </div>
-        </div>
-
-        <!-- KPI Cards -->
-        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
-            <div class="bg-gray-800 rounded-lg p-6 border border-gray-700">
-                <h3 class="text-sm font-medium text-gray-400 uppercase tracking-wider">OmniRoute Latenz</h3>
-                <div class="mt-2 flex items-baseline">
-                    <span class="text-3xl font-bold text-white" x-text="health.omniroute_latency_ms || 'N/A'">...</span>
-                    <span class="ml-2 text-sm text-gray-400">ms</span>
-                </div>
-                <div class="mt-2 text-sm" :class="health.omniroute_healthy ? 'text-green-400' : 'text-red-400'" x-text="health.omniroute_healthy ? 'Connected' : 'Disconnected'"></div>
-            </div>
-
-            <div class="bg-gray-800 rounded-lg p-6 border border-gray-700">
-                <h3 class="text-sm font-medium text-gray-400 uppercase tracking-wider">Produkte</h3>
-                <div class="mt-2 flex items-baseline">
-                    <span class="text-3xl font-bold text-white" x-text="stats.product_count">0</span>
-                </div>
-                <div class="mt-2 text-sm text-gray-400" x-text="stats.active_product_count + ' aktiv'"></div>
-            </div>
-
-            <div class="bg-gray-800 rounded-lg p-6 border border-gray-700">
-                <h3 class="text-sm font-medium text-gray-400 uppercase tracking-wider">Offene Bestellungen</h3>
-                <div class="mt-2 flex items-baseline">
-                    <span class="text-3xl font-bold text-white" x-text="stats.pending_order_count">0</span>
-                </div>
-                <div class="mt-2 text-sm text-gray-400">In Bearbeitung</div>
-            </div>
-
-            <div class="bg-gray-800 rounded-lg p-6 border border-gray-700">
-                <h3 class="text-sm font-medium text-gray-400 uppercase tracking-wider">Fehler (24h)</h3>
-                <div class="mt-2 flex items-baseline">
-                    <span class="text-3xl font-bold text-white" x-text="stats.error_count">0</span>
-                </div>
-                <div class="mt-2 text-sm" :class="stats.error_count > 0 ? 'text-red-400' : 'text-green-400'" x-text="stats.error_count > 0 ? 'Aufmerksamkeit' : 'Alles klar'"></div>
-            </div>
-        </div>
-
-        <!-- Import Control -->
-        <div class="bg-gray-800 rounded-lg p-6 border border-gray-700 mb-6">
-            <h2 class="text-lg font-semibold text-white mb-4">Matterhorn Import</h2>
-            <div class="flex items-center space-x-4">
-                <button @click="startImport()" :disabled="importing" class="bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-600 text-white font-bold py-2 px-4 rounded transition-colors" x-text="importing ? 'Import läuft...' : 'Import starten'"></button>
-                <span x-show="importResult" class="text-sm text-gray-400" x-text="importResult"></span>
-            </div>
-            <div class="mt-4" x-show="importRuns.length">
-                <h3 class="text-sm font-medium text-gray-400 mb-2">Letzte Import-Läufe</h3>
-                <div class="space-y-1">
-                    <template x-for="run in importRuns" :key="run.id">
-                        <div class="flex items-center justify-between text-sm p-2 bg-gray-700 rounded">
-                            <span x-text="run.source"></span>
-                            <span :class="run.status === 'success' ? 'text-green-400' : run.status === 'failed' ? 'text-red-400' : 'text-yellow-400'" x-text="run.status"></span>
-                            <span x-text="run.imported + ' produkte'"></span>
-                            <span x-text="run.started_at"></span>
-                        </div>
-                    </template>
-                </div>
-            </div>
-        </div>
-
-        <!-- Marketplace Status -->
-        <div class="bg-gray-800 rounded-lg p-6 border border-gray-700 mb-6">
-            <h2 class="text-lg font-semibold text-white mb-4">Marktplatz-Verbindungen</h2>
-            <div class="grid grid-cols-2 md:grid-cols-5 gap-4">
-                <template x-for="marketplace in ['shopware', 'ebay', 'amazon', 'kaufland', 'etsy']" :key="marketplace">
-                    <div class="flex items-center space-x-2 p-3 bg-gray-700 rounded">
-                        <span class="capitalize text-sm" x-text="marketplace"></span>
-                        <span class="ml-auto" :class="marketplaces[marketplace] ? 'text-green-400' : 'text-red-400'">
-                            <svg x-show="marketplaces[marketplace]" class="w-5 h-5" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"></path></svg>
-                            <svg x-show="!marketplaces[marketplace]" class="w-5 h-5" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clip-rule="evenodd"></path></svg>
-                        </span>
-                    </div>
-                </template>
-            </div>
-        </div>
-
-        <!-- Recent Logs -->
-        <div class="bg-gray-800 rounded-lg p-6 border border-gray-700">
-            <h2 class="text-lg font-semibold text-white mb-4">Letzte System-Logs</h2>
-            <div class="space-y-2 max-h-64 overflow-y-auto">
-                <template x-for="log in logs" :key="log.id">
-                    <div class="flex items-start space-x-3 p-2 bg-gray-700 rounded text-sm">
-                        <span x-text="log.created_at" class="text-gray-400 whitespace-nowrap"></span>
-                        <span :class="{'text-red-400': log.level === 'ERROR', 'text-yellow-400': log.level === 'WARNING', 'text-green-400': log.level === 'INFO'}" x-text="log.level"></span>
-                        <span x-text="log.event" class="font-medium"></span>
-                        <span x-text="log.message" class="flex-1"></span>
-                    </div>
-                </template>
-            </div>
-        </div>
-    </main>
-
-    <script>
-        function dashboard() {
-            return {
-                health: { omniroute_healthy: false, omniroute_latency_ms: null },
-                stats: { product_count: 0, active_product_count: 0, pending_order_count: 0, error_count: 0 },
-                logs: [],
-                importRuns: [],
-                marketplaces: { shopware: false, ebay: false, amazon: false, kaufland: false, etsy: false },
-                importing: false,
-                importResult: '',
-                uptime: {{ uptime }},
-                queueSize: {{ queue_size }},
-                dbType: '{{ "postgresql" if DATABASE_URL and DATABASE_URL.startswith("postgresql") else "sqlite" }}',
-                async init() {
-                    this.fetchData();
-                    setInterval(() => this.fetchData(), 5000);
-                },
-                async fetchData() {
-                    try {
-                        const health = await fetch('/api/health').then(r => r.json());
-                        this.health = health;
-                        const stats = await fetch('/api/stats').then(r => r.json());
-                        this.stats = stats;
-                        const logs = await fetch('/api/logs?limit=10').then(r => r.json());
-                        this.logs = logs;
-                        const runs = await fetch('/api/import-runs?limit=5').then(r => r.json());
-                        this.importRuns = runs;
-                    } catch (e) {
-                        console.error('Failed to fetch data:', e);
-                    }
-                },
-                async startImport() {
-                    this.importing = true;
-                    this.importResult = 'Import gestartet...';
-                    try {
-                        const res = await fetch('/api/import/matterhorn', { method: 'POST' });
-                        const data = await res.json();
-                        this.importResult = `Import abgeschlossen: ${data.result.imported} produkte, ${data.result.updated} geändert, ${data.result.errors} fehler`;
-                        this.fetchData();
-                    } catch (e) {
-                        this.importResult = 'Import fehlgeschlagen: ' + e.message;
-                    }
-                    this.importing = false;
-                }
-            }
-        }
-    </script>
-</body>
-</html>
+{% extends "base.html" %}
+{% block title %}Dashboard | Omni-Core{% endblock %}
+{% block content %}
+<div x-data="dash()" x-init="load()" class="space-y-6 max-w-7xl mx-auto">
+  <div class="flex flex-col md:flex-row md:items-end md:justify-between gap-3">
+    <div><h1 class="text-3xl font-bold">Dashboard</h1><p class="text-slate-400">Zentrale Übersicht: KPIs, Health, Integrationen, Importe & Events</p></div>
+    <button @click="load()" class="bg-slate-700 hover:bg-slate-600 px-4 py-2 rounded text-sm">Aktualisieren</button>
+  </div>
+  <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+    <div class="bg-slate-900 border border-slate-800 rounded-lg p-4"><div class="text-xs text-slate-400 uppercase">Produkte</div><div class="text-3xl font-bold mt-1" x-text="(stats||{}).product_count ?? '—'"></div><div class="text-xs text-slate-500" x-text="((stats||{}).active_product_count??0)+' aktiv'"></div></div>
+    <div class="bg-slate-900 border border-slate-800 rounded-lg p-4"><div class="text-xs text-slate-400 uppercase">Offene Orders</div><div class="text-3xl font-bold mt-1" x-text="(stats||{}).pending_order_count ?? '—'"></div></div>
+    <div class="bg-slate-900 border border-slate-800 rounded-lg p-4"><div class="text-xs text-slate-400 uppercase">Fehler (24h)</div><div class="text-3xl font-bold mt-1" :class="((stats||{}).error_count||0)>0?'text-red-400':'text-emerald-400'" x-text="(stats||{}).error_count ?? 0"></div></div>
+    <div class="bg-slate-900 border border-slate-800 rounded-lg p-4"><div class="text-xs text-slate-400 uppercase">Event Bus</div><div class="text-xl font-bold mt-1" :class="(events||{}).running?'text-emerald-400':'text-amber-400'" x-text="(events||{}).running?'Running':'Nicht aktiv'"></div></div>
+  </div>
+  <div class="grid lg:grid-cols-3 gap-4">
+    <div class="bg-slate-900 border border-slate-800 rounded-lg p-4 lg:col-span-2">
+      <h2 class="font-semibold mb-2">Schnellzugriff Module</h2>
+      <div class="grid sm:grid-cols-2 md:grid-cols-3 gap-2 text-sm">
+        <a href="/ui/matterhorn-import" class="px-3 py-2 rounded bg-slate-800 hover:bg-slate-700 border border-slate-700">Matterhorn Connector</a>
+        <a href="/ui/shopware" class="px-3 py-2 rounded bg-slate-800 hover:bg-slate-700 border border-slate-700">Shopware Connector</a>
+        <a href="/ui/gtin-intelligence" class="px-3 py-2 rounded bg-slate-800 hover:bg-slate-700 border border-slate-700">GTIN Intelligence</a>
+        <a href="/ui/content-studio" class="px-3 py-2 rounded bg-slate-800 hover:bg-slate-700 border border-slate-700">Content Studio</a>
+        <a href="/ui/jobs-automation" class="px-3 py-2 rounded bg-slate-800 hover:bg-slate-700 border border-slate-700">Jobs & Automation</a>
+        <a href="/control-center" class="px-3 py-2 rounded bg-slate-800 hover:bg-slate-700 border border-slate-700">Global Control Center</a>
+      </div>
+    </div>
+    <div class="bg-slate-900 border border-slate-800 rounded-lg p-4">
+      <h2 class="font-semibold mb-2">System Health</h2>
+      <pre class="text-xs bg-slate-950 border border-slate-800 rounded p-3 overflow-auto max-h-56" x-text="JSON.stringify(health,null,2)"></pre>
+    </div>
+  </div>
+  <div class="grid lg:grid-cols-2 gap-4">
+    <div class="bg-slate-900 border border-slate-800 rounded-lg p-4"><h2 class="font-semibold mb-2">Integrationen</h2><pre class="text-xs bg-slate-950 border border-slate-800 rounded p-3 overflow-auto max-h-72" x-text="JSON.stringify(integ,null,2)"></pre></div>
+    <div class="bg-slate-900 border border-slate-800 rounded-lg p-4"><h2 class="font-semibold mb-2">Letzte Import-Läufe</h2><pre class="text-xs bg-slate-950 border border-slate-800 rounded p-3 overflow-auto max-h-72" x-text="JSON.stringify(runs,null,2)"></pre></div>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+function dash(){return{stats:null,health:null,events:null,integ:null,runs:null,async load(){const g=async u=>{try{return await apiFetch(u)}catch(e){return {error:e.message}}}; [this.stats,this.health,this.events,this.integ,this.runs]=await Promise.all([g('/api/stats'),g('/api/health'),g('/api/events/stats'),g('/api/integrations/status'),g('/api/import-runs?limit=10')]);}}}
+</script>
+{% endblock %}

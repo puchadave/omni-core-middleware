@@ -1,0 +1,122 @@
+{% extends "base.html" %}
+{% block title %}Matterhorn Connector | Omni-Core{% endblock %}
+{% block content %}
+<div x-data="mhPage()" x-init="init()" class="space-y-4 max-w-7xl mx-auto">
+  <div class="flex flex-col md:flex-row md:items-end md:justify-between gap-3">
+    <div>
+      <h1 class="text-2xl md:text-3xl font-bold">Matterhorn Connector</h1>
+      <p class="text-slate-400">Konfiguration, Preview/Validierung, Import (safe/partial/full/dry-run), Historie & Fehlerstatus.</p>
+    </div>
+    <button @click="refresh()" class="bg-slate-700 hover:bg-slate-600 px-4 py-2 rounded text-sm">Aktualisieren</button>
+  </div>
+  <template x-if="msg"><div class="rounded border p-3 text-sm" :class="err?'border-red-700 bg-red-900/30 text-red-200':'border-emerald-700 bg-emerald-900/30 text-emerald-200'" x-text="msg"></div></template>
+
+  <div class="grid lg:grid-cols-2 gap-4">
+    <div class="bg-slate-900 border border-slate-800 rounded-lg p-4 space-y-3">
+      <h2 class="font-semibold">Feed / Konfiguration</h2>
+      <label class="text-sm block">Feed URL<input x-model="feedUrl" class="mt-1 w-full bg-slate-800 border border-slate-700 rounded px-3 py-2" placeholder="https://... (Matterhorn XML/Feed)"></label>
+      <div class="flex flex-wrap gap-2">
+        <button @click="saveFeed()" class="bg-slate-700 hover:bg-slate-600 px-3 py-2 rounded text-sm">Feed speichern</button>
+        <button @click="runPreview()" :disabled="busy" class="bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 px-3 py-2 rounded text-sm">Preview + Validierung</button>
+      </div>
+      <div class="text-xs text-slate-400">Sicherheitsbuffer: 10% (fest). Live-Quelle erfordert externe Erreichbarkeit/Credentials; bei Fehlern werden Status/Fehler angezeigt (keine Fake-Daten).</div>
+      <pre class="text-xs bg-slate-950 border border-slate-800 rounded p-3 overflow-auto max-h-56" x-text="fmt(status)"></pre>
+    </div>
+
+    <div class="bg-slate-900 border border-slate-800 rounded-lg p-4 space-y-3">
+      <h2 class="font-semibold">Import</h2>
+      <div class="grid grid-cols-2 gap-2 text-sm">
+        <label>Modus<select x-model="mode" class="mt-1 w-full bg-slate-800 border border-slate-700 rounded px-3 py-2"><option value="safe">safe (empfohlen)</option><option value="partial">partial</option><option value="full">full</option><option value="dry_run">dry_run</option></select></label>
+        <label>Als Job (async)<div class="mt-2"><input type="checkbox" x-model="asyncJob"> enqueue</div></label>
+        <label class="col-span-2 flex items-center gap-2"><input type="checkbox" x-model="confirmFull"> Full-Import ohne Preview bestätigen (nur wenn nötig)</label>
+      </div>
+      <div class="flex flex-wrap gap-2">
+        <button @click="runImport()" :disabled="busy" class="bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 px-3 py-2 rounded text-sm">Import starten</button>
+      </div>
+      <template x-if="importResult"><pre class="text-xs bg-slate-950 border border-slate-800 rounded p-3 overflow-auto max-h-56" x-text="fmt(importResult)"></pre></template>
+    </div>
+  </div>
+
+  <div class="grid lg:grid-cols-2 gap-4">
+    <div class="bg-slate-900 border border-slate-800 rounded-lg p-4">
+      <h2 class="font-semibold mb-2">Preview / Validierung</h2>
+      <template x-if="!preview"><div class="text-sm text-amber-300">Noch keine Preview geladen.</div></template>
+      <template x-if="preview"><pre class="text-xs bg-slate-950 border border-slate-800 rounded p-3 overflow-auto max-h-[28rem]" x-text="fmt(preview)"></pre></template>
+    </div>
+    <div class="bg-slate-900 border border-slate-800 rounded-lg p-4 space-y-3">
+      <div>
+        <h2 class="font-semibold mb-2">Import-Historie (Runs)</h2>
+        <pre class="text-xs bg-slate-950 border border-slate-800 rounded p-3 overflow-auto max-h-56" x-text="fmt(runs)"></pre>
+      </div>
+      <div>
+        <h2 class="font-semibold mb-2">Preview-Historie</h2>
+        <pre class="text-xs bg-slate-950 border border-slate-800 rounded p-3 overflow-auto max-h-56" x-text="fmt(previews)"></pre>
+      </div>
+    </div>
+  </div>
+
+  <div class="bg-slate-900 border border-slate-800 rounded-lg p-4">
+    <h2 class="font-semibold mb-2">Feeds & Mappings</h2>
+    <div class="grid md:grid-cols-2 gap-4">
+      <pre class="text-xs bg-slate-950 border border-slate-800 rounded p-3 overflow-auto max-h-64" x-text="fmt(feeds)"></pre>
+      <pre class="text-xs bg-slate-950 border border-slate-800 rounded p-3 overflow-auto max-h-64" x-text="fmt(mappings)"></pre>
+    </div>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+function mhPage(){
+  return {
+    busy:false,msg:'',err:false,feedUrl:'',mode:'safe',asyncJob:false,confirmFull:false,
+    status:null,preview:null,importResult:null,runs:[],previews:{items:[]},feeds:{items:[]},mappings:{items:[]},
+    async init(){ await this.refresh(); },
+    fmt(d){ try{return JSON.stringify(d,null,2);}catch(_){return String(d);} },
+    async refresh(){
+      this.msg=''; this.err=false;
+      try{
+        const [st,r,ph,f,m] = await Promise.all([
+          apiFetch('/api/matterhorn/status'),
+          apiFetch('/api/import-runs?limit=20'),
+          apiFetch('/api/matterhorn/previews?limit=20'),
+          apiFetch('/api/matterhorn/feeds'),
+          apiFetch('/api/matterhorn/mappings'),
+        ]);
+        this.status=st; this.runs=r; this.previews=ph; this.feeds=f; this.mappings=m;
+        if(!this.feedUrl){ const c = st && st.recent_previews && st.recent_previews[0] ? (st.recent_previews[0].feed_url||'') : ''; this.feedUrl = c; }
+      }catch(e){ this.msg=e.message; this.err=true; }
+    },
+    async saveFeed(){
+      this.msg=''; this.err=false;
+      try{
+        if(!this.feedUrl){ throw new Error('Feed URL fehlt'); }
+        await apiFetch('/api/matterhorn/feeds',{method:'POST',body:JSON.stringify({name:'Matterhorn Feed', feed_url:this.feedUrl, feed_type:'xml', enabled:true})});
+        await apiFetch('/api/matterhorn/config',{method:'PUT',body:JSON.stringify({config:{feed_url:{value:this.feedUrl}}})});
+        this.msg='Feed-Konfiguration gespeichert.'; await this.refresh();
+      }catch(e){ this.msg=e.message; this.err=true; }
+    },
+    async runPreview(){
+      this.busy=true; this.msg=''; this.err=false;
+      try{
+        const q = this.feedUrl ? ('?feed_url='+encodeURIComponent(this.feedUrl)+'&save=1&limit=50') : '?save=1&limit=50';
+        this.preview = await apiFetch('/api/import/matterhorn/preview'+q);
+        if(this.preview && this.preview.status==='error'){ this.err=true; this.msg='Preview-Fehler: '+(this.preview.error||'unbekannt'); }
+        else { this.msg='Preview abgeschlossen.'; }
+        await this.refresh();
+      }catch(e){ this.msg=e.message; this.err=true; }
+      this.busy=false;
+    },
+    async runImport(){
+      this.busy=true; this.msg=''; this.err=false; this.importResult=null;
+      try{
+        const body={mode:this.mode, feed_url:this.feedUrl||null, preview_id:(this.preview&&this.preview.preview_id)||null, confirm_full_without_preview:this.confirmFull, dry_run:this.mode==='dry_run', async_job:this.asyncJob};
+        this.importResult = await apiFetch('/api/import/matterhorn',{method:'POST',body:JSON.stringify(body)});
+        this.msg = this.importResult.status==='queued' ? ('Import-Job eingeplant: '+this.importResult.job_id) : ('Import: '+(this.importResult.status||'ok'));
+        await this.refresh();
+      }catch(e){ this.msg=e.message; this.err=true; }
+      this.busy=false;
+    }
+  }
+}
+</script>
+{% endblock %}
