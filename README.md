@@ -77,6 +77,24 @@ docker compose down -v
 Omni-Core is an ERP/middleware control plane. It does not implement a public storefront, shopping cart, checkout or payment processing.
 
 
+
+## Proxmox one-click installations
+
+**Shopware 6 server (Proxmox LXC, no middleware installed):**
+
+```sh
+bash -c "$(curl -fsSL -H 'Cache-Control: no-cache' https://raw.githubusercontent.com/puchadave/omni-core-middleware/main/deploy/proxmox/install.sh)"
+```
+
+With custom config:
+
+```sh
+CONFIG_URL="https://example.com/shopware-config.yaml" \
+bash -c "$(curl -fsSL -H 'Cache-Control: no-cache' https://raw.githubusercontent.com/puchadave/omni-core-middleware/main/deploy/proxmox/install.sh)"
+```
+
+Advanced options: `deploy/shopware-proxmox/README.md`, `deploy/shopware-proxmox/config.yaml`.
+
 ## Control Plane UI
 
 The root route is the unified Global Control Center. Browser access is authenticated through a short-lived, HttpOnly signed session derived from `INTERNAL_API_KEY`. Direct API clients can continue to authenticate with `X-Internal-API-Key`.
