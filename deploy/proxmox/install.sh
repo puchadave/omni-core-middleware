@@ -177,16 +177,27 @@ main() {
         aarch64|arm64) host_arch="arm64" ;;
         *) host_arch="amd64" ;;
     esac
+    # Allow explicit override (important if detection/environment is odd)
+    host_arch="${TEMPLATE_ARCH:-${LXC_ARCH:-$host_arch}}"
     log_info "Erkannte Host-Architektur: $host_arch"
     pveam update >/dev/null 2>&1 || log_warn "pveam update fehlgeschlagen (fahre fort)"
     local template_name
-    template_name=$(pveam available -section system 2>/dev/null | awk -v a="$host_arch" '/debian-13-standard/ && $2 ~ ("_" a) {print $2}' | tail -n1 || true)
+    template_name=$(pveam available -section system 2>/dev/null | awk -v a="_${host_arch}" '/debian-13-standard/ && index($2,a)>0 {print $2}' | tail -n1 || true)
     if [ -z "$template_name" ]; then
         # Fallback: vorhandene Templates durchsuchen
-        template_name=$(pveam list "$template_storage" 2>/dev/null | awk -v a="$host_arch" '/debian-13-standard/ && $0 ~ ("_" a) {print $1}' | sed 's#.*vztmpl/##' | tail -n1 || true)
+        template_name=$(pveam list "$template_storage" 2>/dev/null | awk -v a="_${host_arch}" '/debian-13-standard/ && index($0,a)>0 {print $1}' | sed 's#.*vztmpl/##' | tail -n1 || true)
     fi
     if [ -z "$template_name" ]; then
-        log_err "Kein Debian 13 LXC Template gefunden. Prüfen Sie 'pveam available' oder setzen Sie TEMPLATE_STORAGE."
+        log_err "Kein Debian 13 LXC Template für Architektur '$host_arch' gefunden. Prüfen Sie 'pveam available' oder setzen Sie TEMPLATE_STORAGE/TEMPLATE_ARCH."
+        exit 1
+    fi
+    # Hard guard: never use wrong-arch template
+    if [ "$host_arch" = "amd64" ] && echo "$template_name" | grep -q '_arm64'; then
+        log_err "Falsches Template erkannt ($template_name) für amd64. Abbruch."
+        exit 1
+    fi
+    if [ "$host_arch" = "arm64" ] && echo "$template_name" | grep -q '_amd64'; then
+        log_err "Falsches Template erkannt ($template_name) für arm64. Abbruch."
         exit 1
     fi
     if ! pveam list "$template_storage" 2>/dev/null | grep -q "$template_name"; then

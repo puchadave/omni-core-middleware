@@ -43,12 +43,15 @@ select_template() {
     aarch64|arm64) host_arch="arm64" ;;
     *) host_arch="amd64" ;;
   esac
+  host_arch="${TEMPLATE_ARCH:-${LXC_ARCH:-$host_arch}}"
   log_info "Detected host architecture: $host_arch"
-  tmpl="$(pveam available -section system 2>/dev/null | awk -v a="$host_arch" '/debian-13-standard/ && $2 ~ ("_" a) {print $2}' | tail -n1 || true)"
+  tmpl="$(pveam available -section system 2>/dev/null | awk -v a="_${host_arch}" '/debian-13-standard/ && index($2,a)>0 {print $2}' | tail -n1 || true)"
   if [[ -z "$tmpl" ]]; then
-    tmpl="$(pveam list "$tstore" 2>/dev/null | awk -v a="$host_arch" '/debian-13-standard/ && $0 ~ ("_" a) {print $1}' | sed 's#.*vztmpl/##' | tail -n1 || true)"
+    tmpl="$(pveam list "$tstore" 2>/dev/null | awk -v a="_${host_arch}" '/debian-13-standard/ && index($0,a)>0 {print $1}' | sed 's#.*vztmpl/##' | tail -n1 || true)"
   fi
   [[ -n "$tmpl" ]] || die "Could not find Debian 13 LXC template for ${host_arch} via pveam. Set container.ostemplate explicitly."
+  if [[ "$host_arch" == "amd64" && "$tmpl" == *"_arm64"* ]]; then die "Selected wrong-arch template ($tmpl) for amd64"; fi
+  if [[ "$host_arch" == "arm64" && "$tmpl" == *"_amd64"* ]]; then die "Selected wrong-arch template ($tmpl) for arm64"; fi
   local vol="${tstore}:vztmpl/${tmpl}"
   if ! pveam list "$tstore" 2>/dev/null | grep -q "$tmpl"; then
     log_info "Downloading template $tmpl to $tstore..."
