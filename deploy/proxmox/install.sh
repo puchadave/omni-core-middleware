@@ -52,22 +52,17 @@ detect_proxmox() {
 detect_resources() {
     local cpu=0
     local mem=0
+    local disk_free=0
     # CPU-Kerne
     if command -v nproc >/dev/null 2>&1; then
-        cpu=$(nproc)
+        cpu=$(nproc 2>/dev/null || echo 0)
     fi
     # Arbeitsspeicher in MB
-    if [ -f /proc/meminfo ]; then
-        mem=$(grep '^MemTotal:' /proc/meminfo 2>/dev/null | awk '{print $1}' || echo "0")
-        mem=$((mem / 1024))
+    if [ -r /proc/meminfo ]; then
+        mem=$(awk '/^MemTotal:/ {print int($2/1024)}' /proc/meminfo 2>/dev/null || echo 0)
+        disk_free=$(awk '/^MemAvailable:/ {print int($2/1024)}' /proc/meminfo 2>/dev/null || echo 0)
     fi
-    # Freier Speicher in MB
-    local disk_free=0
-    if [ -f /proc/meminfo ]; then
-        disk_free=$(grep '^Avail:' /proc/meminfo 2>/dev/null | awk '{print $1}' || echo "0")
-        disk_free=$((disk_free / 1024))
-    fi
-    echo "cpu:$cpu;mem:$mem;disk_free:$disk_free"
+    echo "cpu:${cpu:-0};mem:${mem:-0};disk_free:${disk_free:-0}"
 }
 
 # --- Hauptprogramm ---
@@ -157,37 +152,71 @@ main() {
         ct_id=$((ct_id + 1))
     fi
 
-    # Template herunterladen (Debian 13)
-    log_info "Lade Debian 13 LXC Template herunter..."
-    local template="debian-13-standard_13.0-1_amd64.tar.zst"
-    local template_url="https://pmz.download/pub/packages/template/lxc/debian/13/${template}"
-
-    if ! pct template list 2>/dev/null | grep -q "$template"; then
-        if ! wget -q --spider "$template_url" 2>/dev/null; then
-            log_warn "Offizielles Template nicht gefunden, versuche alternative Methode..."
-            pct template refresh 2>/dev/null || true
+    # Storage prüfen
+    if ! pvesm status 2>/dev/null | awk 'NR>1{print $1}' | grep -qx "$storage"; then
+        log_warn "Storage '$storage' nicht gefunden. Verfügbare Storages:"
+        pvesm status 2>/dev/null || true
+        local fallback_storage
+        fallback_storage=$(pvesm status -content rootdir 2>/dev/null | awk 'NR>1 && $3=="active"{print $1; exit}')
+        fallback_storage=${fallback_storage:-$(pvesm status -content images 2>/dev/null | awk 'NR>1 && $3=="active"{print $1; exit}')}
+        if [ -n "$fallback_storage" ]; then
+            log_warn "Verwende Fallback-Storage: $fallback_storage"
+            storage="$fallback_storage"
+        else
+            log_err "Kein geeigneter Storage gefunden. Bitte gültigen Storage angeben."
+            exit 1
         fi
     fi
 
-    # Container erstellen
-    pct create "$ct_id" --hostname "$hostname" --storage "$storage" --content 2>/dev/null || {
-        log_err "Fehler beim Erstellen des Containers CTID $ct_id"
+    # Template herunterladen (Debian 13)
+    log_info "Lade Debian 13 LXC Template herunter..."
+    local template_storage="${TEMPLATE_STORAGE:-local}"
+    pveam update >/dev/null 2>&1 || log_warn "pveam update fehlgeschlagen (fahre fort)"
+    local template_name
+    template_name=$(pveam available -section system 2>/dev/null | awk '/debian-13-standard/ {print $2}' | tail -n1 || true)
+    if [ -z "$template_name" ]; then
+        # Fallback: vorhandene Templates durchsuchen
+        template_name=$(pveam list "$template_storage" 2>/dev/null | awk '/debian-13-standard/ {print $1}' | sed 's#.*vztmpl/##' | tail -n1 || true)
+    fi
+    if [ -z "$template_name" ]; then
+        log_err "Kein Debian 13 LXC Template gefunden. Prüfen Sie 'pveam available' oder setzen Sie TEMPLATE_STORAGE."
         exit 1
-    }
+    fi
+    if ! pveam list "$template_storage" 2>/dev/null | grep -q "$template_name"; then
+        log_info "Lade Template $template_name nach $template_storage..."
+        if ! pveam download "$template_storage" "$template_name"; then
+            log_err "Template-Download fehlgeschlagen: $template_name"
+            exit 1
+        fi
+    fi
+    local ostemplate="${template_storage}:vztmpl/${template_name}"
+    log_info "Verwende Template: $ostemplate"
 
-    # Ressourcen zuweisen
-    pct set "$ct_id" --onboot 1 --nameserver "8.8.8.8 8.8.4.4" --net0 "name=net,bridge=$bridge,ip=dhcp" --cpuunits 1024 2>/dev/null || log_warn "Teilweise Ressourcenzuweisung fehlgeschlagen"
+    # Container erstellen
+    local net0="name=eth0,bridge=${bridge},ip=dhcp"
+    local create_out
+    if ! create_out=$(pct create "$ct_id" "$ostemplate" \
+        --hostname "$hostname" \
+        --cores "$cores" \
+        --memory "$memory" \
+        --swap 512 \
+        --rootfs "${storage}:${disk}" \
+        --net0 "$net0" \
+        --nameserver "8.8.8.8 8.8.4.4" \
+        --unprivileged 1 \
+        --features nesting=1 \
+        --onboot 1 2>&1); then
+        log_err "Fehler beim Erstellen des Containers CTID $ct_id"
+        log_err "$create_out"
+        log_err "Prüfen: Storage '$storage' (rootdir/images), Template '$ostemplate', CTID frei, Bridge '$bridge' vorhanden."
+        exit 1
+    fi
 
-    # RAM und CPU festlegen (falls unterstützt)
-    if pct set "$ct_id" --memory "$memory" 2>/dev/null; then
-        log_info "RAM zugewiesen: ${memory} MB"
-    fi
-    if pct set "$ct_id" --cores "$cores" 2>/dev/null; then
-        log_info "CPU-Kern zugewiesen: $cores"
-    fi
-    if pct set "$ct_id" --rootfs "$storage:32" 2>/dev/null; then
-        log_info "Disk-Größe: ${disk} GB"
-    fi
+    # Ressourcen zuweisen (idempotent)
+    pct set "$ct_id" --onboot 1 --nameserver "8.8.8.8 8.8.4.4" --features nesting=1 >/dev/null 2>&1 || log_warn "Teilweise Ressourcenzuweisung fehlgeschlagen"
+    log_info "RAM zugewiesen: ${memory} MB"
+    log_info "CPU-Kerne zugewiesen: $cores"
+    pct resize "$ct_id" rootfs "${disk}G" >/dev/null 2>&1 || log_info "Disk-Größe: ${disk} GB (initial gesetzt)"
 
     # Container starten
     log_info "Starte Container..."

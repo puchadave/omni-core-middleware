@@ -1,0 +1,54 @@
+{
+  "version": 1,
+  "shopware": {
+    "base_url": "https://shop.example.com",
+    "api_version": "v3",
+    "auth_mode": "oauth2_client_credentials",
+    "client_id": "${SHOPWARE_CLIENT_ID}",
+    "client_secret_ref": "secrets://middleware_api_password",
+    "use_official_apis_only": true,
+    "no_direct_db_access": true,
+    "timeout_seconds": 30
+  },
+  "modules": {
+    "products": {"enabled": true, "endpoint": "/api/product", "mode": "upsert"},
+    "variants": {"enabled": true, "endpoint": "/api/product", "mode": "upsert"},
+    "categories": {"enabled": true, "endpoint": "/api/category", "mode": "upsert"},
+    "media": {"enabled": true, "endpoint": "/api/media", "mode": "upload_and_assign"},
+    "inventory": {"enabled": true, "endpoint": "/api/product", "mode": "stock_update"},
+    "pricing": {"enabled": true, "endpoint": "/api/product", "mode": "price_update"},
+    "orders": {"enabled": true, "endpoint": "/api/order", "mode": "import_readonly"},
+    "customers": {"enabled": true, "endpoint": "/api/customer", "mode": "sync"},
+    "webhooks": {"enabled": true, "managed": true},
+    "health": {"enabled": true, "endpoint": "/api/_info/version"}
+  },
+  "mapping": {
+    "product_field_map": "mapping/products.map.json",
+    "variant_field_map": "mapping/variants.map.json",
+    "category_field_map": "mapping/categories.map.json",
+    "media_field_map": "mapping/media.map.json"
+  },
+  "sync": {
+    "interval_seconds": 300,
+    "batch_size": 100,
+    "idempotency_key_field": "productNumber",
+    "conflict_policy": "middleware_wins"
+  },
+  "retry": {
+    "max_attempts": 5,
+    "backoff_initial_ms": 1000,
+    "backoff_multiplier": 2,
+    "backoff_max_ms": 30000,
+    "retry_on_http": [429, 500, 502, 503, 504]
+  },
+  "validation": {
+    "strict": true,
+    "reject_unknown_fields": false,
+    "require_ean_for_export": false
+  },
+  "logging": {
+    "level": "INFO",
+    "structured_json": true,
+    "redact_secrets": true
+  }
+}
