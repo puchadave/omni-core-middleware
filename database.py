@@ -75,7 +75,50 @@ async def init_db() -> None:
                 updated_at TEXT NOT NULL
             );
 
-            CREATE TABLE IF NOT EXISTS products (
+            
+
+# ---------------------------------------------------------------------------
+# ERP & BI Tables
+# ---------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS orders (
+    order_id TEXT PRIMARY KEY,
+    sku TEXT NOT NULL,
+    quantity INTEGER NOT NULL CHECK (quantity > 0),
+    channel_name TEXT NOT NULL DEFAULT 'unknown',
+    supplier_price REAL NOT NULL DEFAULT 0.0,
+    retail_price REAL NOT NULL DEFAULT 0.0,
+    status TEXT NOT NULL DEFAULT 'open'
+        CHECK (status IN ('open','paid','shipped','delivered','cancelled')),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS bi_metrics (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    date DATE DEFAULT (date('now')),
+    total_revenue REAL DEFAULT 0.0,
+    total_cost REAL DEFAULT 0.0,
+    gross_margin_pct REAL DEFAULT 0.0,
+    total_inventory_value REAL DEFAULT 0.0,
+    buffered_inventory_value REAL DEFAULT 0.0,
+    velocity_shopify REAL DEFAULT 0.0,
+    velocity_amazon REAL DEFAULT 0.0,
+    velocity_google REAL DEFAULT 0.0,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS audit_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_type TEXT NOT NULL,          -- 'import', 'price_change', 'ai_generated', 'order_created'
+    event_data TEXT,                   -- JSON mit Details
+    sku TEXT,
+    channel_name TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+# ---------------------------------------------------------------------------
+# Orders
+CREATE TABLE IF NOT EXISTS products (
                 sku TEXT PRIMARY KEY,
                 title TEXT NOT NULL,
                 category TEXT NOT NULL DEFAULT '',

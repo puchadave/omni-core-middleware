@@ -1,13 +1,14 @@
-"""FastAPI core application for Omni-Core E-Commerce Middleware.
+"""FastAPI core application for Omni-Core ERP & BI Enterprise Edition.
 
 Provides the main entry point for the application with endpoints for:
-- Master dashboard view and API endpoints
+- ERP Dashboard view and API endpoints
 - Product catalog management with AI metadata
+- Order management
 - System configuration management
 - Background Matterhorn import task trigger
 - Shopify CSV and Google Shopping XML export
-- Auto-Optimizer Agent status and system logs
-- AI-powered content generation triggers
+- BI KPI calculations and AI-generated reports
+- Audit logs and system monitoring
 """
 
 from __future__ import annotations
@@ -28,8 +29,19 @@ from fastapi.templating import Jinja2Templates
 from database import init_db, get_connection, close_connection, DB_PATH
 from services.matterhorn_importer import MatterhornUniversalImporter
 from services.auto_optimizer import AutoOptimizerAgent
+from services.bi_engine import BIEngine
 
 logger = logging.getLogger(__name__)
+
+templates = Jinja2Templates(directory="templates")
+bi_engine = BIEngine()
+
+app = FastAPI(
+    title="Omni-Core ERP & BI Enterprise Edition",
+    version="3.0.0",
+    description="Enterprise ERP & Business Intelligence Lösung mit KI-gestützter Content-Generierung",
+    lifespan=lifespan,
+)
 
 templates = Jinja2Templates(directory="templates")
 
@@ -43,11 +55,11 @@ async def lifespan(app: FastAPI) -> Any:
     """FastAPI lifespan context.
 
     - Initializes the SQLite database (WAL mode + all tables: products,
-      channel_overrides, settings, system_logs)
+      channel_overrides, settings, system_logs, orders, bi_metrics, audit_logs)
     - Creates a MatterhornImporter instance
-    - Starts the AutoOptimizerAgent as a background task
+    - Starts the AutoOptimizerAgent and BI Engine as background tasks
     - Yields control to the application
-    - On shutdown: stops the agent, closes database connections cleanly
+    - On shutdown: stops the agents, closes database connections cleanly
     """
     # Initialize database with all new tables
     await init_db()
@@ -59,33 +71,23 @@ async def lifespan(app: FastAPI) -> Any:
     optimizer = AutoOptimizerAgent(content_ai_engine=importer.ai_engine)
     await optimizer.start()
 
+    # Create and start the BI Engine
+    bi_engine_task = asyncio.create_task(bi_engine.start_monitoring())
+
     # Store in app state for access across routes
     app.state.importer = importer
     app.state.optimizer = optimizer
+    app.state.bi_engine = bi_engine
 
-    logger.info("Omni-Core Middleware initialized with AutoOptimizerAgent")
+    logger.info("Omni-Core ERP Enterprise Edition initialized with BI Engine and AutoOptimizer")
 
     yield
 
     # Cleanup on shutdown
     await optimizer.stop()
+    await bi_engine_task
     await app.state.importer.close()
     await close_connection(None)  # noqa: B008
-
-
-# ---------------------------------------------------------------------------
-# FastAPI Application Assembly
-# ---------------------------------------------------------------------------
-
-app = FastAPI(
-    title="Omni-Core E-Commerce Middleware",
-    version="2.0.0",
-    description="E-Commerce import middleware with Matterhorn integration, "
-                "Omni-Route Gateway KI-Veredelung und erweiterbarem Datenbankschema",
-    lifespan=lifespan,
-)
-
-templates = Jinja2Templates(directory="templates")
 
 
 # ---------------------------------------------------------------------------
@@ -124,17 +126,18 @@ async def get_product_count_stats() -> dict[str, int]:
 # ---------------------------------------------------------------------------
 
 @app.get("/", response_class=HTMLResponse)
-async def master_dashboard(request: Request):
-    """Render the main dashboard HTML page with product statistics."""
+async def erp_dashboard(request: Request):
+    """Render the main ERP/BI dashboard HTML page with KPI stats."""
     stats = await get_product_count_stats()
+    bi_stats = await bi_engine.get_current_metrics()
     return templates.TemplateResponse(
         "dashboard.html",
-        {"request": request, "stats": stats},
+        {"request": request, "stats": stats, "bi_stats": bi_stats},
     )
 
 
 @app.get("/admin/products", response_class=HTMLResponse)
-async def products_page(request: Request):
+async def wawi_products(request: Request):
     """Render the product catalog page with full AI metadata and stock info."""
     async with get_connection() as db:
         async with db.execute(
@@ -268,10 +271,12 @@ async def trigger_matterhorn_import(
     other endpoint calls.
 
     The importer will try both REST API and XML Feed methods.
-    AI-powered content optimization is applied automatically.
+    AI-powered content optimization is applied automatically,
+    and the BI Engine will generate a metrics update after import.
     """
     importer: MatterhornUniversalImporter = request.app.state.importer
     optimizer: AutoOptimizerAgent = request.app.state.optimizer
+    bi_engine: BIEngine = request.app.state.bi_engine
 
     # Start the import task in the background
     background_tasks.add_task(importer.import_from_rest, trigger_ai=True)
@@ -279,9 +284,12 @@ async def trigger_matterhorn_import(
     # Also trigger a quick optimization cycle after import
     background_tasks.add_task(optimizer.run_cycle, force=True)
 
+    # Trigger BI metrics update after import
+    background_tasks.add_task(bi_engine.update_metrics)
+
     return JSONResponse({
         "status": "started",
-        "message": "Matterhorn import mit KI-Optimierung triggered in background",
+        "message": "Matterhorn import mit KI-Optimierung und BI-Update triggered in background",
         "methods": ["rest_api", "xml_offer"],
         "ai_optimization": "enabled",
     })
@@ -398,6 +406,8 @@ async def trigger_ai_optimization(
             # Run AI optimization on recently imported products
             result = await importer.trigger_ai_optimization()
             logger.info(f"Background AI optimization completed: {result}")
+            # Also update BI metrics after optimization
+            await bi_engine.update_metrics()
         except Exception as e:
             logger.exception(f"Background AI optimization failed: {e}")
 
@@ -412,35 +422,132 @@ async def trigger_ai_optimization(
 @app.get("/api/stats/overview")
 async def api_stats_overview():
     """API endpoint returning overview statistics for the dashboard."""
+    stats = await get_product_count_stats()
+    
     async with get_connection() as db:
-        # Total products
-        async with db.execute("SELECT COUNT(*) FROM products") as cursor:
-            total_products: int = (await cursor.fetchone())[0]
-
-        # Active products
-        async with db.execute("SELECT COUNT(*) FROM products WHERE status = 'active'") as cursor:
-            active_products: int = (await cursor.fetchone())[0]
-
-        # Products with AI optimization
-        async with db.execute(
-            "SELECT COUNT(*) FROM products WHERE status = 'active' AND optimized_title IS NOT NULL AND optimized_title != ''"
-        ) as cursor:
-            ai_optimized_count: int = (await cursor.fetchone())[0]
-
         # Total buffered stock
         async with db.execute("SELECT COALESCE(SUM(buffered_stock), 0) FROM products WHERE status = 'active'") as cursor:
             total_buffered_stock: int = (await cursor.fetchone())[0]
-
-        # Recent system events count
+        
+        # Total system events count
         async with db.execute("SELECT COUNT(*) FROM system_logs") as cursor:
             total_events: int = (await cursor.fetchone())[0]
 
+    # Get current BI metrics
+    bi_stats = await bi_engine.get_current_metrics()
+
     return JSONResponse({
-        "total_products": total_products,
-        "active_products": active_products,
-        "ai_optimized_count": ai_optimized_count,
+        "total_products": stats["total"],
+        "active_products": stats["active"],
+        "ai_optimized_count": stats["ai_optimized"],
         "total_buffered_stock": total_buffered_stock,
         "total_system_events": total_events,
+        "bi_metrics": bi_stats,
+    })
+
+
+@app.post("/api/orders")
+async def create_order(
+    request: Request,
+):
+    """Create a new order for a product."""
+    form = await request.form()
+    order_id = f"ORD-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}"
+    sku = form.get("sku", "")
+    quantity = int(form.get("quantity", 0))
+    channel = form.get("channel", "unknown")
+    supplier_price = float(form.get("supplier_price", 0) or 0)
+    retail_price = float(form.get("retail_price", 0) or 0)
+    
+    async with get_connection() as db:
+        await db.execute(
+            """INSERT INTO orders 
+               (order_id, sku, quantity, channel_name, supplier_price, retail_price, status, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, 'open', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)""",
+            (order_id, sku, quantity, channel, supplier_price, retail_price),
+        )
+        await db.execute(
+            """UPDATE products SET stock = stock - ?, updated_at = CURRENT_TIMESTAMP WHERE sku = ? AND status = 'active' AND stock >= ?""",
+            (quantity, sku, quantity),
+        )
+        await db.commit()
+    
+    # Log the order creation
+    await bi_engine.log_event(
+        event_type="order_created",
+        event_data={"order_id": order_id, "sku": sku, "quantity": quantity, "channel": channel},
+        sku=sku,
+    )
+    
+    return JSONResponse({
+        "order_id": order_id,
+        "status": "created",
+        "message": "Bestellung wurde erstellt",
+    })
+
+
+@app.get("/api/orders")
+async def list_orders(
+    limit: int = Query(default=100, ge=1, le=500),
+):
+    """List orders with pagination."""
+    async with get_connection() as db:
+        cursor = await db.execute(
+            "SELECT order_id, sku, quantity, channel_name, supplier_price, retail_price, status, created_at "
+            "FROM orders ORDER BY created_at DESC LIMIT ?",
+            (limit,),
+        )
+        rows = await cursor.fetchall()
+    
+    order_list = []
+    for row in rows:
+        order_list.append({
+            "order_id": row[0],
+            "sku": row[1],
+            "quantity": row[2],
+            "channel": row[3],
+            "supplier_price": row[3],
+            "retail_price": row[4],
+            "status": row[5],
+            "created_at": str(row[6]) if row[6] else "",
+        })
+    
+    return JSONResponse({"orders": order_list, "count": len(order_list)})
+
+
+@app.get("/api/bi/metrics")
+async def bi_metrics_endpoint():
+    """API endpoint returning current BI metrics."""
+    bi_engine_instance = bi_engine  # Access the global BI engine
+    # In a real app, we'd store the BI engine instance in app state
+    # For now, create a new one or get metrics directly
+    async with get_connection() as db:
+        async with db.execute("SELECT * FROM bi_metrics ORDER BY id DESC LIMIT 1") as cursor:
+            row = await cursor.fetchone()
+    
+    if row:
+        return JSONResponse({
+            "total_revenue": row[1] or 0.0,
+            "total_cost": row[2] or 0.0,
+            "gross_margin_pct": row[3] or 0.0,
+            "total_inventory_value": row[4] or 0.0,
+            "buffered_inventory_value": row[5] or 0.0,
+            "velocity_shopify": row[6] or 0.0,
+            "velocity_amazon": row[7] or 0.0,
+            "velocity_google": row[8] or 0.0,
+            "last_updated": str(row[9]) if len(row) > 9 else "",
+        })
+    
+    return JSONResponse({
+        "total_revenue": 0.0,
+        "total_cost": 0.0,
+        "gross_margin_pct": 0.0,
+        "total_inventory_value": 0.0,
+        "buffered_inventory_value": 0.0,
+        "velocity_shopify": 0.0,
+        "velocity_amazon": 0.0,
+        "velocity_google": 0.0,
+        "last_updated": "",
     })
 
 
