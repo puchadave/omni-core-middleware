@@ -1256,7 +1256,17 @@ async def finance_reconcile_payment(payload: FinanceReconcileRequest) -> dict[st
         order_reference=str(transaction.get("order_reference") or ""),
         gross_amount=transaction["amount"],
     )
-    result = reconcile_payment_to_documents(transaction, candidates)
+    if len(candidates) > 500:
+        result = {
+            "status": "ambiguous",
+            "target_type": "",
+            "target_id": "",
+            "currency": str(transaction["currency"]),
+            "matched_amount": "0",
+            "candidate_ids": [str(candidate["id"]) for candidate in candidates],
+        }
+    else:
+        result = reconcile_payment_to_documents(transaction, candidates)
     persisted = await finance_reconciliation_create(
         {
             "source_type": "transaction",

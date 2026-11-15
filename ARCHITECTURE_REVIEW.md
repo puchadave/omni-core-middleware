@@ -20,6 +20,15 @@ The repository is operationally feature-rich but structurally ahead of its harde
 - Corrected the Settings navigation route.
 - Documented the control-plane UI.
 
+## Finance foundation added
+
+- Added provider-keyed, idempotent persistence for invoices/credit notes/expenses, payment transactions, and settlements.
+- Added authenticated `/api/finance/*` ingestion, listing, overview, and payment-to-invoice reconciliation endpoints.
+- Added conservative reconciliation statuses: matched, partial, mismatch, missing document, ambiguous, and review required.
+- Amount-only matches are never auto-confirmed; only one exact invoice match with a matching order reference is automatic.
+- Added an Accountant role and currency-grouped finance source totals to the Global Control Center BI payload.
+- Contribution margin is calculated only when every required cost input is supplied; this foundation does not create accounting postings or claim tax-compliance.
+
 ## Remaining architectural work
 
 ### P0 — Production hardening
@@ -39,10 +48,16 @@ The repository is operationally feature-rich but structurally ahead of its harde
 
 ### P1 — Commerce intelligence
 1. Complete real sales/marketing database integration where placeholder endpoints remain.
-2. Add channel-level margin, contribution margin and price-floor calculations.
+2. Connect finance records to order/product/fulfillment facts for evidenced channel-level margin and contribution reporting.
 3. Add competitor price snapshots and historical price curves.
 4. Add bundle profitability and stock-constrained bundle scoring.
 5. Add automated export diffing before marketplace publication.
+
+### P1 — Finance and accounting integrations
+1. Add document storage and validation for XRechnung/ZUGFeRD using maintained standards libraries and versioned rules.
+2. Implement provider adapters for accounting export (including DATEV) after confirming each provider's current API requirements.
+3. Reconcile settlement batches against their constituent payment, fee, refund, and payout transactions.
+4. Add expense approvals, tax data, and cashflow projections only after their source data and ownership are modeled.
 
 ### P2 — Maintainability
 1. Consolidate or explicitly archive the legacy `omni_core/` implementation.

@@ -44,9 +44,14 @@ def reconcile_payment_to_documents(
         if str(document.get("currency", "")).upper() == currency
         and str(document.get("direction", "receivable")) == "receivable"
     ]
-    reference_matches = [
+    invoice_documents = [
         document
         for document in same_currency
+        if str(document.get("document_type", "invoice")) == "invoice"
+    ]
+    reference_matches = [
+        document
+        for document in invoice_documents
         if order_reference
         and str(document.get("order_reference") or "").strip() == order_reference
     ]
