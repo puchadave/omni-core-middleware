@@ -83,6 +83,7 @@ from database import (
     set_setting,
     update_order_status,
     upsert_product,
+    upsert_product_aggregate,
     delete_product,
     delete_bundle,
     upsert_bundle,
@@ -163,7 +164,7 @@ RBAC_RULES: list[tuple[str, tuple[str, ...], str]] = [
     ("POST", ("/api/products",), "products.write"),
     ("PUT", ("/api/products",), "products.write"),
     ("DELETE", ("/api/products",), "products.delete"),
-    ("GET", ("/api/products", "/ui/products", "/admin/products"), "products.read"),
+    ("GET", ("/api/products", "/api/categories", "/ui/products", "/admin/products"), "products.read"),
     ("GET", ("/api/orders", "/ui/orders", "/admin/orders"), "fulfillment.read"),
     ("POST", ("/api/orders",), "fulfillment.manage"),
     ("GET", ("/api/finance/",), "finance.read"),
@@ -219,14 +220,56 @@ class SettingsUpdate(BaseModel):
 
 
 class ProductCreate(BaseModel):
-    """Validated manual product input."""
+    """Validated manual/extended product input."""
 
     sku: str = Field(min_length=1, max_length=64)
+    external_matterhorn_id: str = Field(default="", max_length=128)
+    parent_sku: str = Field(default="", max_length=64)
     title: str = Field(min_length=1, max_length=512)
+    brand: str = Field(default="", max_length=128)
+    manufacturer: str = Field(default="", max_length=128)
     category: str = Field(default="", max_length=128)
-    supplier_price: float = Field(ge=0, le=1_000_000)
+    short_description: str = Field(default="", max_length=10_000)
+    raw_description: str = Field(default="", max_length=50_000)
+    seo_title: str = Field(default="", max_length=255)
+    meta_description: str = Field(default="", max_length=1000)
+    slug: str = Field(default="", max_length=255)
+    canonical_url: str = Field(default="", max_length=1000)
+    supplier_price: float = Field(default=0, ge=0, le=1_000_000)
+    purchase_price: float = Field(default=0, ge=0, le=1_000_000)
+    sale_price: float = Field(default=0, ge=0, le=1_000_000)
+    compare_at_price: float = Field(default=0, ge=0, le=1_000_000)
+    tax_rate: float = Field(default=0, ge=0, le=100)
+    currency: str = Field(default="EUR", max_length=8)
     stock: int = Field(default=0, ge=0, le=10_000_000)
-    raw_description: str = Field(default="", max_length=20_000)
+    stock_quantity: int | None = Field(default=None, ge=0, le=10_000_000)
+    reserved_quantity: int = Field(default=0, ge=0, le=10_000_000)
+    available_quantity: int | None = Field(default=None, ge=0, le=10_000_000)
+    reorder_level: int = Field(default=0, ge=0, le=10_000_000)
+    lead_time_days: int = Field(default=0, ge=0, le=10_000)
+    supplier_stock: int = Field(default=0, ge=0, le=10_000_000)
+    warehouse_location: str = Field(default="", max_length=128)
+    bin_code: str = Field(default="", max_length=128)
+    ean: str = Field(default="", max_length=64)
+    barcode: str = Field(default="", max_length=64)
+    requires_serial_number: bool = False
+    is_fragile: bool = False
+    is_hazmat: bool = False
+    weight_net_kg: float = Field(default=0, ge=0, le=1_000_000)
+    weight_gross_kg: float = Field(default=0, ge=0, le=1_000_000)
+    length_cm: float = Field(default=0, ge=0, le=1_000_000)
+    width_cm: float = Field(default=0, ge=0, le=1_000_000)
+    height_cm: float = Field(default=0, ge=0, le=1_000_000)
+    hs_code: str = Field(default="", max_length=64)
+    country_of_origin: str = Field(default="", max_length=64)
+    main_image_url: str = Field(default="", max_length=2000)
+    gallery_json: list[Any] = Field(default_factory=list)
+    videos_json: list[Any] = Field(default_factory=list)
+    documents_json: list[Any] = Field(default_factory=list)
+    marketplace_mappings_json: dict[str, Any] = Field(default_factory=dict)
+    variants: list[dict[str, Any]] = Field(default_factory=list)
+    attributes: list[dict[str, Any]] = Field(default_factory=list)
+    categories: list[Any] = Field(default_factory=list)
     status: Literal["active", "draft", "paused", "archived"] = "active"
 
 
@@ -279,12 +322,15 @@ class MatterhornMappingPayload(BaseModel):
     config_json: dict[str, Any] = Field(default_factory=dict)
 
 class MatterhornImportRequest(BaseModel):
-    mode: str = Field(default="safe")  # safe|partial|full|dry_run
+    mode: str = Field(default="safe")  # safe|partial|full|dry_run|stock_only|ek_only
     feed_url: str | None = None
     preview_id: str | None = None
     confirm_full_without_preview: bool = False
     dry_run: bool = False
     async_job: bool = False
+    sync_rules: dict[str, Any] = Field(default_factory=dict)
+    filename: str | None = None
+    content: str | None = None  # optional inline content (for upload flows)
 
 
 class FinancePayloadRequest(BaseModel):
@@ -317,9 +363,9 @@ class FinanceDocumentRequest(FinancePayloadRequest):
     direction: Literal["receivable", "payable"]
     order_reference: str = Field(default="", max_length=256)
     currency: str = Field(pattern=r"^[A-Z]{3}$")
-    net_amount: Decimal = Field(ge=0, max_digits=20, decimal_places=6)
-    tax_amount: Decimal = Field(ge=0, max_digits=20, decimal_places=6)
-    gross_amount: Decimal = Field(ge=0, max_digits=20, decimal_places=6)
+    net_amount: Decimal = Field(ge=0)
+    tax_amount: Decimal = Field(ge=0)
+    gross_amount: Decimal = Field(ge=0)
     status: str = Field(default="issued", min_length=1, max_length=32)
     issued_at: datetime | None = None
     due_at: datetime | None = None
@@ -344,7 +390,7 @@ class FinanceTransactionRequest(FinancePayloadRequest):
     order_reference: str = Field(default="", max_length=256)
     settlement_reference: str = Field(default="", max_length=256)
     currency: str = Field(pattern=r"^[A-Z]{3}$")
-    amount: Decimal = Field(ge=0, max_digits=20, decimal_places=6)
+    amount: Decimal = Field(ge=0)
     occurred_at: datetime | None = None
 
     @field_validator("currency", mode="before")
@@ -364,9 +410,9 @@ class FinanceSettlementRequest(FinancePayloadRequest):
     provider: str = Field(min_length=1, max_length=64)
     external_id: str = Field(min_length=1, max_length=256)
     currency: str = Field(pattern=r"^[A-Z]{3}$")
-    gross_amount: Decimal = Field(ge=0, max_digits=20, decimal_places=6)
-    fees_amount: Decimal = Field(ge=0, max_digits=20, decimal_places=6)
-    net_amount: Decimal = Field(max_digits=20, decimal_places=6)
+    gross_amount: Decimal = Field(ge=0)
+    fees_amount: Decimal = Field(ge=0)
+    net_amount: Decimal = Field()
     status: str = Field(default="received", min_length=1, max_length=32)
     settled_at: datetime | None = None
 
@@ -388,14 +434,14 @@ class FinanceReconcileRequest(BaseModel):
 
 
 class FinanceContributionMarginRequest(BaseModel):
-    revenue: Decimal = Field(ge=0, max_digits=20, decimal_places=6)
+    revenue: Decimal = Field(ge=0)
     currency: str = Field(pattern=r"^[A-Z]{3}$")
-    cost_of_goods: Decimal | None = Field(default=None, ge=0, max_digits=20, decimal_places=6)
-    marketplace_fee: Decimal | None = Field(default=None, ge=0, max_digits=20, decimal_places=6)
-    payment_fee: Decimal | None = Field(default=None, ge=0, max_digits=20, decimal_places=6)
-    shipping: Decimal | None = Field(default=None, ge=0, max_digits=20, decimal_places=6)
-    packaging: Decimal | None = Field(default=None, ge=0, max_digits=20, decimal_places=6)
-    returns: Decimal | None = Field(default=None, ge=0, max_digits=20, decimal_places=6)
+    cost_of_goods: Decimal | None = Field(default=None, ge=0)
+    marketplace_fee: Decimal | None = Field(default=None, ge=0)
+    payment_fee: Decimal | None = Field(default=None, ge=0)
+    shipping: Decimal | None = Field(default=None, ge=0)
+    packaging: Decimal | None = Field(default=None, ge=0)
+    returns: Decimal | None = Field(default=None, ge=0)
 
     @field_validator("currency", mode="before")
     @classmethod
@@ -1171,23 +1217,17 @@ async def products(
 
 
 @app.post("/api/products", status_code=201)
-async def create_product(payload: ProductCreate) -> dict[str, str]:
-    """Create or update a manually managed product idempotently."""
-    source_hash = hashlib.sha256(
-        f"manual|{payload.sku}|{payload.title}|{payload.supplier_price}|{payload.stock}|{payload.raw_description}|{payload.status}".encode()
-    ).hexdigest()
-    await upsert_product(
-        sku=payload.sku,
-        title=payload.title,
-        category=payload.category,
-        supplier_price=payload.supplier_price,
-        stock=payload.stock,
-        source_hash=source_hash,
-        raw_description=payload.raw_description,
-        status=payload.status,
-    )
+async def create_product(payload: ProductCreate) -> dict[str, Any]:
+    """Create or update a manually managed product idempotently (incl. extended fields)."""
+    data = payload.model_dump(exclude_none=True)
+    sq = data.get("stock_quantity") if data.get("stock_quantity") is not None else data.get("stock", 0)
+    data["stock_quantity"] = int(sq or 0)
+    data["stock"] = int(data.get("stock", data["stock_quantity"]))
+    source_hash = hashlib.sha256(json.dumps({"manual": True, **data}, sort_keys=True, ensure_ascii=False, default=str).encode("utf-8")).hexdigest()
+    data["source_hash"] = source_hash
+    res = await upsert_product_aggregate(data, sync_rules={"mode":"full","preserve_manual_seo": False, "preserve_marketplace_mappings": False})
     await refresh_all_bundle_stocks()
-    return {"status": "success", "sku": payload.sku}
+    return {"status": "success", "sku": payload.sku, "result": res}
 
 
 @app.get("/api/products/{sku}")
@@ -1199,26 +1239,19 @@ async def product(sku: str) -> dict[str, Any]:
     return item
 
 @app.put("/api/products/{sku}")
-async def update_product(sku: str, payload: ProductCreate) -> dict[str, str]:
-    """Create or update a product by SKU (idempotent upsert)."""
+async def update_product(sku: str, payload: ProductCreate) -> dict[str, Any]:
+    """Create or update a product by SKU (idempotent upsert, extended)."""
     if payload.sku != sku:
         raise HTTPException(status_code=422, detail="Path SKU must match the product SKU in the request body.")
-    payload_sku = sku
-    source_hash = hashlib.sha256(
-        f"manual|{payload_sku}|{payload.title}|{payload.supplier_price}|{payload.stock}|{payload.raw_description}|{payload.status}".encode()
-    ).hexdigest()
-    await upsert_product(
-        sku=payload_sku,
-        title=payload.title,
-        category=payload.category,
-        supplier_price=payload.supplier_price,
-        stock=payload.stock,
-        source_hash=source_hash,
-        raw_description=payload.raw_description,
-        status=payload.status,
-    )
+    data = payload.model_dump(exclude_none=True)
+    sq = data.get("stock_quantity") if data.get("stock_quantity") is not None else data.get("stock", 0)
+    data["stock_quantity"] = int(sq or 0)
+    data["stock"] = int(data.get("stock", data["stock_quantity"]))
+    source_hash = hashlib.sha256(json.dumps({"manual": True, **data}, sort_keys=True, ensure_ascii=False, default=str).encode("utf-8")).hexdigest()
+    data["source_hash"] = source_hash
+    res = await upsert_product_aggregate(data, sync_rules={"mode":"full","preserve_manual_seo": False, "preserve_marketplace_mappings": False})
     await refresh_all_bundle_stocks()
-    return {"status": "success", "sku": payload_sku}
+    return {"status": "success", "sku": sku, "result": res}
 
 
 @app.delete("/api/products/{sku}")
@@ -1460,17 +1493,24 @@ async def finance_reconciliations(
 
 @app.post("/api/import/matterhorn")
 async def import_matterhorn(payload: MatterhornImportRequest | None = None) -> dict[str, Any]:
-    """Run Matterhorn import (safe/partial/full/dry_run) or enqueue as persistent job."""
+    """Run Matterhorn import (safe/partial/full/dry_run/stock_only/ek_only) or enqueue as job."""
     req = payload or MatterhornImportRequest()
     mode = (req.mode or "safe").lower()
     if req.async_job:
-        job = await job_create(job_type="matterhorn_import", payload={"feed_url": req.feed_url, "mode": mode, "dry_run": req.dry_run or mode=="dry_run", "preview_id": req.preview_id, "confirm_full_without_preview": req.confirm_full_without_preview}, created_by="api")
+        job = await job_create(job_type="matterhorn_import", payload={"feed_url": req.feed_url, "mode": mode, "dry_run": req.dry_run or mode=="dry_run", "preview_id": req.preview_id, "confirm_full_without_preview": req.confirm_full_without_preview, "sync_rules": req.sync_rules, "filename": req.filename, "content": req.content}, created_by="api")
         return {"status": "queued", "job_id": job.get("id"), "mode": mode}
-    result = await runtime.importer.import_products(feed_url=req.feed_url, mode=mode, dry_run=req.dry_run or mode=="dry_run", preview_id=req.preview_id, confirm_full_without_preview=req.confirm_full_without_preview)
+    result = await runtime.importer.import_products(feed_url=req.feed_url, mode=mode, dry_run=req.dry_run or mode=="dry_run", preview_id=req.preview_id, confirm_full_without_preview=req.confirm_full_without_preview, sync_rules=req.sync_rules, filename=req.filename, content=req.content)
     if result.get("status") == "blocked":
         raise HTTPException(status_code=409, detail=result)
     return result
 
+
+
+
+@app.get("/api/categories")
+async def api_categories(limit: int = Query(default=500, ge=1, le=2000)):
+    from database import list_categories
+    return {"items": await list_categories(limit=limit)}
 
 @app.get("/api/import-runs")
 async def import_runs(limit: int = Query(default=10, ge=1, le=50)) -> list[dict[str, Any]]:
@@ -1665,8 +1705,68 @@ async def api_matterhorn_mapping_delete(mapping_id: str):
     return {"status": "deleted", "id": mapping_id}
 
 @app.get("/api/import/matterhorn/preview")
-async def api_matterhorn_preview(feed_url: str | None = Query(default=None), save: int = Query(default=1), limit: int = Query(default=50, ge=1, le=200)):
-    return await runtime.importer.preview_products(feed_url=feed_url, save=bool(save), limit=limit)
+async def api_matterhorn_preview(feed_url: str | None = Query(default=None), save: int = Query(default=1), limit: int = Query(default=50, ge=1, le=200), format: str | None = Query(default=None)):
+    return await runtime.importer.preview_products(feed_url=feed_url, save=bool(save), limit=limit, format_hint=format)
+
+
+@app.post("/api/import/matterhorn/preview-upload")
+async def api_matterhorn_preview_upload(request: Request, save: int = Query(default=1), limit: int = Query(default=50, ge=1, le=200)):
+    ct = (request.headers.get("content-type") or "").lower()
+    filename = None
+    content: str | bytes | None = None
+    if "multipart/form-data" in ct:
+        form = await request.form()
+        upload = form.get("file") or form.get("upload")
+        filename = getattr(upload, "filename", None) or str(form.get("filename") or "upload")
+        if upload is None:
+            raise HTTPException(status_code=422, detail="Datei-Upload fehlt (Feld: file).")
+        content = await upload.read()
+    else:
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        filename = str(body.get("filename") or "upload")
+        content = body.get("content")
+        if content is None:
+            raise HTTPException(status_code=422, detail="Upload-Inhalt fehlt (content).")
+    return await runtime.importer.preview_products(save=bool(save), limit=limit, content=content, filename=filename)
+
+
+@app.post("/api/import/matterhorn/upload")
+async def api_matterhorn_import_upload(request: Request):
+    ct = (request.headers.get("content-type") or "").lower()
+    if "multipart/form-data" in ct:
+        form = await request.form()
+        upload = form.get("file") or form.get("upload")
+        filename = getattr(upload, "filename", None) or str(form.get("filename") or "upload")
+        if upload is None:
+            raise HTTPException(status_code=422, detail="Datei-Upload fehlt (Feld: file).")
+        content = await upload.read()
+        mode = str(form.get("mode") or "safe").lower()
+        dry_run = str(form.get("dry_run") or "").lower() in {"1","true","yes"} or mode=="dry_run"
+        sync_rules_raw = form.get("sync_rules")
+        try:
+            sync_rules = json.loads(sync_rules_raw) if isinstance(sync_rules_raw,str) and sync_rules_raw else {}
+        except Exception:
+            sync_rules = {}
+    else:
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        filename = str(body.get("filename") or "upload")
+        content = body.get("content")
+        mode = str(body.get("mode") or "safe").lower()
+        dry_run = bool(body.get("dry_run")) or mode=="dry_run"
+        sync_rules = body.get("sync_rules") or {}
+        if content is None:
+            raise HTTPException(status_code=422, detail="Upload-Inhalt fehlt (content).")
+    result = await runtime.importer.import_products(mode=mode, dry_run=dry_run, content=content, filename=filename, sync_rules=sync_rules, confirm_full_without_preview=True)
+    if result.get("status") == "blocked":
+        raise HTTPException(status_code=409, detail=result)
+    return result
+
 
 @app.get("/api/matterhorn/previews")
 async def api_matterhorn_previews(limit: int = Query(default=50, ge=1, le=200)):

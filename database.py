@@ -80,15 +80,57 @@ POSTGRES_SCHEMA: tuple[str, ...] = (
     """
     CREATE TABLE IF NOT EXISTS products (
         sku TEXT PRIMARY KEY,
+        external_matterhorn_id TEXT NOT NULL DEFAULT '',
+        parent_sku TEXT NOT NULL DEFAULT '',
         title TEXT NOT NULL,
+        brand TEXT NOT NULL DEFAULT '',
+        manufacturer TEXT NOT NULL DEFAULT '',
         category TEXT NOT NULL DEFAULT '',
+        short_description TEXT NOT NULL DEFAULT '',
         raw_description TEXT NOT NULL DEFAULT '',
         ai_title TEXT NOT NULL DEFAULT '',
         ai_description_html TEXT NOT NULL DEFAULT '',
         ai_tags_json JSONB NOT NULL DEFAULT '[]'::jsonb,
-        supplier_price NUMERIC(12,2) NOT NULL DEFAULT 0 CHECK (supplier_price >= 0),
+        seo_title TEXT NOT NULL DEFAULT '',
+        meta_description TEXT NOT NULL DEFAULT '',
+        slug TEXT NOT NULL DEFAULT '',
+        canonical_url TEXT NOT NULL DEFAULT '',
+        supplier_price NUMERIC(12,4) NOT NULL DEFAULT 0 CHECK (supplier_price >= 0),
+        purchase_price NUMERIC(12,4) NOT NULL DEFAULT 0 CHECK (purchase_price >= 0),
+        sale_price NUMERIC(12,4) NOT NULL DEFAULT 0 CHECK (sale_price >= 0),
+        compare_at_price NUMERIC(12,4) NOT NULL DEFAULT 0 CHECK (compare_at_price >= 0),
+        tax_rate NUMERIC(7,4) NOT NULL DEFAULT 0 CHECK (tax_rate >= 0),
+        currency TEXT NOT NULL DEFAULT 'EUR',
         stock INTEGER NOT NULL DEFAULT 0 CHECK (stock >= 0),
+        stock_quantity INTEGER NOT NULL DEFAULT 0 CHECK (stock_quantity >= 0),
+        reserved_quantity INTEGER NOT NULL DEFAULT 0 CHECK (reserved_quantity >= 0),
+        available_quantity INTEGER NOT NULL DEFAULT 0 CHECK (available_quantity >= 0),
+        reorder_level INTEGER NOT NULL DEFAULT 0 CHECK (reorder_level >= 0),
+        lead_time_days INTEGER NOT NULL DEFAULT 0 CHECK (lead_time_days >= 0),
+        supplier_stock INTEGER NOT NULL DEFAULT 0 CHECK (supplier_stock >= 0),
+        warehouse_location TEXT NOT NULL DEFAULT '',
+        bin_code TEXT NOT NULL DEFAULT '',
+        ean TEXT NOT NULL DEFAULT '',
+        barcode TEXT NOT NULL DEFAULT '',
+        requires_serial_number BOOLEAN NOT NULL DEFAULT FALSE,
+        is_fragile BOOLEAN NOT NULL DEFAULT FALSE,
+        is_hazmat BOOLEAN NOT NULL DEFAULT FALSE,
+        weight_net_kg NUMERIC(12,4) NOT NULL DEFAULT 0 CHECK (weight_net_kg >= 0),
+        weight_gross_kg NUMERIC(12,4) NOT NULL DEFAULT 0 CHECK (weight_gross_kg >= 0),
+        length_cm NUMERIC(12,4) NOT NULL DEFAULT 0 CHECK (length_cm >= 0),
+        width_cm NUMERIC(12,4) NOT NULL DEFAULT 0 CHECK (width_cm >= 0),
+        height_cm NUMERIC(12,4) NOT NULL DEFAULT 0 CHECK (height_cm >= 0),
+        hs_code TEXT NOT NULL DEFAULT '',
+        country_of_origin TEXT NOT NULL DEFAULT '',
+        main_image_url TEXT NOT NULL DEFAULT '',
+        gallery_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+        videos_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+        documents_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+        source_system TEXT NOT NULL DEFAULT '',
+        raw_source_data_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+        marketplace_mappings_json JSONB NOT NULL DEFAULT '{}'::jsonb,
         is_bundle BOOLEAN NOT NULL DEFAULT FALSE,
+        has_variants BOOLEAN NOT NULL DEFAULT FALSE,
         status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('draft', 'active', 'paused', 'archived')),
         source_hash TEXT NOT NULL DEFAULT '',
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -96,6 +138,9 @@ POSTGRES_SCHEMA: tuple[str, ...] = (
     """,
     "CREATE INDEX IF NOT EXISTS idx_products_status_stock ON products(status, stock, is_bundle)",
     "CREATE INDEX IF NOT EXISTS idx_products_ai_tags_json ON products USING GIN (ai_tags_json)",
+    "CREATE INDEX IF NOT EXISTS idx_products_external_matterhorn_id ON products(external_matterhorn_id)",
+    "CREATE INDEX IF NOT EXISTS idx_products_parent_sku ON products(parent_sku)",
+    "CREATE INDEX IF NOT EXISTS idx_products_ean ON products(ean)",
     """
     CREATE TABLE IF NOT EXISTS bundles (
         bundle_sku TEXT PRIMARY KEY REFERENCES products(sku) ON DELETE CASCADE,
@@ -167,15 +212,130 @@ POSTGRES_SCHEMA: tuple[str, ...] = (
     CREATE TABLE IF NOT EXISTS import_runs (
         id BIGSERIAL PRIMARY KEY,
         source TEXT NOT NULL,
+        mode TEXT NOT NULL DEFAULT '',
+        feed_url TEXT NOT NULL DEFAULT '',
         started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         finished_at TIMESTAMPTZ,
         imported INTEGER NOT NULL DEFAULT 0,
         updated INTEGER NOT NULL DEFAULT 0,
         errors INTEGER NOT NULL DEFAULT 0,
-        status TEXT NOT NULL DEFAULT 'running' CHECK (status IN ('running', 'success', 'failed')),
-        error_message TEXT NOT NULL DEFAULT ''
+        skipped INTEGER NOT NULL DEFAULT 0,
+        created_count INTEGER NOT NULL DEFAULT 0,
+        updated_count INTEGER NOT NULL DEFAULT 0,
+        variants_linked INTEGER NOT NULL DEFAULT 0,
+        status TEXT NOT NULL DEFAULT 'running' CHECK (status IN ('running', 'success', 'failed', 'blocked', 'dry_run')),
+        error_message TEXT NOT NULL DEFAULT '',
+        summary_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+        protocol_json JSONB NOT NULL DEFAULT '{}'::jsonb
     )
     """,
+    # ── Catalog / E-Commerce extensions (Matterhorn & channels) ───────────
+    """
+    CREATE TABLE IF NOT EXISTS categories (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        slug TEXT NOT NULL DEFAULT '',
+        parent_id TEXT NOT NULL DEFAULT '',
+        external_matterhorn_id TEXT NOT NULL DEFAULT '',
+        path TEXT NOT NULL DEFAULT '',
+        description TEXT NOT NULL DEFAULT '',
+        source_system TEXT NOT NULL DEFAULT '',
+        marketplace_mappings_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE(name, parent_id, source_system)
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_categories_parent ON categories(parent_id)",
+    "CREATE INDEX IF NOT EXISTS idx_categories_external ON categories(external_matterhorn_id)",
+    """
+    CREATE TABLE IF NOT EXISTS product_categories (
+        product_sku TEXT NOT NULL,
+        category_id TEXT NOT NULL,
+        is_primary BOOLEAN NOT NULL DEFAULT FALSE,
+        marketplace_mappings_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY(product_sku, category_id)
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_product_categories_category ON product_categories(category_id)",
+    """
+    CREATE TABLE IF NOT EXISTS product_variants (
+        id TEXT PRIMARY KEY,
+        parent_sku TEXT NOT NULL,
+        sku TEXT NOT NULL UNIQUE,
+        external_matterhorn_id TEXT NOT NULL DEFAULT '',
+        title TEXT NOT NULL DEFAULT '',
+        ean TEXT NOT NULL DEFAULT '',
+        barcode TEXT NOT NULL DEFAULT '',
+        supplier_price NUMERIC(12,4) NOT NULL DEFAULT 0,
+        sale_price NUMERIC(12,4) NOT NULL DEFAULT 0,
+        stock_quantity INTEGER NOT NULL DEFAULT 0,
+        reserved_quantity INTEGER NOT NULL DEFAULT 0,
+        available_quantity INTEGER NOT NULL DEFAULT 0,
+        weight_net_kg NUMERIC(12,4) NOT NULL DEFAULT 0,
+        weight_gross_kg NUMERIC(12,4) NOT NULL DEFAULT 0,
+        length_cm NUMERIC(12,4) NOT NULL DEFAULT 0,
+        width_cm NUMERIC(12,4) NOT NULL DEFAULT 0,
+        height_cm NUMERIC(12,4) NOT NULL DEFAULT 0,
+        attributes_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+        raw_source_data_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+        status TEXT NOT NULL DEFAULT 'active',
+        source_hash TEXT NOT NULL DEFAULT '',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_product_variants_parent ON product_variants(parent_sku)",
+    "CREATE INDEX IF NOT EXISTS idx_product_variants_external ON product_variants(external_matterhorn_id)",
+    """
+    CREATE TABLE IF NOT EXISTS product_attributes (
+        id TEXT PRIMARY KEY,
+        product_sku TEXT NOT NULL,
+        variant_sku TEXT NOT NULL DEFAULT '',
+        name TEXT NOT NULL,
+        value TEXT NOT NULL DEFAULT '',
+        unit TEXT NOT NULL DEFAULT '',
+        is_filterable BOOLEAN NOT NULL DEFAULT FALSE,
+        is_variant BOOLEAN NOT NULL DEFAULT FALSE,
+        source_field TEXT NOT NULL DEFAULT '',
+        extra_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE(product_sku, variant_sku, name, value)
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_product_attributes_product ON product_attributes(product_sku)",
+    "CREATE INDEX IF NOT EXISTS idx_product_attributes_name ON product_attributes(name)",
+    """
+    CREATE TABLE IF NOT EXISTS product_media (
+        id TEXT PRIMARY KEY,
+        product_sku TEXT NOT NULL,
+        variant_sku TEXT NOT NULL DEFAULT '',
+        media_type TEXT NOT NULL DEFAULT 'image',
+        url TEXT NOT NULL,
+        position INTEGER NOT NULL DEFAULT 0,
+        title TEXT NOT NULL DEFAULT '',
+        alt_text TEXT NOT NULL DEFAULT '',
+        metadata_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_product_media_product ON product_media(product_sku, media_type)",
+    """
+    CREATE TABLE IF NOT EXISTS matterhorn_import_previews (
+        id TEXT PRIMARY KEY,
+        feed_url TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL DEFAULT 'created',
+        summary_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+        items_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+        validation_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+        source_hash TEXT NOT NULL DEFAULT '',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
+
     # ── Google Merchant Center Tables ────────────────────────────────────
     """
     CREATE TABLE IF NOT EXISTS google_accounts (
@@ -563,7 +723,91 @@ POSTGRES_SCHEMA: tuple[str, ...] = (
     )
     """,
     """
-    CREATE TABLE IF NOT EXISTS shopware_connections (
+    CREATE TABLE IF NOT EXISTS categories (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    slug TEXT NOT NULL DEFAULT '',
+    parent_id TEXT NOT NULL DEFAULT '',
+    external_matterhorn_id TEXT NOT NULL DEFAULT '',
+    path TEXT NOT NULL DEFAULT '',
+    description TEXT NOT NULL DEFAULT '',
+    source_system TEXT NOT NULL DEFAULT '',
+    marketplace_mappings_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(name, parent_id, source_system)
+);
+CREATE INDEX IF NOT EXISTS idx_categories_parent ON categories(parent_id);
+CREATE INDEX IF NOT EXISTS idx_categories_external ON categories(external_matterhorn_id);
+CREATE TABLE IF NOT EXISTS product_categories (
+    product_sku TEXT NOT NULL,
+    category_id TEXT NOT NULL,
+    is_primary INTEGER NOT NULL DEFAULT 0,
+    marketplace_mappings_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    PRIMARY KEY(product_sku, category_id)
+);
+CREATE INDEX IF NOT EXISTS idx_product_categories_category ON product_categories(category_id);
+CREATE TABLE IF NOT EXISTS product_variants (
+    id TEXT PRIMARY KEY,
+    parent_sku TEXT NOT NULL,
+    sku TEXT NOT NULL UNIQUE,
+    external_matterhorn_id TEXT NOT NULL DEFAULT '',
+    title TEXT NOT NULL DEFAULT '',
+    ean TEXT NOT NULL DEFAULT '',
+    barcode TEXT NOT NULL DEFAULT '',
+    supplier_price REAL NOT NULL DEFAULT 0,
+    sale_price REAL NOT NULL DEFAULT 0,
+    stock_quantity INTEGER NOT NULL DEFAULT 0,
+    reserved_quantity INTEGER NOT NULL DEFAULT 0,
+    available_quantity INTEGER NOT NULL DEFAULT 0,
+    weight_net_kg REAL NOT NULL DEFAULT 0,
+    weight_gross_kg REAL NOT NULL DEFAULT 0,
+    length_cm REAL NOT NULL DEFAULT 0,
+    width_cm REAL NOT NULL DEFAULT 0,
+    height_cm REAL NOT NULL DEFAULT 0,
+    attributes_json TEXT NOT NULL DEFAULT '{}',
+    raw_source_data_json TEXT NOT NULL DEFAULT '{}',
+    status TEXT NOT NULL DEFAULT 'active',
+    source_hash TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_product_variants_parent ON product_variants(parent_sku);
+CREATE INDEX IF NOT EXISTS idx_product_variants_external ON product_variants(external_matterhorn_id);
+CREATE TABLE IF NOT EXISTS product_attributes (
+    id TEXT PRIMARY KEY,
+    product_sku TEXT NOT NULL,
+    variant_sku TEXT NOT NULL DEFAULT '',
+    name TEXT NOT NULL,
+    value TEXT NOT NULL DEFAULT '',
+    unit TEXT NOT NULL DEFAULT '',
+    is_filterable INTEGER NOT NULL DEFAULT 0,
+    is_variant INTEGER NOT NULL DEFAULT 0,
+    source_field TEXT NOT NULL DEFAULT '',
+    extra_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(product_sku, variant_sku, name, value)
+);
+CREATE INDEX IF NOT EXISTS idx_product_attributes_product ON product_attributes(product_sku);
+CREATE INDEX IF NOT EXISTS idx_product_attributes_name ON product_attributes(name);
+CREATE TABLE IF NOT EXISTS product_media (
+    id TEXT PRIMARY KEY,
+    product_sku TEXT NOT NULL,
+    variant_sku TEXT NOT NULL DEFAULT '',
+    media_type TEXT NOT NULL DEFAULT 'image',
+    url TEXT NOT NULL,
+    position INTEGER NOT NULL DEFAULT 0,
+    title TEXT NOT NULL DEFAULT '',
+    alt_text TEXT NOT NULL DEFAULT '',
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_product_media_product ON product_media(product_sku, media_type);
+
+CREATE TABLE IF NOT EXISTS shopware_connections (
         id TEXT PRIMARY KEY,
         shop_name TEXT NOT NULL,
         shop_url TEXT NOT NULL,
@@ -916,7 +1160,91 @@ POSTGRES_SCHEMA: tuple[str, ...] = (
     """,
     # ── Shopware Connector ───────────────────────────────────────────────────
     """
-    CREATE TABLE IF NOT EXISTS shopware_connections (
+    CREATE TABLE IF NOT EXISTS categories (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    slug TEXT NOT NULL DEFAULT '',
+    parent_id TEXT NOT NULL DEFAULT '',
+    external_matterhorn_id TEXT NOT NULL DEFAULT '',
+    path TEXT NOT NULL DEFAULT '',
+    description TEXT NOT NULL DEFAULT '',
+    source_system TEXT NOT NULL DEFAULT '',
+    marketplace_mappings_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(name, parent_id, source_system)
+);
+CREATE INDEX IF NOT EXISTS idx_categories_parent ON categories(parent_id);
+CREATE INDEX IF NOT EXISTS idx_categories_external ON categories(external_matterhorn_id);
+CREATE TABLE IF NOT EXISTS product_categories (
+    product_sku TEXT NOT NULL,
+    category_id TEXT NOT NULL,
+    is_primary INTEGER NOT NULL DEFAULT 0,
+    marketplace_mappings_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    PRIMARY KEY(product_sku, category_id)
+);
+CREATE INDEX IF NOT EXISTS idx_product_categories_category ON product_categories(category_id);
+CREATE TABLE IF NOT EXISTS product_variants (
+    id TEXT PRIMARY KEY,
+    parent_sku TEXT NOT NULL,
+    sku TEXT NOT NULL UNIQUE,
+    external_matterhorn_id TEXT NOT NULL DEFAULT '',
+    title TEXT NOT NULL DEFAULT '',
+    ean TEXT NOT NULL DEFAULT '',
+    barcode TEXT NOT NULL DEFAULT '',
+    supplier_price REAL NOT NULL DEFAULT 0,
+    sale_price REAL NOT NULL DEFAULT 0,
+    stock_quantity INTEGER NOT NULL DEFAULT 0,
+    reserved_quantity INTEGER NOT NULL DEFAULT 0,
+    available_quantity INTEGER NOT NULL DEFAULT 0,
+    weight_net_kg REAL NOT NULL DEFAULT 0,
+    weight_gross_kg REAL NOT NULL DEFAULT 0,
+    length_cm REAL NOT NULL DEFAULT 0,
+    width_cm REAL NOT NULL DEFAULT 0,
+    height_cm REAL NOT NULL DEFAULT 0,
+    attributes_json TEXT NOT NULL DEFAULT '{}',
+    raw_source_data_json TEXT NOT NULL DEFAULT '{}',
+    status TEXT NOT NULL DEFAULT 'active',
+    source_hash TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_product_variants_parent ON product_variants(parent_sku);
+CREATE INDEX IF NOT EXISTS idx_product_variants_external ON product_variants(external_matterhorn_id);
+CREATE TABLE IF NOT EXISTS product_attributes (
+    id TEXT PRIMARY KEY,
+    product_sku TEXT NOT NULL,
+    variant_sku TEXT NOT NULL DEFAULT '',
+    name TEXT NOT NULL,
+    value TEXT NOT NULL DEFAULT '',
+    unit TEXT NOT NULL DEFAULT '',
+    is_filterable INTEGER NOT NULL DEFAULT 0,
+    is_variant INTEGER NOT NULL DEFAULT 0,
+    source_field TEXT NOT NULL DEFAULT '',
+    extra_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(product_sku, variant_sku, name, value)
+);
+CREATE INDEX IF NOT EXISTS idx_product_attributes_product ON product_attributes(product_sku);
+CREATE INDEX IF NOT EXISTS idx_product_attributes_name ON product_attributes(name);
+CREATE TABLE IF NOT EXISTS product_media (
+    id TEXT PRIMARY KEY,
+    product_sku TEXT NOT NULL,
+    variant_sku TEXT NOT NULL DEFAULT '',
+    media_type TEXT NOT NULL DEFAULT 'image',
+    url TEXT NOT NULL,
+    position INTEGER NOT NULL DEFAULT 0,
+    title TEXT NOT NULL DEFAULT '',
+    alt_text TEXT NOT NULL DEFAULT '',
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_product_media_product ON product_media(product_sku, media_type);
+
+CREATE TABLE IF NOT EXISTS shopware_connections (
         id TEXT PRIMARY KEY,
         name TEXT NOT NULL,
         base_url TEXT NOT NULL,
@@ -1338,16 +1666,58 @@ CREATE TABLE IF NOT EXISTS settings (
 );
 CREATE TABLE IF NOT EXISTS products (
     sku TEXT PRIMARY KEY,
+    external_matterhorn_id TEXT NOT NULL DEFAULT '',
+    parent_sku TEXT NOT NULL DEFAULT '',
     title TEXT NOT NULL,
+    brand TEXT NOT NULL DEFAULT '',
+    manufacturer TEXT NOT NULL DEFAULT '',
     category TEXT NOT NULL DEFAULT '',
+    short_description TEXT NOT NULL DEFAULT '',
     raw_description TEXT NOT NULL DEFAULT '',
     ai_title TEXT NOT NULL DEFAULT '',
     ai_description_html TEXT NOT NULL DEFAULT '',
     ai_tags_json TEXT NOT NULL DEFAULT '[]',
-    supplier_price REAL NOT NULL DEFAULT 0 CHECK (supplier_price >= 0),
-    stock INTEGER NOT NULL DEFAULT 0 CHECK (stock >= 0),
-    is_bundle INTEGER NOT NULL DEFAULT 0 CHECK (is_bundle IN (0, 1)),
-    status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('draft', 'active', 'paused', 'archived')),
+    seo_title TEXT NOT NULL DEFAULT '',
+    meta_description TEXT NOT NULL DEFAULT '',
+    slug TEXT NOT NULL DEFAULT '',
+    canonical_url TEXT NOT NULL DEFAULT '',
+    supplier_price REAL NOT NULL DEFAULT 0,
+    purchase_price REAL NOT NULL DEFAULT 0,
+    sale_price REAL NOT NULL DEFAULT 0,
+    compare_at_price REAL NOT NULL DEFAULT 0,
+    tax_rate REAL NOT NULL DEFAULT 0,
+    currency TEXT NOT NULL DEFAULT 'EUR',
+    stock INTEGER NOT NULL DEFAULT 0,
+    stock_quantity INTEGER NOT NULL DEFAULT 0,
+    reserved_quantity INTEGER NOT NULL DEFAULT 0,
+    available_quantity INTEGER NOT NULL DEFAULT 0,
+    reorder_level INTEGER NOT NULL DEFAULT 0,
+    lead_time_days INTEGER NOT NULL DEFAULT 0,
+    supplier_stock INTEGER NOT NULL DEFAULT 0,
+    warehouse_location TEXT NOT NULL DEFAULT '',
+    bin_code TEXT NOT NULL DEFAULT '',
+    ean TEXT NOT NULL DEFAULT '',
+    barcode TEXT NOT NULL DEFAULT '',
+    requires_serial_number INTEGER NOT NULL DEFAULT 0,
+    is_fragile INTEGER NOT NULL DEFAULT 0,
+    is_hazmat INTEGER NOT NULL DEFAULT 0,
+    weight_net_kg REAL NOT NULL DEFAULT 0,
+    weight_gross_kg REAL NOT NULL DEFAULT 0,
+    length_cm REAL NOT NULL DEFAULT 0,
+    width_cm REAL NOT NULL DEFAULT 0,
+    height_cm REAL NOT NULL DEFAULT 0,
+    hs_code TEXT NOT NULL DEFAULT '',
+    country_of_origin TEXT NOT NULL DEFAULT '',
+    main_image_url TEXT NOT NULL DEFAULT '',
+    gallery_json TEXT NOT NULL DEFAULT '[]',
+    videos_json TEXT NOT NULL DEFAULT '[]',
+    documents_json TEXT NOT NULL DEFAULT '[]',
+    source_system TEXT NOT NULL DEFAULT '',
+    raw_source_data_json TEXT NOT NULL DEFAULT '{}',
+    marketplace_mappings_json TEXT NOT NULL DEFAULT '{}',
+    is_bundle INTEGER NOT NULL DEFAULT 0,
+    has_variants INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'active',
     source_hash TEXT NOT NULL DEFAULT '',
     updated_at TEXT NOT NULL
 );
@@ -1406,14 +1776,106 @@ CREATE INDEX IF NOT EXISTS idx_system_logs_created_at ON system_logs(created_at 
 CREATE TABLE IF NOT EXISTS import_runs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     source TEXT NOT NULL,
+    mode TEXT NOT NULL DEFAULT '',
+    feed_url TEXT NOT NULL DEFAULT '',
     started_at TEXT NOT NULL,
     finished_at TEXT NOT NULL DEFAULT '',
     imported INTEGER NOT NULL DEFAULT 0,
     updated INTEGER NOT NULL DEFAULT 0,
     errors INTEGER NOT NULL DEFAULT 0,
-    status TEXT NOT NULL DEFAULT 'running' CHECK (status IN ('running', 'success', 'failed')),
-    error_message TEXT NOT NULL DEFAULT ''
+    skipped INTEGER NOT NULL DEFAULT 0,
+    created_count INTEGER NOT NULL DEFAULT 0,
+    updated_count INTEGER NOT NULL DEFAULT 0,
+    variants_linked INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'running',
+    error_message TEXT NOT NULL DEFAULT '',
+    summary_json TEXT NOT NULL DEFAULT '{}',
+    protocol_json TEXT NOT NULL DEFAULT '{}'
 );
+CREATE TABLE IF NOT EXISTS categories (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    slug TEXT NOT NULL DEFAULT '',
+    parent_id TEXT NOT NULL DEFAULT '',
+    external_matterhorn_id TEXT NOT NULL DEFAULT '',
+    path TEXT NOT NULL DEFAULT '',
+    description TEXT NOT NULL DEFAULT '',
+    source_system TEXT NOT NULL DEFAULT '',
+    marketplace_mappings_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(name, parent_id, source_system)
+);
+CREATE INDEX IF NOT EXISTS idx_categories_parent ON categories(parent_id);
+CREATE INDEX IF NOT EXISTS idx_categories_external ON categories(external_matterhorn_id);
+CREATE TABLE IF NOT EXISTS product_categories (
+    product_sku TEXT NOT NULL,
+    category_id TEXT NOT NULL,
+    is_primary INTEGER NOT NULL DEFAULT 0,
+    marketplace_mappings_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    PRIMARY KEY(product_sku, category_id)
+);
+CREATE INDEX IF NOT EXISTS idx_product_categories_category ON product_categories(category_id);
+CREATE TABLE IF NOT EXISTS product_variants (
+    id TEXT PRIMARY KEY,
+    parent_sku TEXT NOT NULL,
+    sku TEXT NOT NULL UNIQUE,
+    external_matterhorn_id TEXT NOT NULL DEFAULT '',
+    title TEXT NOT NULL DEFAULT '',
+    ean TEXT NOT NULL DEFAULT '',
+    barcode TEXT NOT NULL DEFAULT '',
+    supplier_price REAL NOT NULL DEFAULT 0,
+    sale_price REAL NOT NULL DEFAULT 0,
+    stock_quantity INTEGER NOT NULL DEFAULT 0,
+    reserved_quantity INTEGER NOT NULL DEFAULT 0,
+    available_quantity INTEGER NOT NULL DEFAULT 0,
+    weight_net_kg REAL NOT NULL DEFAULT 0,
+    weight_gross_kg REAL NOT NULL DEFAULT 0,
+    length_cm REAL NOT NULL DEFAULT 0,
+    width_cm REAL NOT NULL DEFAULT 0,
+    height_cm REAL NOT NULL DEFAULT 0,
+    attributes_json TEXT NOT NULL DEFAULT '{}',
+    raw_source_data_json TEXT NOT NULL DEFAULT '{}',
+    status TEXT NOT NULL DEFAULT 'active',
+    source_hash TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_product_variants_parent ON product_variants(parent_sku);
+CREATE INDEX IF NOT EXISTS idx_product_variants_external ON product_variants(external_matterhorn_id);
+CREATE TABLE IF NOT EXISTS product_attributes (
+    id TEXT PRIMARY KEY,
+    product_sku TEXT NOT NULL,
+    variant_sku TEXT NOT NULL DEFAULT '',
+    name TEXT NOT NULL,
+    value TEXT NOT NULL DEFAULT '',
+    unit TEXT NOT NULL DEFAULT '',
+    is_filterable INTEGER NOT NULL DEFAULT 0,
+    is_variant INTEGER NOT NULL DEFAULT 0,
+    source_field TEXT NOT NULL DEFAULT '',
+    extra_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(product_sku, variant_sku, name, value)
+);
+CREATE INDEX IF NOT EXISTS idx_product_attributes_product ON product_attributes(product_sku);
+CREATE INDEX IF NOT EXISTS idx_product_attributes_name ON product_attributes(name);
+CREATE TABLE IF NOT EXISTS product_media (
+    id TEXT PRIMARY KEY,
+    product_sku TEXT NOT NULL,
+    variant_sku TEXT NOT NULL DEFAULT '',
+    media_type TEXT NOT NULL DEFAULT 'image',
+    url TEXT NOT NULL,
+    position INTEGER NOT NULL DEFAULT 0,
+    title TEXT NOT NULL DEFAULT '',
+    alt_text TEXT NOT NULL DEFAULT '',
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_product_media_product ON product_media(product_sku, media_type);
+
 CREATE TABLE IF NOT EXISTS shopware_connections (
     id TEXT PRIMARY KEY,
     shop_name TEXT NOT NULL,
@@ -2468,6 +2930,64 @@ async def init_db() -> None:
                     await conn.execute(statement)
             # idempotent compatibility migrations for evolved schemas
             compat = [
+                "ALTER TABLE products ADD COLUMN IF NOT EXISTS external_matterhorn_id TEXT NOT NULL DEFAULT ''",
+                "ALTER TABLE products ADD COLUMN IF NOT EXISTS parent_sku TEXT NOT NULL DEFAULT ''",
+                "ALTER TABLE products ADD COLUMN IF NOT EXISTS brand TEXT NOT NULL DEFAULT ''",
+                "ALTER TABLE products ADD COLUMN IF NOT EXISTS manufacturer TEXT NOT NULL DEFAULT ''",
+                "ALTER TABLE products ADD COLUMN IF NOT EXISTS short_description TEXT NOT NULL DEFAULT ''",
+                "ALTER TABLE products ADD COLUMN IF NOT EXISTS seo_title TEXT NOT NULL DEFAULT ''",
+                "ALTER TABLE products ADD COLUMN IF NOT EXISTS meta_description TEXT NOT NULL DEFAULT ''",
+                "ALTER TABLE products ADD COLUMN IF NOT EXISTS slug TEXT NOT NULL DEFAULT ''",
+                "ALTER TABLE products ADD COLUMN IF NOT EXISTS canonical_url TEXT NOT NULL DEFAULT ''",
+                "ALTER TABLE products ADD COLUMN IF NOT EXISTS purchase_price NUMERIC(12,4) NOT NULL DEFAULT 0",
+                "ALTER TABLE products ADD COLUMN IF NOT EXISTS sale_price NUMERIC(12,4) NOT NULL DEFAULT 0",
+                "ALTER TABLE products ADD COLUMN IF NOT EXISTS compare_at_price NUMERIC(12,4) NOT NULL DEFAULT 0",
+                "ALTER TABLE products ADD COLUMN IF NOT EXISTS tax_rate NUMERIC(7,4) NOT NULL DEFAULT 0",
+                "ALTER TABLE products ADD COLUMN IF NOT EXISTS currency TEXT NOT NULL DEFAULT 'EUR'",
+                "ALTER TABLE products ADD COLUMN IF NOT EXISTS stock_quantity INTEGER NOT NULL DEFAULT 0",
+                "ALTER TABLE products ADD COLUMN IF NOT EXISTS reserved_quantity INTEGER NOT NULL DEFAULT 0",
+                "ALTER TABLE products ADD COLUMN IF NOT EXISTS available_quantity INTEGER NOT NULL DEFAULT 0",
+                "ALTER TABLE products ADD COLUMN IF NOT EXISTS reorder_level INTEGER NOT NULL DEFAULT 0",
+                "ALTER TABLE products ADD COLUMN IF NOT EXISTS lead_time_days INTEGER NOT NULL DEFAULT 0",
+                "ALTER TABLE products ADD COLUMN IF NOT EXISTS supplier_stock INTEGER NOT NULL DEFAULT 0",
+                "ALTER TABLE products ADD COLUMN IF NOT EXISTS warehouse_location TEXT NOT NULL DEFAULT ''",
+                "ALTER TABLE products ADD COLUMN IF NOT EXISTS bin_code TEXT NOT NULL DEFAULT ''",
+                "ALTER TABLE products ADD COLUMN IF NOT EXISTS ean TEXT NOT NULL DEFAULT ''",
+                "ALTER TABLE products ADD COLUMN IF NOT EXISTS barcode TEXT NOT NULL DEFAULT ''",
+                "ALTER TABLE products ADD COLUMN IF NOT EXISTS requires_serial_number BOOLEAN NOT NULL DEFAULT FALSE",
+                "ALTER TABLE products ADD COLUMN IF NOT EXISTS is_fragile BOOLEAN NOT NULL DEFAULT FALSE",
+                "ALTER TABLE products ADD COLUMN IF NOT EXISTS is_hazmat BOOLEAN NOT NULL DEFAULT FALSE",
+                "ALTER TABLE products ADD COLUMN IF NOT EXISTS weight_net_kg NUMERIC(12,4) NOT NULL DEFAULT 0",
+                "ALTER TABLE products ADD COLUMN IF NOT EXISTS weight_gross_kg NUMERIC(12,4) NOT NULL DEFAULT 0",
+                "ALTER TABLE products ADD COLUMN IF NOT EXISTS length_cm NUMERIC(12,4) NOT NULL DEFAULT 0",
+                "ALTER TABLE products ADD COLUMN IF NOT EXISTS width_cm NUMERIC(12,4) NOT NULL DEFAULT 0",
+                "ALTER TABLE products ADD COLUMN IF NOT EXISTS height_cm NUMERIC(12,4) NOT NULL DEFAULT 0",
+                "ALTER TABLE products ADD COLUMN IF NOT EXISTS hs_code TEXT NOT NULL DEFAULT ''",
+                "ALTER TABLE products ADD COLUMN IF NOT EXISTS country_of_origin TEXT NOT NULL DEFAULT ''",
+                "ALTER TABLE products ADD COLUMN IF NOT EXISTS main_image_url TEXT NOT NULL DEFAULT ''",
+                "ALTER TABLE products ADD COLUMN IF NOT EXISTS gallery_json JSONB NOT NULL DEFAULT '[]'::jsonb",
+                "ALTER TABLE products ADD COLUMN IF NOT EXISTS videos_json JSONB NOT NULL DEFAULT '[]'::jsonb",
+                "ALTER TABLE products ADD COLUMN IF NOT EXISTS documents_json JSONB NOT NULL DEFAULT '[]'::jsonb",
+                "ALTER TABLE products ADD COLUMN IF NOT EXISTS source_system TEXT NOT NULL DEFAULT ''",
+                "ALTER TABLE products ADD COLUMN IF NOT EXISTS raw_source_data_json JSONB NOT NULL DEFAULT '{}'::jsonb",
+                "ALTER TABLE products ADD COLUMN IF NOT EXISTS marketplace_mappings_json JSONB NOT NULL DEFAULT '{}'::jsonb",
+                "ALTER TABLE products ADD COLUMN IF NOT EXISTS has_variants BOOLEAN NOT NULL DEFAULT FALSE",
+                "UPDATE products SET stock_quantity = COALESCE(NULLIF(stock_quantity,0), stock, 0) WHERE stock_quantity = 0 AND stock <> 0",
+                "UPDATE products SET supplier_price = COALESCE(NULLIF(supplier_price,0), 0), purchase_price = COALESCE(NULLIF(purchase_price,0), supplier_price, 0)",
+                "UPDATE products SET available_quantity = GREATEST(stock_quantity - reserved_quantity, 0) WHERE available_quantity = 0",
+                "ALTER TABLE import_runs ADD COLUMN IF NOT EXISTS mode TEXT NOT NULL DEFAULT ''",
+                "ALTER TABLE import_runs ADD COLUMN IF NOT EXISTS feed_url TEXT NOT NULL DEFAULT ''",
+                "ALTER TABLE import_runs ADD COLUMN IF NOT EXISTS skipped INTEGER NOT NULL DEFAULT 0",
+                "ALTER TABLE import_runs ADD COLUMN IF NOT EXISTS created_count INTEGER NOT NULL DEFAULT 0",
+                "ALTER TABLE import_runs ADD COLUMN IF NOT EXISTS updated_count INTEGER NOT NULL DEFAULT 0",
+                "ALTER TABLE import_runs ADD COLUMN IF NOT EXISTS variants_linked INTEGER NOT NULL DEFAULT 0",
+                "ALTER TABLE import_runs ADD COLUMN IF NOT EXISTS summary_json JSONB NOT NULL DEFAULT '{}'::jsonb",
+                "ALTER TABLE import_runs ADD COLUMN IF NOT EXISTS protocol_json JSONB NOT NULL DEFAULT '{}'::jsonb",
+                "CREATE TABLE IF NOT EXISTS categories (id TEXT PRIMARY KEY, name TEXT NOT NULL, slug TEXT NOT NULL DEFAULT '', parent_id TEXT NOT NULL DEFAULT '', external_matterhorn_id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', source_system TEXT NOT NULL DEFAULT '', marketplace_mappings_json JSONB NOT NULL DEFAULT '{}'::jsonb, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())",
+                "CREATE TABLE IF NOT EXISTS product_categories (product_sku TEXT NOT NULL, category_id TEXT NOT NULL, is_primary BOOLEAN NOT NULL DEFAULT FALSE, marketplace_mappings_json JSONB NOT NULL DEFAULT '{}'::jsonb, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), PRIMARY KEY(product_sku, category_id))",
+                "CREATE TABLE IF NOT EXISTS product_variants (id TEXT PRIMARY KEY, parent_sku TEXT NOT NULL, sku TEXT NOT NULL UNIQUE, external_matterhorn_id TEXT NOT NULL DEFAULT '', title TEXT NOT NULL DEFAULT '', ean TEXT NOT NULL DEFAULT '', barcode TEXT NOT NULL DEFAULT '', supplier_price NUMERIC(12,4) NOT NULL DEFAULT 0, sale_price NUMERIC(12,4) NOT NULL DEFAULT 0, stock_quantity INTEGER NOT NULL DEFAULT 0, reserved_quantity INTEGER NOT NULL DEFAULT 0, available_quantity INTEGER NOT NULL DEFAULT 0, weight_net_kg NUMERIC(12,4) NOT NULL DEFAULT 0, weight_gross_kg NUMERIC(12,4) NOT NULL DEFAULT 0, length_cm NUMERIC(12,4) NOT NULL DEFAULT 0, width_cm NUMERIC(12,4) NOT NULL DEFAULT 0, height_cm NUMERIC(12,4) NOT NULL DEFAULT 0, attributes_json JSONB NOT NULL DEFAULT '{}'::jsonb, raw_source_data_json JSONB NOT NULL DEFAULT '{}'::jsonb, status TEXT NOT NULL DEFAULT 'active', source_hash TEXT NOT NULL DEFAULT '', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())",
+                "CREATE TABLE IF NOT EXISTS product_attributes (id TEXT PRIMARY KEY, product_sku TEXT NOT NULL, variant_sku TEXT NOT NULL DEFAULT '', name TEXT NOT NULL, value TEXT NOT NULL DEFAULT '', unit TEXT NOT NULL DEFAULT '', is_filterable BOOLEAN NOT NULL DEFAULT FALSE, is_variant BOOLEAN NOT NULL DEFAULT FALSE, source_field TEXT NOT NULL DEFAULT '', extra_json JSONB NOT NULL DEFAULT '{}'::jsonb, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())",
+                "CREATE TABLE IF NOT EXISTS product_media (id TEXT PRIMARY KEY, product_sku TEXT NOT NULL, variant_sku TEXT NOT NULL DEFAULT '', media_type TEXT NOT NULL DEFAULT 'image', url TEXT NOT NULL, position INTEGER NOT NULL DEFAULT 0, title TEXT NOT NULL DEFAULT '', alt_text TEXT NOT NULL DEFAULT '', metadata_json JSONB NOT NULL DEFAULT '{}'::jsonb, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())",
                 "ALTER TABLE matterhorn_feeds ADD COLUMN IF NOT EXISTS feed_url TEXT",
                 "ALTER TABLE matterhorn_feeds ADD COLUMN IF NOT EXISTS auth_header TEXT NOT NULL DEFAULT ''",
                 "ALTER TABLE matterhorn_feeds ADD COLUMN IF NOT EXISTS last_imported_at TIMESTAMPTZ",
@@ -2501,6 +3021,83 @@ async def init_db() -> None:
 
     async with get_connection() as db:
         await db.executescript(SQLITE_SCHEMA)
+        # idempotent column/table migrations for evolved SQLite schemas
+        sqlite_compat = [
+            "ALTER TABLE products ADD COLUMN external_matterhorn_id TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE products ADD COLUMN parent_sku TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE products ADD COLUMN brand TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE products ADD COLUMN manufacturer TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE products ADD COLUMN short_description TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE products ADD COLUMN seo_title TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE products ADD COLUMN meta_description TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE products ADD COLUMN slug TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE products ADD COLUMN canonical_url TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE products ADD COLUMN purchase_price REAL NOT NULL DEFAULT 0",
+            "ALTER TABLE products ADD COLUMN sale_price REAL NOT NULL DEFAULT 0",
+            "ALTER TABLE products ADD COLUMN compare_at_price REAL NOT NULL DEFAULT 0",
+            "ALTER TABLE products ADD COLUMN tax_rate REAL NOT NULL DEFAULT 0",
+            "ALTER TABLE products ADD COLUMN currency TEXT NOT NULL DEFAULT 'EUR'",
+            "ALTER TABLE products ADD COLUMN stock_quantity INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE products ADD COLUMN reserved_quantity INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE products ADD COLUMN available_quantity INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE products ADD COLUMN reorder_level INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE products ADD COLUMN lead_time_days INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE products ADD COLUMN supplier_stock INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE products ADD COLUMN warehouse_location TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE products ADD COLUMN bin_code TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE products ADD COLUMN ean TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE products ADD COLUMN barcode TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE products ADD COLUMN requires_serial_number INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE products ADD COLUMN is_fragile INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE products ADD COLUMN is_hazmat INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE products ADD COLUMN weight_net_kg REAL NOT NULL DEFAULT 0",
+            "ALTER TABLE products ADD COLUMN weight_gross_kg REAL NOT NULL DEFAULT 0",
+            "ALTER TABLE products ADD COLUMN length_cm REAL NOT NULL DEFAULT 0",
+            "ALTER TABLE products ADD COLUMN width_cm REAL NOT NULL DEFAULT 0",
+            "ALTER TABLE products ADD COLUMN height_cm REAL NOT NULL DEFAULT 0",
+            "ALTER TABLE products ADD COLUMN hs_code TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE products ADD COLUMN country_of_origin TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE products ADD COLUMN main_image_url TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE products ADD COLUMN gallery_json TEXT NOT NULL DEFAULT '[]'",
+            "ALTER TABLE products ADD COLUMN videos_json TEXT NOT NULL DEFAULT '[]'",
+            "ALTER TABLE products ADD COLUMN documents_json TEXT NOT NULL DEFAULT '[]'",
+            "ALTER TABLE products ADD COLUMN source_system TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE products ADD COLUMN raw_source_data_json TEXT NOT NULL DEFAULT '{}'",
+            "ALTER TABLE products ADD COLUMN marketplace_mappings_json TEXT NOT NULL DEFAULT '{}'",
+            "ALTER TABLE products ADD COLUMN has_variants INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE import_runs ADD COLUMN mode TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE import_runs ADD COLUMN feed_url TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE import_runs ADD COLUMN skipped INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE import_runs ADD COLUMN created_count INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE import_runs ADD COLUMN updated_count INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE import_runs ADD COLUMN variants_linked INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE import_runs ADD COLUMN summary_json TEXT NOT NULL DEFAULT '{}'",
+            "ALTER TABLE import_runs ADD COLUMN protocol_json TEXT NOT NULL DEFAULT '{}'",
+            "CREATE TABLE IF NOT EXISTS categories (id TEXT PRIMARY KEY, name TEXT NOT NULL, slug TEXT NOT NULL DEFAULT '', parent_id TEXT NOT NULL DEFAULT '', external_matterhorn_id TEXT NOT NULL DEFAULT '', path TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', source_system TEXT NOT NULL DEFAULT '', marketplace_mappings_json TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL, updated_at TEXT NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS product_categories (product_sku TEXT NOT NULL, category_id TEXT NOT NULL, is_primary INTEGER NOT NULL DEFAULT 0, marketplace_mappings_json TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL, PRIMARY KEY(product_sku, category_id))",
+            "CREATE TABLE IF NOT EXISTS product_variants (id TEXT PRIMARY KEY, parent_sku TEXT NOT NULL, sku TEXT NOT NULL UNIQUE, external_matterhorn_id TEXT NOT NULL DEFAULT '', title TEXT NOT NULL DEFAULT '', ean TEXT NOT NULL DEFAULT '', barcode TEXT NOT NULL DEFAULT '', supplier_price REAL NOT NULL DEFAULT 0, sale_price REAL NOT NULL DEFAULT 0, stock_quantity INTEGER NOT NULL DEFAULT 0, reserved_quantity INTEGER NOT NULL DEFAULT 0, available_quantity INTEGER NOT NULL DEFAULT 0, weight_net_kg REAL NOT NULL DEFAULT 0, weight_gross_kg REAL NOT NULL DEFAULT 0, length_cm REAL NOT NULL DEFAULT 0, width_cm REAL NOT NULL DEFAULT 0, height_cm REAL NOT NULL DEFAULT 0, attributes_json TEXT NOT NULL DEFAULT '{}', raw_source_data_json TEXT NOT NULL DEFAULT '{}', status TEXT NOT NULL DEFAULT 'active', source_hash TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS product_attributes (id TEXT PRIMARY KEY, product_sku TEXT NOT NULL, variant_sku TEXT NOT NULL DEFAULT '', name TEXT NOT NULL, value TEXT NOT NULL DEFAULT '', unit TEXT NOT NULL DEFAULT '', is_filterable INTEGER NOT NULL DEFAULT 0, is_variant INTEGER NOT NULL DEFAULT 0, source_field TEXT NOT NULL DEFAULT '', extra_json TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL, updated_at TEXT NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS product_media (id TEXT PRIMARY KEY, product_sku TEXT NOT NULL, variant_sku TEXT NOT NULL DEFAULT '', media_type TEXT NOT NULL DEFAULT 'image', url TEXT NOT NULL, position INTEGER NOT NULL DEFAULT 0, title TEXT NOT NULL DEFAULT '', alt_text TEXT NOT NULL DEFAULT '', metadata_json TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL, updated_at TEXT NOT NULL)",
+            "CREATE INDEX IF NOT EXISTS idx_products_external_matterhorn_id ON products(external_matterhorn_id)",
+            "CREATE INDEX IF NOT EXISTS idx_products_parent_sku ON products(parent_sku)",
+            "CREATE INDEX IF NOT EXISTS idx_products_ean ON products(ean)",
+            "CREATE INDEX IF NOT EXISTS idx_categories_parent ON categories(parent_id)",
+            "CREATE INDEX IF NOT EXISTS idx_product_categories_category ON product_categories(category_id)",
+            "CREATE INDEX IF NOT EXISTS idx_product_variants_parent ON product_variants(parent_sku)",
+            "CREATE INDEX IF NOT EXISTS idx_product_attributes_product ON product_attributes(product_sku)",
+            "CREATE INDEX IF NOT EXISTS idx_product_media_product ON product_media(product_sku, media_type)",
+        ]
+        for stmt in sqlite_compat:
+            try:
+                await db.execute(stmt)
+            except Exception:
+                pass
+        try:
+            await db.execute("UPDATE products SET stock_quantity = CASE WHEN stock_quantity=0 THEN stock ELSE stock_quantity END WHERE stock<>0")
+            await db.execute("UPDATE products SET purchase_price = CASE WHEN purchase_price=0 THEN supplier_price ELSE purchase_price END")
+            await db.execute("UPDATE products SET available_quantity = MAX(stock_quantity - reserved_quantity, 0) WHERE available_quantity=0")
+        except Exception:
+            pass
         await db.commit()
     logger.info("SQLite WAL schema migration complete at %s.", DATABASE_PATH)
 
@@ -2592,55 +3189,311 @@ async def recent_logs(limit: int = 50) -> list[dict[str, Any]]:
         return [dict(row) for row in rows]
 
 
+def _json_dump(value: Any, default: Any) -> str:
+    if value is None:
+        value = default
+    if isinstance(value, str):
+        return value
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str)
+
+
+def _coerce_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    return str(value or "").strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _coerce_num(value: Any, default: float = 0.0) -> float:
+    try:
+        if value in (None, ""):
+            return float(default)
+        return float(str(value).replace(",", ".").strip())
+    except Exception:
+        return float(default)
+
+
+def _coerce_int(value: Any, default: int = 0) -> int:
+    try:
+        if value in (None, ""):
+            return int(default)
+        return int(float(str(value).replace(",", ".").strip()))
+    except Exception:
+        return int(default)
+
+
+async def _fetch_existing_product_row(sku: str) -> dict[str, Any] | None:
+    if not sku:
+        return None
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT * FROM products WHERE sku=$1", sku)
+        return dict(row) if row else None
+    async with get_connection() as db:
+        cur = await db.execute("SELECT * FROM products WHERE sku=?", (sku,))
+        row = await cur.fetchone(); await cur.close()
+        return dict(row) if row else None
+
+
 async def upsert_product(
     *,
     sku: str,
     title: str,
-    category: str,
-    supplier_price: float,
-    stock: int,
-    source_hash: str,
+    category: str = "",
+    supplier_price: float = 0.0,
+    stock: int = 0,
+    source_hash: str = "",
     raw_description: str = "",
     status: str = "active",
+    **extra: Any,
 ) -> bool:
-    """Idempotently persist a supplier product and report if its source changed."""
-    if not sku or supplier_price < 0 or stock < 0:
+    """Idempotently persist a supplier/product record and report if its source changed.
+
+    Backward-compatible with legacy callers while supporting extended catalog fields.
+    For import sync rules, pass ``sync_rules`` in extra (stock_only/ek_only/full/preserve_manual)
+    and ``manual_overrides`` flags to preserve curated fields.
+    """
+    if not sku or _coerce_num(supplier_price) < 0 or _coerce_int(stock) < 0:
         raise ValueError("SKU must be non-empty; price and stock cannot be negative.")
     if status not in {"active", "draft", "paused", "archived"}:
         raise ValueError("Product status must be active, draft, paused, or archived.")
+
+    external_matterhorn_id = str(extra.get("external_matterhorn_id") or extra.get("external_id") or "").strip()
+    existing: dict[str, Any] | None = None
     if uses_postgres():
         pool = await get_pg_pool()
         async with pool.acquire() as conn:
-            existing = await conn.fetchrow("SELECT source_hash FROM products WHERE sku = $1", sku)
-            if existing and existing["source_hash"] == source_hash:
-                return False
-            await conn.execute(
-                """INSERT INTO products(sku, title, category, raw_description, supplier_price, stock, source_hash, status, updated_at)
-                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
-                   ON CONFLICT(sku) DO UPDATE SET
-                     title=EXCLUDED.title, category=EXCLUDED.category, raw_description=EXCLUDED.raw_description,
-                     supplier_price=EXCLUDED.supplier_price, stock=EXCLUDED.stock, source_hash=EXCLUDED.source_hash,
-                     status=CASE WHEN products.is_bundle THEN products.status ELSE EXCLUDED.status END, updated_at=NOW()""",
-                sku, title, category, raw_description, supplier_price, stock, source_hash, status,
-            )
-        return True
-    async with get_connection() as db:
-        cursor = await db.execute("SELECT source_hash FROM products WHERE sku = ?", (sku,))
-        existing = await cursor.fetchone()
-        await cursor.close()
-        if existing and existing["source_hash"] == source_hash:
+            existing = await conn.fetchrow("SELECT * FROM products WHERE sku=$1", sku)
+            if existing is None and external_matterhorn_id:
+                existing = await conn.fetchrow("SELECT * FROM products WHERE external_matterhorn_id=$1 LIMIT 1", external_matterhorn_id)
+        existing = dict(existing) if existing else None
+    else:
+        async with get_connection() as db:
+            cur = await db.execute("SELECT * FROM products WHERE sku=?", (sku,))
+            row = await cur.fetchone(); await cur.close()
+            existing = dict(row) if row else None
+        if existing is None and external_matterhorn_id:
+            async with get_connection() as db:
+                cur = await db.execute("SELECT * FROM products WHERE external_matterhorn_id=? LIMIT 1", (external_matterhorn_id,))
+                row = await cur.fetchone(); await cur.close()
+                existing = dict(row) if row else None
+
+    target_sku = str((existing or {}).get("sku") or sku).strip() or sku
+    if existing and existing.get("source_hash") == source_hash and source_hash:
+        # still allow explicit status-only/manual changes? legacy behavior: unchanged
+        if not extra.get("force_update"):
             return False
+
+    sync_rules = extra.get("sync_rules") or {}
+    if isinstance(sync_rules, str):
+        try: sync_rules = json.loads(sync_rules)
+        except Exception: sync_rules = {}
+    mode = str(sync_rules.get("mode") or extra.get("sync_mode") or "full").lower()
+    preserve_manual = bool(sync_rules.get("preserve_manual_seo", True))
+    preserve_marketplace = bool(sync_rules.get("preserve_marketplace_mappings", True))
+    manual_fields = set(sync_rules.get("preserve_fields") or extra.get("preserve_fields") or [])
+
+    def pick(field: str, incoming: Any, current: Any = None):
+        if mode in {"stock_only", "stock"} and field not in {"stock", "stock_quantity", "available_quantity", "reserved_quantity", "supplier_stock", "source_hash", "updated_at", "status"}:
+            return current
+        if mode in {"ek_only", "price_only", "purchase_only"} and field not in {"supplier_price", "purchase_price", "sale_price", "source_hash", "updated_at", "status", "currency", "tax_rate"}:
+            return current
+        if preserve_manual and field in {"seo_title", "meta_description", "slug", "canonical_url"} and str(current or "").strip():
+            return current
+        if preserve_marketplace and field == "marketplace_mappings_json" and str(current or "").strip() not in {"", "{}", "[]"}:
+            return current
+        if field in manual_fields and str(current or "").strip():
+            return current
+        return incoming
+
+    cur = existing or {}
+    # normalize/merge
+    purchase_price = _coerce_num(extra.get("purchase_price", extra.get("ek_price", supplier_price)))
+    supplier_price_n = _coerce_num(supplier_price)
+    sale_price = _coerce_num(extra.get("sale_price", extra.get("retail_price", extra.get("price", 0))))
+    stock_n = _coerce_int(stock)
+    stock_quantity = _coerce_int(extra.get("stock_quantity", stock_n))
+    reserved_quantity = _coerce_int(extra.get("reserved_quantity", cur.get("reserved_quantity", 0)))
+    supplier_stock = _coerce_int(extra.get("supplier_stock", extra.get("raw_stock", stock_n)))
+    available_quantity = max(stock_quantity - reserved_quantity, 0)
+    payload = {
+        "sku": target_sku,
+        "external_matterhorn_id": pick("external_matterhorn_id", external_matterhorn_id or str(cur.get("external_matterhorn_id") or ""), cur.get("external_matterhorn_id", "")),
+        "parent_sku": pick("parent_sku", str(extra.get("parent_sku") or cur.get("parent_sku") or ""), cur.get("parent_sku", "")),
+        "title": pick("title", title, cur.get("title", "")),
+        "brand": pick("brand", str(extra.get("brand") or cur.get("brand") or ""), cur.get("brand", "")),
+        "manufacturer": pick("manufacturer", str(extra.get("manufacturer") or cur.get("manufacturer") or ""), cur.get("manufacturer", "")),
+        "category": pick("category", category, cur.get("category", "")),
+        "short_description": pick("short_description", str(extra.get("short_description") or cur.get("short_description") or ""), cur.get("short_description", "")),
+        "raw_description": pick("raw_description", raw_description, cur.get("raw_description", "")),
+        "ai_title": pick("ai_title", str(extra.get("ai_title") or cur.get("ai_title") or ""), cur.get("ai_title", "")),
+        "ai_description_html": pick("ai_description_html", str(extra.get("ai_description_html") or cur.get("ai_description_html") or ""), cur.get("ai_description_html", "")),
+        "ai_tags_json": pick("ai_tags_json", extra.get("ai_tags_json", cur.get("ai_tags_json", [])), cur.get("ai_tags_json", [])),
+        "seo_title": pick("seo_title", str(extra.get("seo_title") or cur.get("seo_title") or ""), cur.get("seo_title", "")),
+        "meta_description": pick("meta_description", str(extra.get("meta_description") or cur.get("meta_description") or ""), cur.get("meta_description", "")),
+        "slug": pick("slug", str(extra.get("slug") or cur.get("slug") or ""), cur.get("slug", "")),
+        "canonical_url": pick("canonical_url", str(extra.get("canonical_url") or cur.get("canonical_url") or ""), cur.get("canonical_url", "")),
+        "supplier_price": pick("supplier_price", supplier_price_n, _coerce_num(cur.get("supplier_price", 0))),
+        "purchase_price": pick("purchase_price", purchase_price, _coerce_num(cur.get("purchase_price", 0))),
+        "sale_price": pick("sale_price", sale_price, _coerce_num(cur.get("sale_price", 0))),
+        "compare_at_price": pick("compare_at_price", _coerce_num(extra.get("compare_at_price", cur.get("compare_at_price", 0))), _coerce_num(cur.get("compare_at_price", 0))),
+        "tax_rate": pick("tax_rate", _coerce_num(extra.get("tax_rate", cur.get("tax_rate", 0))), _coerce_num(cur.get("tax_rate", 0))),
+        "currency": pick("currency", str(extra.get("currency") or cur.get("currency") or "EUR"), cur.get("currency", "EUR")),
+        "stock": pick("stock", stock_n, _coerce_int(cur.get("stock", 0))),
+        "stock_quantity": pick("stock_quantity", stock_quantity, _coerce_int(cur.get("stock_quantity", cur.get("stock", 0)))),
+        "reserved_quantity": reserved_quantity,
+        "available_quantity": pick("available_quantity", _coerce_int(extra.get("available_quantity", available_quantity)), _coerce_int(cur.get("available_quantity", 0))),
+        "reorder_level": pick("reorder_level", _coerce_int(extra.get("reorder_level", cur.get("reorder_level", 0))), _coerce_int(cur.get("reorder_level", 0))),
+        "lead_time_days": pick("lead_time_days", _coerce_int(extra.get("lead_time_days", cur.get("lead_time_days", 0))), _coerce_int(cur.get("lead_time_days", 0))),
+        "supplier_stock": pick("supplier_stock", supplier_stock, _coerce_int(cur.get("supplier_stock", 0))),
+        "warehouse_location": pick("warehouse_location", str(extra.get("warehouse_location") or cur.get("warehouse_location") or ""), cur.get("warehouse_location", "")),
+        "bin_code": pick("bin_code", str(extra.get("bin_code") or cur.get("bin_code") or ""), cur.get("bin_code", "")),
+        "ean": pick("ean", str(extra.get("ean") or cur.get("ean") or ""), cur.get("ean", "")),
+        "barcode": pick("barcode", str(extra.get("barcode") or cur.get("barcode") or extra.get("ean") or ""), cur.get("barcode", "")),
+        "requires_serial_number": pick("requires_serial_number", _coerce_bool(extra.get("requires_serial_number", cur.get("requires_serial_number", False))), _coerce_bool(cur.get("requires_serial_number", False))),
+        "is_fragile": pick("is_fragile", _coerce_bool(extra.get("is_fragile", cur.get("is_fragile", False))), _coerce_bool(cur.get("is_fragile", False))),
+        "is_hazmat": pick("is_hazmat", _coerce_bool(extra.get("is_hazmat", cur.get("is_hazmat", False))), _coerce_bool(cur.get("is_hazmat", False))),
+        "weight_net_kg": pick("weight_net_kg", _coerce_num(extra.get("weight_net_kg", cur.get("weight_net_kg", 0))), _coerce_num(cur.get("weight_net_kg", 0))),
+        "weight_gross_kg": pick("weight_gross_kg", _coerce_num(extra.get("weight_gross_kg", cur.get("weight_gross_kg", 0))), _coerce_num(cur.get("weight_gross_kg", 0))),
+        "length_cm": pick("length_cm", _coerce_num(extra.get("length_cm", cur.get("length_cm", 0))), _coerce_num(cur.get("length_cm", 0))),
+        "width_cm": pick("width_cm", _coerce_num(extra.get("width_cm", cur.get("width_cm", 0))), _coerce_num(cur.get("width_cm", 0))),
+        "height_cm": pick("height_cm", _coerce_num(extra.get("height_cm", cur.get("height_cm", 0))), _coerce_num(cur.get("height_cm", 0))),
+        "hs_code": pick("hs_code", str(extra.get("hs_code") or cur.get("hs_code") or ""), cur.get("hs_code", "")),
+        "country_of_origin": pick("country_of_origin", str(extra.get("country_of_origin") or cur.get("country_of_origin") or ""), cur.get("country_of_origin", "")),
+        "main_image_url": pick("main_image_url", str(extra.get("main_image_url") or cur.get("main_image_url") or ""), cur.get("main_image_url", "")),
+        "gallery_json": pick("gallery_json", extra.get("gallery_json", extra.get("images", cur.get("gallery_json", []))), cur.get("gallery_json", [])),
+        "videos_json": pick("videos_json", extra.get("videos_json", cur.get("videos_json", [])), cur.get("videos_json", [])),
+        "documents_json": pick("documents_json", extra.get("documents_json", cur.get("documents_json", [])), cur.get("documents_json", [])),
+        "source_system": pick("source_system", str(extra.get("source_system") or cur.get("source_system") or ""), cur.get("source_system", "")),
+        "raw_source_data_json": pick("raw_source_data_json", extra.get("raw_source_data_json", extra.get("raw_data", cur.get("raw_source_data_json", {}))), cur.get("raw_source_data_json", {})),
+        "marketplace_mappings_json": pick("marketplace_mappings_json", extra.get("marketplace_mappings_json", cur.get("marketplace_mappings_json", {})), cur.get("marketplace_mappings_json", {})),
+        "is_bundle": _coerce_bool(extra.get("is_bundle", cur.get("is_bundle", False))),
+        "has_variants": _coerce_bool(extra.get("has_variants", cur.get("has_variants", False))),
+        "status": status if (not cur.get("is_bundle") or mode in {"full", ""}) else str(cur.get("status") or status),
+        "source_hash": source_hash or str(cur.get("source_hash") or ""),
+    }
+
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO products(
+                    sku, external_matterhorn_id, parent_sku, title, brand, manufacturer, category, short_description, raw_description,
+                    ai_title, ai_description_html, ai_tags_json, seo_title, meta_description, slug, canonical_url,
+                    supplier_price, purchase_price, sale_price, compare_at_price, tax_rate, currency,
+                    stock, stock_quantity, reserved_quantity, available_quantity, reorder_level, lead_time_days, supplier_stock,
+                    warehouse_location, bin_code, ean, barcode, requires_serial_number, is_fragile, is_hazmat,
+                    weight_net_kg, weight_gross_kg, length_cm, width_cm, height_cm, hs_code, country_of_origin,
+                    main_image_url, gallery_json, videos_json, documents_json, source_system, raw_source_data_json, marketplace_mappings_json,
+                    is_bundle, has_variants, status, source_hash, updated_at
+                ) VALUES (
+                    $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,
+                    $23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,
+                    $44,$45::jsonb,$46::jsonb,$47::jsonb,$48,$49::jsonb,$50::jsonb,$51,$52,$53,$54,NOW()
+                )
+                ON CONFLICT(sku) DO UPDATE SET
+                    external_matterhorn_id=EXCLUDED.external_matterhorn_id, parent_sku=EXCLUDED.parent_sku, title=EXCLUDED.title, brand=EXCLUDED.brand,
+                    manufacturer=EXCLUDED.manufacturer, category=EXCLUDED.category, short_description=EXCLUDED.short_description, raw_description=EXCLUDED.raw_description,
+                    ai_title=EXCLUDED.ai_title, ai_description_html=EXCLUDED.ai_description_html, ai_tags_json=EXCLUDED.ai_tags_json,
+                    seo_title=EXCLUDED.seo_title, meta_description=EXCLUDED.meta_description, slug=EXCLUDED.slug, canonical_url=EXCLUDED.canonical_url,
+                    supplier_price=EXCLUDED.supplier_price, purchase_price=EXCLUDED.purchase_price, sale_price=EXCLUDED.sale_price, compare_at_price=EXCLUDED.compare_at_price,
+                    tax_rate=EXCLUDED.tax_rate, currency=EXCLUDED.currency, stock=EXCLUDED.stock, stock_quantity=EXCLUDED.stock_quantity, reserved_quantity=EXCLUDED.reserved_quantity,
+                    available_quantity=EXCLUDED.available_quantity, reorder_level=EXCLUDED.reorder_level, lead_time_days=EXCLUDED.lead_time_days, supplier_stock=EXCLUDED.supplier_stock,
+                    warehouse_location=EXCLUDED.warehouse_location, bin_code=EXCLUDED.bin_code, ean=EXCLUDED.ean, barcode=EXCLUDED.barcode,
+                    requires_serial_number=EXCLUDED.requires_serial_number, is_fragile=EXCLUDED.is_fragile, is_hazmat=EXCLUDED.is_hazmat,
+                    weight_net_kg=EXCLUDED.weight_net_kg, weight_gross_kg=EXCLUDED.weight_gross_kg, length_cm=EXCLUDED.length_cm, width_cm=EXCLUDED.width_cm, height_cm=EXCLUDED.height_cm,
+                    hs_code=EXCLUDED.hs_code, country_of_origin=EXCLUDED.country_of_origin, main_image_url=EXCLUDED.main_image_url, gallery_json=EXCLUDED.gallery_json,
+                    videos_json=EXCLUDED.videos_json, documents_json=EXCLUDED.documents_json, source_system=EXCLUDED.source_system, raw_source_data_json=EXCLUDED.raw_source_data_json,
+                    marketplace_mappings_json=EXCLUDED.marketplace_mappings_json, is_bundle=EXCLUDED.is_bundle, has_variants=EXCLUDED.has_variants,
+                    status=CASE WHEN products.is_bundle THEN products.status ELSE EXCLUDED.status END, source_hash=EXCLUDED.source_hash, updated_at=NOW()""",
+                payload["sku"], payload["external_matterhorn_id"], payload["parent_sku"], payload["title"], payload["brand"], payload["manufacturer"], payload["category"], payload["short_description"], payload["raw_description"],
+                payload["ai_title"], payload["ai_description_html"], _json_dump(payload["ai_tags_json"], []), payload["seo_title"], payload["meta_description"], payload["slug"], payload["canonical_url"],
+                payload["supplier_price"], payload["purchase_price"], payload["sale_price"], payload["compare_at_price"], payload["tax_rate"], payload["currency"],
+                payload["stock"], payload["stock_quantity"], payload["reserved_quantity"], payload["available_quantity"], payload["reorder_level"], payload["lead_time_days"], payload["supplier_stock"],
+                payload["warehouse_location"], payload["bin_code"], payload["ean"], payload["barcode"], payload["requires_serial_number"], payload["is_fragile"], payload["is_hazmat"],
+                payload["weight_net_kg"], payload["weight_gross_kg"], payload["length_cm"], payload["width_cm"], payload["height_cm"], payload["hs_code"], payload["country_of_origin"],
+                payload["main_image_url"], _json_dump(payload["gallery_json"], []), _json_dump(payload["videos_json"], []), _json_dump(payload["documents_json"], []), payload["source_system"], _json_dump(payload["raw_source_data_json"], {}), _json_dump(payload["marketplace_mappings_json"], {}),
+                payload["is_bundle"], payload["has_variants"], payload["status"], payload["source_hash"],
+            )
+        return existing is None or existing.get("source_hash") != payload["source_hash"]
+
+    async with get_connection() as db:
         await db.execute(
-            """INSERT INTO products(sku, title, category, raw_description, supplier_price, stock, source_hash, status, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-               ON CONFLICT(sku) DO UPDATE SET
-                 title=excluded.title, category=excluded.category, raw_description=excluded.raw_description,
-                 supplier_price=excluded.supplier_price, stock=excluded.stock, source_hash=excluded.source_hash,
-                 status=CASE WHEN products.is_bundle = 1 THEN products.status ELSE excluded.status END, updated_at=excluded.updated_at""",
-            (sku, title, category, raw_description, supplier_price, stock, source_hash, status, utc_now()),
+            """INSERT INTO products(
+                sku, external_matterhorn_id, parent_sku, title, brand, manufacturer, category, short_description, raw_description,
+                ai_title, ai_description_html, ai_tags_json, seo_title, meta_description, slug, canonical_url,
+                supplier_price, purchase_price, sale_price, compare_at_price, tax_rate, currency,
+                stock, stock_quantity, reserved_quantity, available_quantity, reorder_level, lead_time_days, supplier_stock,
+                warehouse_location, bin_code, ean, barcode, requires_serial_number, is_fragile, is_hazmat,
+                weight_net_kg, weight_gross_kg, length_cm, width_cm, height_cm, hs_code, country_of_origin,
+                main_image_url, gallery_json, videos_json, documents_json, source_system, raw_source_data_json, marketplace_mappings_json,
+                is_bundle, has_variants, status, source_hash, updated_at
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(sku) DO UPDATE SET
+                external_matterhorn_id=excluded.external_matterhorn_id, parent_sku=excluded.parent_sku, title=excluded.title, brand=excluded.brand,
+                manufacturer=excluded.manufacturer, category=excluded.category, short_description=excluded.short_description, raw_description=excluded.raw_description,
+                ai_title=excluded.ai_title, ai_description_html=excluded.ai_description_html, ai_tags_json=excluded.ai_tags_json,
+                seo_title=excluded.seo_title, meta_description=excluded.meta_description, slug=excluded.slug, canonical_url=excluded.canonical_url,
+                supplier_price=excluded.supplier_price, purchase_price=excluded.purchase_price, sale_price=excluded.sale_price, compare_at_price=excluded.compare_at_price,
+                tax_rate=excluded.tax_rate, currency=excluded.currency, stock=excluded.stock, stock_quantity=excluded.stock_quantity, reserved_quantity=excluded.reserved_quantity,
+                available_quantity=excluded.available_quantity, reorder_level=excluded.reorder_level, lead_time_days=excluded.lead_time_days, supplier_stock=excluded.supplier_stock,
+                warehouse_location=excluded.warehouse_location, bin_code=excluded.bin_code, ean=excluded.ean, barcode=excluded.barcode,
+                requires_serial_number=excluded.requires_serial_number, is_fragile=excluded.is_fragile, is_hazmat=excluded.is_hazmat,
+                weight_net_kg=excluded.weight_net_kg, weight_gross_kg=excluded.weight_gross_kg, length_cm=excluded.length_cm, width_cm=excluded.width_cm, height_cm=excluded.height_cm,
+                hs_code=excluded.hs_code, country_of_origin=excluded.country_of_origin, main_image_url=excluded.main_image_url, gallery_json=excluded.gallery_json,
+                videos_json=excluded.videos_json, documents_json=excluded.documents_json, source_system=excluded.source_system, raw_source_data_json=excluded.raw_source_data_json,
+                marketplace_mappings_json=excluded.marketplace_mappings_json, is_bundle=excluded.is_bundle, has_variants=excluded.has_variants,
+                status=CASE WHEN products.is_bundle = 1 THEN products.status ELSE excluded.status END, source_hash=excluded.source_hash, updated_at=excluded.updated_at""",
+            (
+                payload["sku"], payload["external_matterhorn_id"], payload["parent_sku"], payload["title"], payload["brand"], payload["manufacturer"], payload["category"], payload["short_description"], payload["raw_description"],
+                payload["ai_title"], payload["ai_description_html"], _json_dump(payload["ai_tags_json"], []), payload["seo_title"], payload["meta_description"], payload["slug"], payload["canonical_url"],
+                payload["supplier_price"], payload["purchase_price"], payload["sale_price"], payload["compare_at_price"], payload["tax_rate"], payload["currency"],
+                payload["stock"], payload["stock_quantity"], payload["reserved_quantity"], payload["available_quantity"], payload["reorder_level"], payload["lead_time_days"], payload["supplier_stock"],
+                payload["warehouse_location"], payload["bin_code"], payload["ean"], payload["barcode"], int(bool(payload["requires_serial_number"])), int(bool(payload["is_fragile"])), int(bool(payload["is_hazmat"])),
+                payload["weight_net_kg"], payload["weight_gross_kg"], payload["length_cm"], payload["width_cm"], payload["height_cm"], payload["hs_code"], payload["country_of_origin"],
+                payload["main_image_url"], _json_dump(payload["gallery_json"], []), _json_dump(payload["videos_json"], []), _json_dump(payload["documents_json"], []), payload["source_system"], _json_dump(payload["raw_source_data_json"], {}), _json_dump(payload["marketplace_mappings_json"], {}),
+                int(bool(payload["is_bundle"])), int(bool(payload["has_variants"])), payload["status"], payload["source_hash"], utc_now(),
+            ),
         )
         await db.commit()
-        return True
+        return existing is None or existing.get("source_hash") != payload["source_hash"]
+
+
+
+
+def _decode_json_fields(d: dict[str, Any], fields: tuple[str, ...]) -> dict[str, Any]:
+    for k in fields:
+        v = d.get(k)
+        if isinstance(v, str):
+            try:
+                d[k] = json.loads(v)
+            except Exception:
+                pass
+    return d
+
+def _decode_product_row(row: Any) -> dict[str, Any]:
+    if row is None:
+        return {}
+    d = dict(row)
+    for k in ("ai_tags_json","gallery_json","videos_json","documents_json","raw_source_data_json","marketplace_mappings_json"):
+        v = d.get(k)
+        if isinstance(v, str):
+            try: d[k] = json.loads(v)
+            except Exception: pass
+    for k in ("requires_serial_number","is_fragile","is_hazmat","is_bundle","has_variants"):
+        if k in d and d[k] in (0,1):
+            d[k] = bool(d[k])
+    # convenience mirrors
+    if d.get("stock_quantity") in (None, 0) and d.get("stock") not in (None, 0):
+        d["stock_quantity"] = d.get("stock")
+    if not d.get("available_quantity"):
+        try:
+            d["available_quantity"] = max(int(d.get("stock_quantity") or d.get("stock") or 0) - int(d.get("reserved_quantity") or 0), 0)
+        except Exception:
+            pass
+    return d
 
 
 async def list_products(limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
@@ -2650,26 +3503,80 @@ async def list_products(limit: int = 100, offset: int = 0) -> list[dict[str, Any
         pool = await get_pg_pool()
         async with pool.acquire() as conn:
             rows = await conn.fetch("SELECT * FROM products ORDER BY updated_at DESC, sku ASC LIMIT $1 OFFSET $2", safe_limit, safe_offset)
-        return [dict(row) for row in rows]
+        return [_decode_product_row(row) for row in rows]
     async with get_connection() as db:
         cursor = await db.execute("SELECT * FROM products ORDER BY updated_at DESC, sku ASC LIMIT ? OFFSET ?", (safe_limit, safe_offset))
         rows = await cursor.fetchall()
         await cursor.close()
-        return [dict(row) for row in rows]
+        return [_decode_product_row(row) for row in rows]
 
 
 async def fetch_product(sku: str) -> dict[str, Any] | None:
-    """Return one product by SKU."""
+    """Return one product by SKU, enriched with categories/variants/attributes/media when available."""
     if uses_postgres():
         pool = await get_pg_pool()
         async with pool.acquire() as conn:
             row = await conn.fetchrow("SELECT * FROM products WHERE sku = $1", sku)
-        return dict(row) if row else None
+            if not row:
+                return None
+            out = _decode_product_row(row)
+            try:
+                cats = await conn.fetch("""SELECT c.*, pc.is_primary, pc.marketplace_mappings_json AS link_marketplace_mappings_json
+                    FROM categories c JOIN product_categories pc ON pc.category_id=c.id WHERE pc.product_sku=$1 ORDER BY pc.is_primary DESC, c.name ASC""", sku)
+                out["categories"] = [dict(r) for r in cats]
+            except Exception:
+                out.setdefault("categories", [])
+            try:
+                vars_ = await conn.fetch("SELECT * FROM product_variants WHERE parent_sku=$1 OR sku=$1 ORDER BY sku ASC", sku)
+                out["variants"] = [ _decode_json_fields(dict(r), ("attributes_json","raw_source_data_json")) for r in vars_]
+            except Exception:
+                out.setdefault("variants", [])
+            try:
+                attrs = await conn.fetch("SELECT * FROM product_attributes WHERE product_sku=$1 ORDER BY name ASC, value ASC", sku)
+                out["attributes"] = [ _decode_json_fields(dict(r), ("extra_json",)) for r in attrs]
+            except Exception:
+                out.setdefault("attributes", [])
+            try:
+                media = await conn.fetch("SELECT * FROM product_media WHERE product_sku=$1 ORDER BY position ASC, created_at ASC", sku)
+                out["media"] = [ _decode_json_fields(dict(r), ("metadata_json",)) for r in media]
+            except Exception:
+                out.setdefault("media", [])
+        return out
     async with get_connection() as db:
         cursor = await db.execute("SELECT * FROM products WHERE sku = ?", (sku,))
-        row = await cursor.fetchone()
-        await cursor.close()
-        return dict(row) if row else None
+        row = await cursor.fetchone(); await cursor.close()
+        if not row:
+            return None
+        out = _decode_product_row(row)
+        for key, q in (
+            ("categories", "SELECT c.*, pc.is_primary, pc.marketplace_mappings_json AS link_marketplace_mappings_json FROM categories c JOIN product_categories pc ON pc.category_id=c.id WHERE pc.product_sku=? ORDER BY pc.is_primary DESC, c.name ASC"),
+            ("variants", "SELECT * FROM product_variants WHERE parent_sku=? OR sku=? ORDER BY sku ASC"),
+            ("attributes", "SELECT * FROM product_attributes WHERE product_sku=? ORDER BY name ASC, value ASC"),
+            ("media", "SELECT * FROM product_media WHERE product_sku=? ORDER BY position ASC, created_at ASC"),
+        ):
+            try:
+                if key == "variants":
+                    cur2 = await db.execute(q, (sku, sku))
+                else:
+                    cur2 = await db.execute(q, (sku,))
+                rows = await cur2.fetchall(); await cur2.close()
+                items=[]
+                for r in rows:
+                    d=dict(r)
+                    if key=="categories" and isinstance(d.get("marketplace_mappings_json"), str):
+                        try: d["marketplace_mappings_json"]=json.loads(d["marketplace_mappings_json"])
+                        except Exception: pass
+                    if key=="categories" and isinstance(d.get("link_marketplace_mappings_json"), str):
+                        try: d["link_marketplace_mappings_json"]=json.loads(d["link_marketplace_mappings_json"])
+                        except Exception: pass
+                    if key=="variants": d=_decode_json_fields(d, ("attributes_json","raw_source_data_json"))
+                    if key=="attributes": d=_decode_json_fields(d, ("extra_json",))
+                    if key=="media": d=_decode_json_fields(d, ("metadata_json",))
+                    items.append(d)
+                out[key]=items
+            except Exception:
+                out.setdefault(key, [])
+        return out
 
 
 async def list_bundles() -> list[dict[str, Any]]:
@@ -2969,30 +3876,40 @@ async def count_dashboard_metrics() -> dict[str, int]:
         return {key: int(row[key]) for key in row.keys()} if row else {}
 
 
-async def start_import_run(source: str) -> int:
+async def start_import_run(source: str, *, mode: str = "", feed_url: str = "") -> int:
     """Create an import-run record and return its id."""
     if uses_postgres():
         pool = await get_pg_pool()
         async with pool.acquire() as conn:
-            return int(await conn.fetchval("INSERT INTO import_runs(source) VALUES ($1) RETURNING id", source))
+            return int(await conn.fetchval("INSERT INTO import_runs(source, mode, feed_url) VALUES ($1,$2,$3) RETURNING id", source, mode or "", feed_url or ""))
     async with get_connection() as db:
-        cursor = await db.execute("INSERT INTO import_runs(source, started_at) VALUES (?, ?)", (source, utc_now()))
+        cursor = await db.execute("INSERT INTO import_runs(source, mode, feed_url, started_at) VALUES (?, ?, ?, ?)", (source, mode or "", feed_url or "", utc_now()))
         await db.commit()
         run_id = int(cursor.lastrowid or 0)
         await cursor.close()
         return run_id
 
 
-async def finish_import_run(run_id: int, *, imported: int, updated: int, errors: int, error_message: str = "") -> None:
+async def finish_import_run(run_id: int, *, imported: int = 0, updated: int = 0, errors: int = 0, error_message: str = "", skipped: int = 0, created_count: int | None = None, updated_count: int | None = None, variants_linked: int = 0, status: str | None = None, summary: dict[str, Any] | None = None, protocol: dict[str, Any] | None = None) -> None:
     """Complete an import-run record."""
-    status = "success" if errors == 0 else "failed"
+    run_status = status or ("success" if errors == 0 else "failed")
+    cc = created_count if created_count is not None else max(imported - updated, 0)
+    uc = updated_count if updated_count is not None else updated
+    sj = json.dumps(summary or {}, ensure_ascii=False, default=str)
+    pj = json.dumps(protocol or {}, ensure_ascii=False, default=str)
     if uses_postgres():
         pool = await get_pg_pool()
         async with pool.acquire() as conn:
-            await conn.execute("UPDATE import_runs SET finished_at=NOW(), imported=$1, updated=$2, errors=$3, status=$4, error_message=$5 WHERE id=$6", imported, updated, errors, status, error_message[:2000], run_id)
+            await conn.execute(
+                "UPDATE import_runs SET finished_at=NOW(), imported=$1, updated=$2, errors=$3, skipped=$4, created_count=$5, updated_count=$6, variants_linked=$7, status=$8, error_message=$9, summary_json=$10::jsonb, protocol_json=$11::jsonb WHERE id=$12",
+                imported, updated, errors, skipped, cc, uc, variants_linked, run_status, (error_message or "")[:4000], sj, pj, run_id,
+            )
         return
     async with get_connection() as db:
-        await db.execute("UPDATE import_runs SET finished_at=?, imported=?, updated=?, errors=?, status=?, error_message=? WHERE id=?", (utc_now(), imported, updated, errors, status, error_message[:2000], run_id))
+        await db.execute(
+            "UPDATE import_runs SET finished_at=?, imported=?, updated=?, errors=?, skipped=?, created_count=?, updated_count=?, variants_linked=?, status=?, error_message=?, summary_json=?, protocol_json=? WHERE id=?",
+            (utc_now(), imported, updated, errors, skipped, cc, uc, variants_linked, run_status, (error_message or "")[:4000], sj, pj, run_id),
+        )
         await db.commit()
 
 
@@ -5630,3 +6547,274 @@ async def finance_overview() -> dict[str, Any]:
         "settlements": serialize_amounts(settlements, ("gross_amount", "fees_amount", "net_amount")),
         "reconciliations": [{"status": status, "count": count} for status, count in sorted(reconciliations.items())],
     }
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Catalog extensions: categories / variants / attributes / media / imports
+# ════════════════════════════════════════════════════════════════════════════
+
+def _slugify(value: str) -> str:
+    import re as _re
+    v = (value or "").strip().lower()
+    v = _re.sub(r"[^a-z0-9]+", "-", v)
+    return _re.sub(r"-+", "-", v).strip("-") or "category"
+
+
+async def upsert_category(*, name: str, parent_id: str = "", external_matterhorn_id: str = "", path: str = "", description: str = "", source_system: str = "", marketplace_mappings: dict[str, Any] | None = None, category_id: str | None = None) -> dict[str, Any]:
+    name = str(name or "").strip()
+    if not name:
+        raise ValueError("Category name required")
+    parent_id = str(parent_id or "")
+    source_system = str(source_system or "")
+    slug = _slugify(path or name)
+    cid = str(category_id or external_matterhorn_id or f"cat-{_slugify(source_system+'-'+parent_id+'-'+name)}")
+    mm = _json_dump(marketplace_mappings or {}, {})
+    now = utc_now()
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """INSERT INTO categories(id,name,slug,parent_id,external_matterhorn_id,path,description,source_system,marketplace_mappings_json,created_at,updated_at)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,NOW(),NOW())
+                   ON CONFLICT(id) DO UPDATE SET name=EXCLUDED.name,slug=EXCLUDED.slug,parent_id=EXCLUDED.parent_id,external_matterhorn_id=EXCLUDED.external_matterhorn_id,path=EXCLUDED.path,description=EXCLUDED.description,source_system=EXCLUDED.source_system,marketplace_mappings_json=EXCLUDED.marketplace_mappings_json,updated_at=NOW()
+                   RETURNING *""",
+                cid, name, slug, parent_id, str(external_matterhorn_id or ""), str(path or name), str(description or ""), source_system, mm,
+            )
+            if row is None:
+                # fallback by unique tuple if id differs
+                row = await conn.fetchrow("SELECT * FROM categories WHERE name=$1 AND parent_id=$2 AND source_system=$3", name, parent_id, source_system)
+        return _decode_json_fields(dict(row), ("marketplace_mappings_json",)) if row else {"id": cid, "name": name}
+    async with get_connection() as db:
+        await db.execute(
+            """INSERT INTO categories(id,name,slug,parent_id,external_matterhorn_id,path,description,source_system,marketplace_mappings_json,created_at,updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(id) DO UPDATE SET name=excluded.name,slug=excluded.slug,parent_id=excluded.parent_id,external_matterhorn_id=excluded.external_matterhorn_id,path=excluded.path,description=excluded.description,source_system=excluded.source_system,marketplace_mappings_json=excluded.marketplace_mappings_json,updated_at=excluded.updated_at""",
+            (cid, name, slug, parent_id, str(external_matterhorn_id or ""), str(path or name), str(description or ""), source_system, mm, now, now),
+        )
+        await db.commit()
+        cur = await db.execute("SELECT * FROM categories WHERE id=?", (cid,))
+        row = await cur.fetchone(); await cur.close()
+        if row is None:
+            cur = await db.execute("SELECT * FROM categories WHERE name=? AND parent_id=? AND source_system=?", (name, parent_id, source_system))
+            row = await cur.fetchone(); await cur.close()
+        return _decode_json_fields(dict(row), ("marketplace_mappings_json",)) if row else {"id": cid, "name": name}
+
+
+async def list_categories(limit: int = 500) -> list[dict[str, Any]]:
+    limit = min(max(limit,1),2000)
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("SELECT * FROM categories ORDER BY path ASC, name ASC LIMIT $1", limit)
+        return [_decode_json_fields(dict(r), ("marketplace_mappings_json",)) for r in rows]
+    async with get_connection() as db:
+        cur = await db.execute("SELECT * FROM categories ORDER BY path ASC, name ASC LIMIT ?", (limit,))
+        rows = await cur.fetchall(); await cur.close()
+        return [_decode_json_fields(dict(r), ("marketplace_mappings_json",)) for r in rows]
+
+
+async def set_product_categories(product_sku: str, category_ids: list[str], *, primary_id: str | None = None, marketplace_mappings: dict[str, Any] | None = None, replace: bool = True) -> None:
+    now = utc_now(); mm = _json_dump(marketplace_mappings or {}, {})
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                if replace:
+                    await conn.execute("DELETE FROM product_categories WHERE product_sku=$1", product_sku)
+                for cid in category_ids:
+                    if not cid: continue
+                    await conn.execute(
+                        """INSERT INTO product_categories(product_sku,category_id,is_primary,marketplace_mappings_json,created_at)
+                           VALUES ($1,$2,$3,$4::jsonb,NOW()) ON CONFLICT(product_sku,category_id) DO UPDATE SET is_primary=EXCLUDED.is_primary, marketplace_mappings_json=EXCLUDED.marketplace_mappings_json""",
+                        product_sku, str(cid), str(cid)==str(primary_id or (category_ids[0] if category_ids else "")), mm,
+                    )
+        return
+    async with get_connection() as db:
+        if replace:
+            await db.execute("DELETE FROM product_categories WHERE product_sku=?", (product_sku,))
+        for cid in category_ids:
+            if not cid: continue
+            await db.execute(
+                """INSERT INTO product_categories(product_sku,category_id,is_primary,marketplace_mappings_json,created_at)
+                   VALUES (?,?,?,?,?) ON CONFLICT(product_sku,category_id) DO UPDATE SET is_primary=excluded.is_primary, marketplace_mappings_json=excluded.marketplace_mappings_json""",
+                (product_sku, str(cid), 1 if str(cid)==str(primary_id or (category_ids[0] if category_ids else "")) else 0, mm, now),
+            )
+        await db.commit()
+
+
+async def replace_product_variants(parent_sku: str, variants: list[dict[str, Any]]) -> int:
+    now = utc_now(); count=0
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute("DELETE FROM product_variants WHERE parent_sku=$1", parent_sku)
+                for v in variants or []:
+                    vs = str(v.get("sku") or v.get("variant_sku") or "").strip()
+                    if not vs: continue
+                    count += 1
+                    await conn.execute(
+                        """INSERT INTO product_variants(id,parent_sku,sku,external_matterhorn_id,title,ean,barcode,supplier_price,sale_price,stock_quantity,reserved_quantity,available_quantity,weight_net_kg,weight_gross_kg,length_cm,width_cm,height_cm,attributes_json,raw_source_data_json,status,source_hash,created_at,updated_at)
+                           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18::jsonb,$19::jsonb,$20,$21,NOW(),NOW())
+                           ON CONFLICT(sku) DO UPDATE SET parent_sku=EXCLUDED.parent_sku,external_matterhorn_id=EXCLUDED.external_matterhorn_id,title=EXCLUDED.title,ean=EXCLUDED.ean,barcode=EXCLUDED.barcode,supplier_price=EXCLUDED.supplier_price,sale_price=EXCLUDED.sale_price,stock_quantity=EXCLUDED.stock_quantity,reserved_quantity=EXCLUDED.reserved_quantity,available_quantity=EXCLUDED.available_quantity,weight_net_kg=EXCLUDED.weight_net_kg,weight_gross_kg=EXCLUDED.weight_gross_kg,length_cm=EXCLUDED.length_cm,width_cm=EXCLUDED.width_cm,height_cm=EXCLUDED.height_cm,attributes_json=EXCLUDED.attributes_json,raw_source_data_json=EXCLUDED.raw_source_data_json,status=EXCLUDED.status,source_hash=EXCLUDED.source_hash,updated_at=NOW()""",
+                        str(v.get("id") or f"var-{parent_sku}-{vs}"), parent_sku, vs, str(v.get("external_matterhorn_id") or v.get("external_id") or ""), str(v.get("title") or v.get("name") or ""),
+                        str(v.get("ean") or ""), str(v.get("barcode") or v.get("ean") or ""), _coerce_num(v.get("supplier_price", v.get("purchase_price", 0))), _coerce_num(v.get("sale_price", v.get("price", 0))),
+                        _coerce_int(v.get("stock_quantity", v.get("stock", 0))), _coerce_int(v.get("reserved_quantity", 0)), max(_coerce_int(v.get("stock_quantity", v.get("stock", 0))) - _coerce_int(v.get("reserved_quantity", 0)), 0),
+                        _coerce_num(v.get("weight_net_kg", 0)), _coerce_num(v.get("weight_gross_kg", 0)), _coerce_num(v.get("length_cm", 0)), _coerce_num(v.get("width_cm", 0)), _coerce_num(v.get("height_cm", 0)),
+                        _json_dump(v.get("attributes_json") or v.get("attributes") or {}, {}), _json_dump(v.get("raw_source_data_json") or v.get("raw_data") or {}, {}), str(v.get("status") or "active"), str(v.get("source_hash") or ""),
+                    )
+                await conn.execute("UPDATE products SET has_variants=$1 WHERE sku=$2", count>0, parent_sku)
+        return count
+    async with get_connection() as db:
+        await db.execute("DELETE FROM product_variants WHERE parent_sku=?", (parent_sku,))
+        for v in variants or []:
+            vs = str(v.get("sku") or v.get("variant_sku") or "").strip()
+            if not vs: continue
+            count += 1
+            sq = _coerce_int(v.get("stock_quantity", v.get("stock", 0))); rq = _coerce_int(v.get("reserved_quantity", 0))
+            await db.execute(
+                """INSERT INTO product_variants(id,parent_sku,sku,external_matterhorn_id,title,ean,barcode,supplier_price,sale_price,stock_quantity,reserved_quantity,available_quantity,weight_net_kg,weight_gross_kg,length_cm,width_cm,height_cm,attributes_json,raw_source_data_json,status,source_hash,created_at,updated_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                   ON CONFLICT(sku) DO UPDATE SET parent_sku=excluded.parent_sku,external_matterhorn_id=excluded.external_matterhorn_id,title=excluded.title,ean=excluded.ean,barcode=excluded.barcode,supplier_price=excluded.supplier_price,sale_price=excluded.sale_price,stock_quantity=excluded.stock_quantity,reserved_quantity=excluded.reserved_quantity,available_quantity=excluded.available_quantity,weight_net_kg=excluded.weight_net_kg,weight_gross_kg=excluded.weight_gross_kg,length_cm=excluded.length_cm,width_cm=excluded.width_cm,height_cm=excluded.height_cm,attributes_json=excluded.attributes_json,raw_source_data_json=excluded.raw_source_data_json,status=excluded.status,source_hash=excluded.source_hash,updated_at=excluded.updated_at""",
+                (str(v.get("id") or f"var-{parent_sku}-{vs}"), parent_sku, vs, str(v.get("external_matterhorn_id") or v.get("external_id") or ""), str(v.get("title") or v.get("name") or ""),
+                 str(v.get("ean") or ""), str(v.get("barcode") or v.get("ean") or ""), _coerce_num(v.get("supplier_price", v.get("purchase_price", 0))), _coerce_num(v.get("sale_price", v.get("price", 0))),
+                 sq, rq, max(sq-rq,0), _coerce_num(v.get("weight_net_kg", 0)), _coerce_num(v.get("weight_gross_kg", 0)), _coerce_num(v.get("length_cm", 0)), _coerce_num(v.get("width_cm", 0)), _coerce_num(v.get("height_cm", 0)),
+                 _json_dump(v.get("attributes_json") or v.get("attributes") or {}, {}), _json_dump(v.get("raw_source_data_json") or v.get("raw_data") or {}, {}), str(v.get("status") or "active"), str(v.get("source_hash") or ""), now, now),
+            )
+        await db.execute("UPDATE products SET has_variants=? WHERE sku=?", (1 if count>0 else 0, parent_sku))
+        await db.commit()
+    return count
+
+
+async def replace_product_attributes(product_sku: str, attributes: list[dict[str, Any]], *, variant_sku: str = "") -> int:
+    now = utc_now(); count=0
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                if variant_sku:
+                    await conn.execute("DELETE FROM product_attributes WHERE product_sku=$1 AND variant_sku=$2", product_sku, variant_sku)
+                else:
+                    await conn.execute("DELETE FROM product_attributes WHERE product_sku=$1", product_sku)
+                for a in attributes or []:
+                    name = str(a.get("name") or a.get("key") or "").strip()
+                    if not name: continue
+                    value = str(a.get("value") if a.get("value") is not None else a.get("val") or "")
+                    vs = str(a.get("variant_sku") or variant_sku or "")
+                    count += 1
+                    aid = str(a.get("id") or f"attr-{product_sku}-{vs}-{name}-{abs(hash((name,value,vs)))%10**8}")
+                    await conn.execute(
+                        """INSERT INTO product_attributes(id,product_sku,variant_sku,name,value,unit,is_filterable,is_variant,source_field,extra_json,created_at,updated_at)
+                           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,NOW(),NOW())
+                           ON CONFLICT(product_sku,variant_sku,name,value) DO UPDATE SET unit=EXCLUDED.unit,is_filterable=EXCLUDED.is_filterable,is_variant=EXCLUDED.is_variant,source_field=EXCLUDED.source_field,extra_json=EXCLUDED.extra_json,updated_at=NOW()""",
+                        aid, product_sku, vs, name, value, str(a.get("unit") or ""), bool(a.get("is_filterable", False)), bool(a.get("is_variant", False) or vs), str(a.get("source_field") or a.get("source") or ""), _json_dump(a.get("extra_json") or a.get("extra") or {}, {}),
+                    )
+        return count
+    async with get_connection() as db:
+        if variant_sku:
+            await db.execute("DELETE FROM product_attributes WHERE product_sku=? AND variant_sku=?", (product_sku, variant_sku))
+        else:
+            await db.execute("DELETE FROM product_attributes WHERE product_sku=?", (product_sku,))
+        for a in attributes or []:
+            name = str(a.get("name") or a.get("key") or "").strip()
+            if not name: continue
+            value = str(a.get("value") if a.get("value") is not None else a.get("val") or "")
+            vs = str(a.get("variant_sku") or variant_sku or "")
+            count += 1
+            aid = str(a.get("id") or f"attr-{product_sku}-{vs}-{name}-{abs(hash((name,value,vs)))%10**8}")
+            await db.execute(
+                """INSERT INTO product_attributes(id,product_sku,variant_sku,name,value,unit,is_filterable,is_variant,source_field,extra_json,created_at,updated_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+                   ON CONFLICT(product_sku,variant_sku,name,value) DO UPDATE SET unit=excluded.unit,is_filterable=excluded.is_filterable,is_variant=excluded.is_variant,source_field=excluded.source_field,extra_json=excluded.extra_json,updated_at=excluded.updated_at""",
+                (aid, product_sku, vs, name, value, str(a.get("unit") or ""), 1 if a.get("is_filterable") else 0, 1 if (a.get("is_variant") or vs) else 0, str(a.get("source_field") or a.get("source") or ""), _json_dump(a.get("extra_json") or a.get("extra") or {}, {}), now, now),
+            )
+        await db.commit()
+    return count
+
+
+async def replace_product_media(product_sku: str, media: list[dict[str, Any]]) -> int:
+    now = utc_now(); count=0
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute("DELETE FROM product_media WHERE product_sku=$1", product_sku)
+                for i,m in enumerate(media or []):
+                    url = str(m.get("url") or m.get("src") or "").strip()
+                    if not url: continue
+                    count += 1
+                    mid = str(m.get("id") or f"media-{product_sku}-{i}")
+                    await conn.execute(
+                        """INSERT INTO product_media(id,product_sku,variant_sku,media_type,url,position,title,alt_text,metadata_json,created_at,updated_at)
+                           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,NOW(),NOW())""",
+                        mid, product_sku, str(m.get("variant_sku") or ""), str(m.get("media_type") or m.get("type") or "image"), url, _coerce_int(m.get("position", i)), str(m.get("title") or ""), str(m.get("alt_text") or m.get("alt") or ""), _json_dump(m.get("metadata_json") or m.get("metadata") or {}, {}),
+                    )
+        return count
+    async with get_connection() as db:
+        await db.execute("DELETE FROM product_media WHERE product_sku=?", (product_sku,))
+        for i,m in enumerate(media or []):
+            url = str(m.get("url") or m.get("src") or "").strip()
+            if not url: continue
+            count += 1
+            mid = str(m.get("id") or f"media-{product_sku}-{i}")
+            await db.execute(
+                """INSERT INTO product_media(id,product_sku,variant_sku,media_type,url,position,title,alt_text,metadata_json,created_at,updated_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                (mid, product_sku, str(m.get("variant_sku") or ""), str(m.get("media_type") or m.get("type") or "image"), url, _coerce_int(m.get("position", i)), str(m.get("title") or ""), str(m.get("alt_text") or m.get("alt") or ""), _json_dump(m.get("metadata_json") or m.get("metadata") or {}, {}), now, now),
+            )
+        await db.commit()
+    return count
+
+
+async def upsert_product_aggregate(data: dict[str, Any], *, sync_rules: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Upsert product + related categories/variants/attributes/media in a best-effort transactional flow."""
+    sku = str(data.get("sku") or "").strip()
+    if not sku:
+        raise ValueError("sku required")
+    changed = await upsert_product(
+        sku=sku,
+        title=str(data.get("title") or data.get("name") or sku),
+        category=str(data.get("category") or ""),
+        supplier_price=_coerce_num(data.get("supplier_price", data.get("purchase_price", data.get("price", 0)))),
+        stock=_coerce_int(data.get("stock", data.get("stock_quantity", 0))),
+        source_hash=str(data.get("source_hash") or ""),
+        raw_description=str(data.get("raw_description") or data.get("description") or ""),
+        status=str(data.get("status") or "active"),
+        sync_rules=sync_rules or data.get("sync_rules") or {},
+        **{k:v for k,v in data.items() if k not in {"sku","title","category","supplier_price","stock","source_hash","raw_description","status"}},
+    )
+    # categories
+    cat_names = data.get("categories") or data.get("category_names") or []
+    cat_ids: list[str] = []
+    primary_id = None
+    if isinstance(cat_names, str):
+        cat_names = [c.strip() for c in cat_names.replace(">", "/").split("/") if c.strip()] or ([cat_names] if cat_names.strip() else [])
+    for idx,c in enumerate(cat_names or []):
+        if isinstance(c, dict):
+            cobj = await upsert_category(name=str(c.get("name") or c.get("title") or ""), parent_id=str(c.get("parent_id") or ""), external_matterhorn_id=str(c.get("external_matterhorn_id") or c.get("external_id") or ""), path=str(c.get("path") or c.get("name") or ""), source_system=str(c.get("source_system") or data.get("source_system") or ""), marketplace_mappings=c.get("marketplace_mappings") or c.get("marketplace_mappings_json") or {})
+        else:
+            cobj = await upsert_category(name=str(c), path=str(c), source_system=str(data.get("source_system") or ""))
+        cid = str(cobj.get("id") or "")
+        if cid:
+            cat_ids.append(cid)
+            if idx==0: primary_id = cid
+    if not cat_ids and str(data.get("category") or "").strip():
+        cobj = await upsert_category(name=str(data.get("category")), path=str(data.get("category")), source_system=str(data.get("source_system") or ""))
+        if cobj.get("id"): cat_ids=[str(cobj["id"])]; primary_id=cat_ids[0]
+    if cat_ids:
+        await set_product_categories(sku, cat_ids, primary_id=primary_id, replace=True)
+
+    variants = data.get("variants") or []
+    vcount = await replace_product_variants(sku, variants) if (isinstance(variants, list)) else 0
+    attributes = data.get("attributes") or data.get("dynamic_attributes") or []
+    acount = await replace_product_attributes(sku, attributes) if isinstance(attributes, list) else 0
+    media = data.get("media") or []
+    if not media:
+        media=[]
+        if data.get("main_image_url"): media.append({"url": data.get("main_image_url"), "position": 0, "media_type":"image"})
+        for i,u in enumerate((data.get("gallery_json") or data.get("images") or []) or [], start=1):
+            if isinstance(u, dict): media.append(u)
+            elif str(u).strip(): media.append({"url": str(u), "position": i, "media_type":"image"})
+    mcount = await replace_product_media(sku, media) if isinstance(media, list) else 0
+    return {"sku": sku, "changed": bool(changed), "categories_linked": len(cat_ids), "variants_linked": vcount, "attributes_saved": acount, "media_saved": mcount}
+
