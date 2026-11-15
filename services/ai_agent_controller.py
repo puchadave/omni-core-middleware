@@ -70,8 +70,9 @@ class CreativeToolInput(BaseModel):
     action: Literal[
         "capabilities", "list_models", "list_projects", "list_jobs", "list_assets",
         "list_model_profiles", "seed_model_profiles", "plan_image_generation",
-        "plan_product_photography", "execute_job"
+        "plan_product_photography", "plan_creative", "execute_job"
     ]
+    capability: str = Field(default="image_generation", max_length=64)
     job_id: str = Field(default="", max_length=128)
     prompt: str = Field(default="", max_length=8000)
     negative_prompt: str = Field(default="", max_length=4000)
@@ -125,9 +126,10 @@ TOOL_DEFINITIONS = [
     }},
     {"type": "function", "function": {
         "name": "multimodal_creative",
-        "description": "Multimodal creative engine: read capabilities/models/projects/jobs/assets/profiles or PREPARE image/product-photography generation plans and job execution (execution requires confirmation). Uses configured OmniRoute/provider capabilities; never fabricates outputs.",
+        "description": "Multimodal creative engine (Tool Registry): read capabilities/routing/models/projects/jobs/assets/profiles or PREPARE creative plans and execution for image, editing, upscaling/removal, video (text/image/video), audio/speech/transcription and multimodal analysis via capability-based routing/fallback/cost hooks. Generation/execution always requires confirmation and uses only configured OmniRoute/provider capabilities; never fabricates outputs.",
         "parameters": {"type": "object", "properties": {
-            "action": {"type": "string", "enum": ["capabilities", "list_models", "list_projects", "list_jobs", "list_assets", "list_model_profiles", "seed_model_profiles", "plan_image_generation", "plan_product_photography", "execute_job"]},
+            "action": {"type": "string", "enum": ["capabilities", "list_models", "list_projects", "list_jobs", "list_assets", "list_model_profiles", "seed_model_profiles", "plan_image_generation", "plan_product_photography", "plan_creative", "execute_job"]},
+            "capability": {"type": "string", "enum": ["text_generation","image_generation","image_editing","image_analysis","image_upscaling","background_removal","inpainting","outpainting","text_to_video","image_to_video","video_to_video","video_analysis","audio_generation","speech_generation","transcription","multimodal_understanding"]},
             "job_id": {"type": "string"}, "prompt": {"type": "string"}, "negative_prompt": {"type": "string"},
             "variants": {"type": "integer"}, "product_sku": {"type": "string"}, "model_profile_id": {"type": "string"},
             "models": {"type": "array", "items": {"type": "string"}}, "scene": {"type": "string"}, "shot_type": {"type": "string"},
@@ -210,6 +212,7 @@ async def _creative_read(payload: CreativeToolInput, runtime: Any = None) -> dic
 
 async def _prepare_creative_action(payload: CreativeToolInput, *, actor: str, prompt: str, conversation_id: str, runtime: Any = None) -> dict[str, Any]:
     from services.ai_photoshooting import ImageGenerationAgent, ProductPhotographyAgent
+    from services.creative_agents import CreativeOrchestrator
     if payload.action == "seed_model_profiles":
         diff = {"action": "seed_model_profiles", "note": "Seed canonical model identity profiles (incl. Luna/Raven/Nyx) from references."}
         summary = "Model-Profile (kanonisch) seeden/aktualisieren"
@@ -223,6 +226,11 @@ async def _prepare_creative_action(payload: CreativeToolInput, *, actor: str, pr
         plan = await ProductPhotographyAgent.plan(payload.product_sku, models=payload.models, scene=payload.scene, shot_type=payload.shot_type, variants=payload.variants, pose=payload.pose, camera=payload.camera, lighting=payload.lighting, aspect_ratio=payload.aspect_ratio, runtime=runtime)
         diff = {"action": payload.action, "product_sku": payload.product_sku, "scene": payload.scene, "shot_type": payload.shot_type, "models": payload.models, "variants": payload.variants, "routing": plan.get("routing"), "executable": plan.get("executable")}
         summary = f"Produkt-/Model-Fotoshooting vorbereiten: {payload.product_sku or 'Produkt'}"
+        args = {**payload.model_dump(), "_plan": plan}
+    elif payload.action == "plan_creative":
+        plan = await CreativeOrchestrator.plan(payload.capability, runtime=runtime, prompt=payload.prompt, negative_prompt=payload.negative_prompt, variants=payload.variants, product_sku=payload.product_sku, model_profile_id=payload.model_profile_id, models=payload.models, scene=payload.scene, shot_type=payload.shot_type, pose=payload.pose, camera=payload.camera, lighting=payload.lighting, aspect_ratio=payload.aspect_ratio)
+        diff = {"action": payload.action, "capability": payload.capability, "agent": plan.get("agent"), "executable": plan.get("executable"), "routing": plan.get("routing"), "estimated_cost": (plan.get("routing") or {}).get("estimated_cost") if isinstance(plan.get("routing"), dict) else None, "variants": payload.variants}
+        summary = f"Creative-Plan ({payload.capability}) vorbereiten"
         args = {**payload.model_dump(), "_plan": plan}
     elif payload.action == "execute_job":
         diff = {"action": "execute_job", "job_id": payload.job_id}
@@ -326,6 +334,7 @@ async def execute_confirmed(action_id: str, *, actor: str, runtime: Any = None) 
             payload = CreativeToolInput.model_validate(args)
             from services.creative_foundation import ModelIdentityManager, CreativeJobService
             from services.ai_photoshooting import ImageGenerationAgent, ProductPhotographyAgent
+            from services.creative_agents import CreativeOrchestrator
             if payload.action == "seed_model_profiles":
                 seeded = await ModelIdentityManager.seed_canonical_profiles()
                 result = {"status": "seeded", "count": len(seeded), "profiles": [s.get("slug") for s in seeded]}
@@ -337,8 +346,11 @@ async def execute_confirmed(action_id: str, *, actor: str, runtime: Any = None) 
                 plan = args.get("_plan") or await ProductPhotographyAgent.plan(payload.product_sku, models=payload.models, scene=payload.scene, shot_type=payload.shot_type, variants=payload.variants, pose=payload.pose, camera=payload.camera, lighting=payload.lighting, aspect_ratio=payload.aspect_ratio, runtime=runtime)
                 exec_res = await ProductPhotographyAgent.execute_plan(plan, actor=actor, project_id=payload.project_id or None, runtime=runtime)
                 result = {"status": exec_res.get("status"), "job": exec_res.get("job"), "outputs": exec_res.get("outputs"), "fidelity": exec_res.get("fidelity")}
+            elif payload.action == "plan_creative":
+                plan = args.get("_plan") or await CreativeOrchestrator.plan(payload.capability, runtime=runtime, prompt=payload.prompt, negative_prompt=payload.negative_prompt, variants=payload.variants, product_sku=payload.product_sku, model_profile_id=payload.model_profile_id, models=payload.models, scene=payload.scene, shot_type=payload.shot_type, pose=payload.pose, camera=payload.camera, lighting=payload.lighting, aspect_ratio=payload.aspect_ratio)
+                exec_res = await CreativeOrchestrator.execute(plan, actor=actor, project_id=payload.project_id or None, runtime=runtime)
+                result = {"status": exec_res.get("status"), "job": exec_res.get("job"), "outputs": exec_res.get("outputs"), "routing": exec_res.get("routing")}
             elif payload.action == "execute_job":
-                # generic execute of existing planned job not implemented beyond plan-exec flow
                 job = await CreativeJobService.get_job(payload.job_id) if payload.job_id else None
                 result = {"status": "not_executed", "reason": "direct_job_execute_not_supported", "job": job}
             else:

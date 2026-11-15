@@ -125,14 +125,23 @@ class CreativeCapabilityRegistry:
         candidates = [m for m in reg["models"] if capability in (m.get("capabilities") or []) and m.get("is_active", True)]
         if not candidates:
             return {"ok": False, "capability": capability, "reason": "no_active_model_for_capability", "candidates": []}
-        # order by cost then context as generic dynamic policy
-        candidates.sort(key=lambda m: (float(m.get("input_price_per_1k") or 0) + float(m.get("image_price_per_image") or 0), -(m.get("context_window") or 0)))
+        def cost_key(m: dict[str, Any]) -> float:
+            return float(m.get("input_price_per_1k") or 0) + float(m.get("output_price_per_1k") or 0) + float(m.get("image_price_per_image") or 0)
+        candidates.sort(key=lambda m: (cost_key(m), -(m.get("context_window") or 0)))
+        req = request or {}
+        units = float(req.get("estimated_units") or 1)
+        def est(m: dict[str, Any]) -> dict[str, Any]:
+            unit = (float(m.get("image_price_per_image") or 0) or (float(m.get("input_price_per_1k") or 0) + float(m.get("output_price_per_1k") or 0)) or 0)
+            return {"currency": "USD", "unit_cost": unit, "estimated_units": units, "estimated_total": round(unit * units, 6)}
+        selected = candidates[0]
         return {
             "ok": True,
             "capability": capability,
-            "selected": {"provider_id": candidates[0].get("provider_id"), "model_id": candidates[0].get("model_id") or candidates[0].get("id"), "model_name": candidates[0].get("model_name")},
-            "fallbacks": [{"provider_id": c.get("provider_id"), "model_id": c.get("model_id") or c.get("id")} for c in candidates[1:5]],
+            "selected": {"provider_id": selected.get("provider_id"), "model_id": selected.get("model_id") or selected.get("id"), "model_name": selected.get("model_name"), "cost": est(selected)},
+            "fallbacks": [{"provider_id": c.get("provider_id"), "model_id": c.get("model_id") or c.get("id"), "model_name": c.get("model_name"), "cost": est(c)} for c in candidates[1:5]],
+            "estimated_cost": est(selected),
             "policy": "capability_match_cost_aware",
+            "candidates_count": len(candidates),
         }
 
 
