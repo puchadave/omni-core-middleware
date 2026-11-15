@@ -331,6 +331,12 @@ async def dashboard(request: Request) -> HTMLResponse:
     )
 
 
+@app.get("/admin", response_class=HTMLResponse)
+async def admin_control_center_page(request: Request) -> HTMLResponse:
+    """Render the unified administration and configuration control center."""
+    return templates.TemplateResponse("admin_control_center.html", {"request": request})
+
+
 @app.get("/admin/products", response_class=HTMLResponse)
 async def products_page(request: Request) -> HTMLResponse:
     """Render product administration."""
