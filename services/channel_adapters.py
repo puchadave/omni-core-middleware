@@ -6,12 +6,14 @@ Each adapter reads platform-specific KI-Inhalte from the PostgreSQL channel_cont
 
 from __future__ import annotations
 
+import os
+
 import json
 import logging
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from services.omni_router_client import OmniRouterClient
+from services.omniroute_client import OmniRouteClient
 
 logger = logging.getLogger("omni.channels")
 
@@ -20,7 +22,10 @@ class ChannelAdapter:
     """Base class for all channel adapters."""
 
     def __init__(self, client=None, db_session=None) -> None:
-        self.client = client or OmniRouterClient()
+        self.client = client or OmniRouteClient(
+            os.getenv('OMNI_ROUTE_BASE_URL', 'http://localhost:20128'),
+            os.getenv('OMNI_ROUTE_API_KEY', 'test-key'),
+        )
         self.db_session = db_session
 
     async def fetch_channel_content(self, sku: str, channel_name: str) -> Optional[Dict[str, Any]]:

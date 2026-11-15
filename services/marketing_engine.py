@@ -9,12 +9,13 @@ Provides automated content generation and marketing campaign creation:
 
 from __future__ import annotations
 
+import os
 import json
 import logging
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from services.omni_router_client import OmniRouterClient
+from services.omniroute_client import OmniRouteClient
 
 logger = logging.getLogger("omni.marketing")
 
@@ -22,8 +23,11 @@ logger = logging.getLogger("omni.marketing")
 class MarketingEngine:
     """Intelligent marketing engine for automated campaign generation."""
 
-    def __init__(self, client: OmniRouterClient | None = None) -> None:
-        self.client = client or OmniRouterClient()
+    def __init__(self, client: OmniRouteClient | None = None) -> None:
+        self.client = client or OmniRouteClient(
+            os.getenv('OMNI_ROUTE_BASE_URL', 'http://localhost:20128'),
+            os.getenv('OMNI_ROUTE_API_KEY', 'test-key'),
+        )
         # Campaign configuration
         self.ad_formats = {
             "meta": {"aspect_ratio": "1:1", "max_text": "125"},

@@ -1,49 +1,48 @@
+# Stage 1: Build dependencies
 FROM python:3.11-alpine AS builder
 
-# Install system dependencies for asyncpg and pydantic
 RUN apk add --no-cache --virtual=.build-deps \
-        gcc \
-        musl-dev \
-        libpq-dev \
-        jpeg-dev \
-        zlib-dev \
-        cargo \
-        cargo-doc \
-        cargo-html \
-    && pip install --no-cache-dir \
-        fastapi==0.115.0 \
-        uvicorn[standard]==0.32.0 \
-        uvloop==0.21.0 \
-        httpx==0.27.2 \
-        pydantic==2.10.2 \
-        pydantic-settings==2.6.0 \
-        aiosqlite==0.20.0 \
-        jinja2==3.1.4
+    gcc \
+    musl-dev \
+    libpq-dev \
+    cargo \
+    pkgconfig \
+    make
 
-# Runtime stage - only install production deps, remove build deps
+WORKDIR /build
+
+COPY requirements.txt .
+
+RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
+
+# Stage 2: Runtime
 FROM python:3.11-alpine
 
-# Install runtime dependencies
 RUN apk add --no-cache \
-        libpq \
-        tzdata \
-        su-exec
+    libpq \
+    sqlite-libs \
+    tzdata \
+    su-exec
 
-# Set working directory
 WORKDIR /app
 
-# Copy installed packages from builder
-COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
+COPY --from=builder /install /usr/local
 
-# Copy application code
 COPY . .
 
-# Create non-root user for security
-RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+RUN addgroup -S appgroup && adduser -S appuser -G appgroup \
+    && mkdir -p /app/data /app/logs \
+    && chown -R appuser:appgroup /app
+
 USER appuser
 
-# Expose the application port
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    DATABASE_PATH=/app/data/middleware.db
+
 EXPOSE 8000
 
-# Startup command with uvicorn and uvloop
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--loop", "uvloop"]
+HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+    CMD ["python3", "-c", "import asyncio; from services.omniroute_client import OmniRouteClient; import os; base_url = os.getenv('OMNI_ROUTE_BASE_URL', 'http://host.docker.internal:20128'); api_key = os.getenv('OMNI_ROUTE_API_KEY', 'test-client'); client = OmniRouteClient(base_url, api_key); asyncio.run(client.check_health())"]
+
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1", "--loop", "uvloop"]

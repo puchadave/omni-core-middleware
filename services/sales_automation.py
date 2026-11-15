@@ -1,10 +1,7 @@
-"""Sales Automation Module for Omni-Core ERP & BI Enterprise Edition.
+"""Sales Automation Engine for Omni-Core ERP & BI Enterprise Edition.
 
-Provides intelligent sales automation including:
-- Conversion optimization scoring
-- Fast-moving inventory detection
-- Smart pricing rules with margin protection
-- Cart/lead tracking integration
+Provides product intelligence, conversion intelligence, and smart pricing
+with 10% safety margin and configurable rule engine.
 """
 
 from __future__ import annotations
@@ -12,332 +9,468 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional
-
-from services.omni_router_client import OmniRouterClient
+from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger("omni.sales")
 
 
-class SalesAutomationEngine:
-    """Intelligent sales automation engine for conversion optimization and pricing."""
+def calculate_sales_velocity(
+    orders: List[Dict[str, Any]],
+    product_sku: str,
+    days: int = 30,
+) -> Dict[str, Any]:
+    """Calculate sales velocity for a product."""
+    cutoff = datetime.utcnow() - timedelta(days=days)
+    relevant = [
+        o for o in orders
+        if o.get("sku") == product_sku
+        and o.get("created_at", "") >= cutoff.isoformat()
+    ]
+    total_quantity = sum(o.get("quantity", 0) or 0 for o in relevant)
+    order_count = len(relevant)
+    avg_quantity = total_quantity / order_count if order_count else 0
+    daily_avg = total_quantity / days if days else 0
+    recent_cutoff = datetime.utcnow() - timedelta(days=7)
+    prev_cutoff = datetime.utcnow() - timedelta(days=14)
+    recent = [
+        o for o in orders
+        if o.get("sku") == product_sku
+        and recent_cutoff.isoformat() <= o.get("created_at", "") < datetime.utcnow().isoformat()
+    ]
+    prev = [
+        o for o in orders
+        if o.get("sku") == product_sku
+        and prev_cutoff.isoformat() <= o.get("created_at", "") < recent_cutoff.isoformat()
+    ]
+    recent_qty = sum(o.get("quantity", 0) or 0 for o in recent)
+    prev_qty = sum(o.get("quantity", 0) or 0 for o in prev)
+    trend = "stable"
+    if prev_qty > 0:
+        change_pct = (recent_qty - prev_qty) / prev_qty * 100
+        if change_pct > 10:
+            trend = "growing"
+        elif change_pct < -10:
+            trend = "declining"
+    return {
+        "product_sku": product_sku,
+        "daily_average": daily_avg,
+        "order_count_30d": order_count,
+        "total_quantity_30d": total_quantity,
+        "avg_quantity_per_order": avg_quantity,
+        "recent_7d_quantity": recent_qty,
+        "prev_7d_quantity": prev_qty,
+        "velocity_trend": trend,
+        "period_days": days,
+    }
 
-    def __init__(self, client: OmniRouterClient | None = None) -> None:
-        self.client = client or OmniRouterClient()
-        # Smart pricing configuration
-        self.min_margin_pct = 15.0  # Minimum gross margin percentage
-        self.stock_decay_factor = 0.90  # -10% buffer for buffered stock
-        self.velocity_window_days = 30  # Sales velocity observation window
 
-    async def calculate_conversion_score(self, product_sku: str, db_session) -> Dict[str, Any]:
-        """Calculate a conversion optimization score for a product (0-100)."""
+def calculate_abc_classification(
+    orders: List[Dict[str, Any]],
+    product_sku: str,
+    days: int = 365,
+) -> Dict[str, Any]:
+    """Classify product as A, B, or C based on sales velocity (Pareto principle)."""
+    vel = calculate_sales_velocity(orders, product_sku, days=days)
+    total_qty = vel["total_quantity_30d"]
+    # Simplified: A = top 20%, B = next 30%, C = rest
+    if total_qty == 0:
+        classification = "C"
+        velocity_score = 0
+    elif total_qty >= 100:
+        classification = "A"
+        velocity_score = 100
+    elif total_qty >= 30:
+        classification = "B"
+        velocity_score = 60
+    else:
+        classification = "C"
+        velocity_score = 20
 
-        from services.database import get_connection, close_connection
+    return {
+        "product_sku": product_sku,
+        "classification": classification,
+        "velocity_score": velocity_score,
+        "total_quantity_30d": total_qty,
+        "classification_days": days,
+    }
 
-        async with get_connection() as db:
-            # Get product data
-            product_result = await db.execute(
-                "SELECT sku, title, stock, buffered_stock, retail_price, supplier_price, "
-                "status FROM products WHERE sku = :sku",
-                {"sku": product_sku},
-            )
-            product = product_result.fetchone()
 
-            if not product:
-                return {"score": 0, "reason": "Product not found", "category": "unknown"}
+def detect_slow_movers(
+    orders: List[Dict[str, Any]],
+    product_sku: str,
+    days: int = 90,
+    threshold_qty: int = 5,
+) -> Dict[str, Any]:
+    """Detect products with low sales velocity (potential dead stock)."""
+    cutoff = datetime.utcnow() - timedelta(days=days)
+    relevant = [
+        o for o in orders
+        if o.get("sku") == product_sku
+        and o.get("created_at", "") >= cutoff.isoformat()
+    ]
+    total_qty = sum(o.get("quantity", 0) or 0 for o in relevant)
+    order_count = len(relevant)
+    is_slow_mover = total_qty <= threshold_qty
 
-            # Get recent order velocity
-            order_result = await db.execute(
-                """
-                SELECT COUNT(*) as order_count, 
-                       AVG(quantity) as avg_quantity
-                FROM orders 
-                WHERE sku = :sku 
-                AND created_at >= NOW() - INTERVAL '30 days'
-                """,
-                {"sku": product_sku},
-            )
-            order_data = order_result.fetchone()
+    return {
+        "product_sku": product_sku,
+        "is_slow_mover": is_slow_mover,
+        "total_quantity_90d": total_qty,
+        "order_count_90d": order_count,
+        "threshold_qty": threshold_qty,
+        "days_analyzed": days,
+    }
 
-            # Calculate velocity score (0-40 points)
-            velocity_score = 0
-            if order_data and order_data.order_count > 0:
-                velocity_score = min(40, float(order_data.order_count) * 5)
 
-            # Calculate stock/sale urgency score (0-30 points)
-            stock_score = 0
-            if product and product.stock > 0:
-                # Fast-moving stock gets higher score
-                stock_ratio = float(product.buffered_stock) / max(1, float(product.stock) or 1)
-                if stock_ratio < 0.2:
-                    stock_score = 30  # Very low stock - high urgency
-                elif stock_ratio < 0.5:
-                    stock_score = 20  # Low stock
-                elif stock_ratio < 0.8:
-                    stock_score = 10  # Medium stock
+def calculate_smart_price(
+    retail_price: float,
+    cost_price: float,
+    platform_fee_percent: float = 5.0,
+    shipping_cost: float = 0.0,
+    safety_margin_percent: float = 10.0,
+) -> Dict[str, Any]:
+    """Calculate smart price with 10% safety margin.
 
-            # Calculate price competitiveness score (0-30 points)
-            price_score = 0
-            if product and product.retail_price and product.supplier_price > 0:
-                margin_pct = ((float(product.retail_price) - float(product.supplier_price)) / float(product.retail_price)) * 100
-                if margin_pct >= self.min_margin_pct:
-                    # Good margin - score based on how competitive
-                    price_score = min(30, int(margin_pct / 5) * 3)
+    The 10% safety margin calculates the MINIMUM achievable price.
+    It does NOT simply deduct 10% from retail price.
+    Instead it computes the lowest price that still achieves a positive margin
+    after all costs (purchase + platform fees + shipping).
 
-            # Calculate status bonus (0-10 points)
-            status_score = 0
-            if product and product.status == "active":
-                status_score = 10
+    Args:
+        retail_price: Original retail price
+        cost_price: Base cost price (purchase price)
+        platform_fee_percent: Platform fee percentage (default 5%)
+        shipping_cost: Shipping cost per unit
+        safety_margin_percent: Safety margin percentage (default 10%)
 
-            total_score = velocity_score + stock_score + price_score + status_score
+    Returns:
+        Dict with calculated prices and margin information
+    """
+    # Calculate costs per unit
+    platform_fee_factor = platform_fee_percent / 100.0
+    total_cost_per_unit = cost_price + (retail_price * platform_fee_factor) + shipping_cost
 
-            return {
-                "score": min(100, total_score),
-                "velocity_score": velocity_score,
-                "stock_score": stock_score,
-                "price_score": price_score,
-                "status_score": status_score,
-                "details": {
-                    "recent_orders_30d": float(order_data.order_count) if order_data else 0,
-                    "buffered_stock": float(product.buffered_stock) if product else 0,
-                    "current_stock": float(product.stock) if product else 0,
-                    "margin_pct": round(((float(product.retail_price) - float(product.supplier_price)) / float(product.retail_price)) * 100, 2) if product and product.retail_price and product.supplier_price > 0 else 0,
-                    "status": product.status if product else "unknown",
-                },
-                "calculated_at": datetime.utcnow().isoformat(),
-            }
+    # Calculate minimum price with safety margin
+    # The safety margin ensures we don't price below cost + margin
+    min_price_with_margin = total_cost_per_unit * (1 + safety_margin_percent / 100.0)
 
-    async def smart_pricing_rule(
-        self, product_sku: str, db_session, market_data: Optional[Dict] = None
+    # Calculate gross margin at retail
+    gross_margin_at_retail = retail_price - total_cost_per_unit
+    gross_margin_pct_at_retail = (gross_margin_at_retail / retail_price * 100) if retail_price > 0 else 0
+
+    # Calculate margin percentage at minimum price
+    margin_at_min_price = min_price_with_margin - total_cost_per_unit
+    margin_pct_at_min_price = (margin_at_min_price / min_price_with_margin * 100) if min_price_with_margin > 0 else 0
+
+    # Determine recommendation
+    if gross_margin_at_retail > 0 and min_price_with_margin >= retail_price * 0.9:
+        recommendation = "keep_price"
+        price_change_pct = 0.0
+    elif min_price_with_margin < retail_price:
+        recommendation = "reduce_price"
+        price_change_pct = ((min_price_with_margin - retail_price) / retail_price) * 100
+    else:
+        recommendation = "increase_price"
+        price_change_pct = ((min_price_with_margin - retail_price) / retail_price) * 100
+
+    return {
+        "retail_price": retail_price,
+        "cost_price": cost_price,
+        "platform_fee_percent": platform_fee_percent,
+        "shipping_cost": shipping_cost,
+        "total_cost_per_unit": round(total_cost_per_unit, 2),
+        "min_price_with_10pct_safety_margin": round(min_price_with_margin, 2),
+        "gross_margin_at_retail": round(gross_margin_at_retail, 2),
+        "gross_margin_pct_at_retail": round(gross_margin_pct_at_retail, 2),
+        "margin_at_min_price": round(margin_at_min_price, 2),
+        "margin_pct_at_min_price": round(margin_pct_at_min_price, 2),
+        "recommendation": recommendation,
+        "price_change_pct": round(price_change_pct, 2),
+        "safety_margin_percent": safety_margin_percent,
+        "calculation_timestamp": datetime.utcnow().isoformat(),
+    }
+
+
+def calculate_conversion_rate(
+    orders: List[Dict[str, Any]],
+    product_sku: str,
+    visits: Optional[List[Dict[str, Any]]] = None,
+    days: int = 30,
+) -> Dict[str, Any]:
+    """Calculate conversion rate for a product."""
+    cutoff = datetime.utcnow() - timedelta(days=days)
+    relevant_orders = [
+        o for o in orders
+        if o.get("sku") == product_sku
+        and o.get("created_at", "") >= cutoff.isoformat()
+    ]
+
+    order_count = len(relevant_orders)
+    total_visits = 0
+
+    if visits:
+        relevant_visits = [
+            v for v in visits
+            if v.get("sku") == product_sku
+            and v.get("created_at", "") >= cutoff.isoformat()
+        ]
+        total_visits = len(relevant_visits)
+
+    conversion_rate = (order_count / total_visits * 100) if total_visits > 0 else 0
+
+    return {
+        "product_sku": product_sku,
+        "conversion_rate_pct": round(conversion_rate, 2),
+        "order_count_30d": order_count,
+        "total_visits_30d": total_visits,
+        "period_days": days,
+    }
+
+
+def analyze_funnel(
+    orders: List[Dict[str, Any]],
+    product_sku: str,
+    funnel_steps: List[str] | None = None,
+    days: int = 30,
+) -> Dict[str, Any]:
+    """Analyze sales funnel for a product."""
+    cutoff = datetime.utcnow() - timedelta(days=days)
+    relevant = [
+        o for o in orders
+        if o.get("sku") == product_sku
+        and o.get("created_at", "") >= cutoff.isoformat()
+    ]
+
+    total_start = len(relevant)
+
+    # Simplified funnel analysis based on order status/state
+    # In a real implementation, this would track steps like: view -> add_to_cart -> checkout -> purchase
+    step_counts = {}
+    if funnel_steps:
+        for step in funnel_steps:
+            step_counts[step] = len([
+                o for o in relevant
+                if o.get("status", "").lower() == step.lower()
+            ])
+    else:
+        # Default status-based funnel
+        statuses = ["viewed", "added_to_cart", "checked_out", "purchased"]
+        for step in statuses:
+            step_counts[step] = len([
+                o for o in relevant
+                if o.get("status", "").lower() == step.lower()
+            ])
+
+    last_step = funnel_steps[-1] if funnel_steps else "purchased"
+    last_step_count = step_counts.get(last_step, 0)
+
+    conversion_at_last_step = (last_step_count / total_start * 100) if total_start > 0 else 0
+
+    return {
+        "product_sku": product_sku,
+        "funnel_steps_defined": funnel_steps or ["viewed", "added_to_cart", "checked_out", "purchased"],
+        "total_started": total_start,
+        "last_step_count": last_step_count,
+        "conversion_at_last_step_pct": round(conversion_at_last_step, 2),
+        "funnel_drop-off": {
+            step: round((step_counts.get(step, 0) / total_start * 100) if total_start > 0 else 0, 2)
+            for step in (funnel_steps or ["viewed", "added_to_cart", "checked_out", "purchased"])
+        },
+        "period_days": days,
+    }
+
+
+class PricingRuleEngine:
+    """Configurable pricing rule engine with 10% safety margin.
+
+    Rules:
+    - Minimum price must not fall below cost + platform fees + shipping + 10% margin
+    - Price changes must be saved as suggestions first
+    - Production changes require explicit authorization
+    """
+
+    def __init__(
+        self,
+        safety_margin_percent: float = 10.0,
+        min_margin_pct: float = 15.0,
+        require_authorization: bool = True,
+    ) -> None:
+        self.safety_margin_percent = safety_margin_percent
+        self.min_margin_pct = min_margin_pct
+        self.require_authorization = require_authorization
+        self.rules: Dict[str, Dict[str, Any]] = {}
+        self.pending_changes: Dict[str, Dict[str, Any]] = {}
+
+    def add_rule(
+        self,
+        product_sku: str,
+        rule_name: str,
+        rule_config: Dict[str, Any],
+    ) -> None:
+        """Add a pricing rule for a product."""
+        if product_sku not in self.rules:
+            self.rules[product_sku] = {}
+        self.rules[product_sku][rule_name] = {
+            "config": rule_config,
+            "created_at": datetime.utcnow().isoformat(),
+        }
+        logger.info(f"Pricing rule '{rule_name}' added for {product_sku}")
+
+    def evaluate_price(
+        self,
+        product_sku: str,
+        retail_price: float,
+        cost_price: float,
+        platform_fee_percent: float = 5.0,
+        shipping_cost: float = 0.0,
     ) -> Dict[str, Any]:
-        """Apply smart pricing rules with margin protection based on stock and -10% buffer."""
+        """Evaluate price against rules and return recommendation."""
+        # Calculate base smart price
+        base = calculate_smart_price(
+            retail_price=retail_price,
+            cost_price=cost_price,
+            platform_fee_percent=platform_fee_percent,
+            shipping_cost=shipping_cost,
+            safety_margin_percent=self.safety_margin_percent,
+        )
 
-        from services.database import get_connection, close_connection
-
-        async with get_connection() as db:
-            # Get product data
-            product_result = await db.execute(
-                """
-                SELECT sku, title, stock, buffered_stock, retail_price, supplier_price, 
-                       status, ai_meta
-                FROM products WHERE sku = :sku
-                """,
-                {"sku": product_sku},
-            )
-            product = product_result.fetchone()
-
-            if not product:
-                return {"error": "Product not found", "sku": product_sku}
-
-            retail_price = float(product.retail_price) if product.retail_price else 0.0
-            supplier_price = float(product.supplier_price) if product.supplier_price else 0.0
-            stock = float(product.stock) if product.stock else 0
-            buffered_stock = float(product.buffered_stock) if product.buffered_stock else 0
-            margin_pct = ((retail_price - supplier_price) / retail_price) * 100 if retail_price > 0 else 0
-
-            # Determine current market position
-            pricing_action = "hold"
-            new_price = retail_price
-            reason = "No action needed - current price is optimal"
-
-            # Rule 1: Stock below 20% of buffered stock - protect margin
-            if stock > 0 and buffered_stock / stock < 0.2 and margin_pct < 25:
-                # Low stock + thin margin - increase price to protect margin
-                price_increase_pct = max(5.0, (25 - margin_pct) * 0.5)
-                new_price = round(retail_price * (1 + price_increase_pct / 100), 2)
-                pricing_action = "increase"
-                reason = f"Low stock alert: {stock:.0f} units stock, margin {margin_pct:.1f}% - price increased {price_increase_pct:.1f}% to protect margin"
-
-            # Rule 2: Stock well above buffered stock - competitive pricing
-            elif stock > 0 and buffered_stock / stock > 1.5 and margin_pct > 25:
-                # Good stock level, can afford competitive pricing
-                price_reduction_pct = min(8.0, (margin_pct - 20) * 0.3)
-                new_price = round(retail_price * (1 - price_reduction_pct / 100), 2)
-                pricing_action = "decrease"
-                reason = f"Good stock level: {stock:.0f} units - competitive pricing applied {price_reduction_pct:.1f}% margin buffer"
-
-            # Rule 3: Margin below minimum - force price increase
-            elif margin_pct < self.min_margin_pct:
-                price_increase_pct = max(10.0, (self.min_margin_pct - margin_pct) * 2 + 5)
-                new_price = round(retail_price * (1 + price_increase_pct / 100), 2)
-                pricing_action = "increase_mandatory"
-                reason = f"Margin protection: current {margin_pct:.1f}% below minimum {self.min_margin_pct:.1f}% - mandatory price increase of {price_increase_pct:.1f}%"
-
-            # Rule 4: High velocity, good stock, optimize price
-            elif stock > 0 and buffered_stock / stock < 0.5:
-                # Fast-moving, low stock - slight price optimization
-                optimization_pct = min(3.0, (50 - margin_pct) * 0.1)
-                new_price = round(retail_price * (1 - optimization_pct / 100), 2) if margin_pct > 25 else retail_price
-                pricing_action = "optimize"
-                reason = f"High velocity, low stock - price optimized {optimization_pct:.1f}% for conversion balance"
-
-            # Apply price update to database
-            if pricing_action != "hold" and new_price != retail_price:
-                await db.execute(
-                    """
-                    UPDATE products 
-                    SET retail_price = :new_price, updated_at = NOW()
-                    WHERE sku = :sku
-                    """,
-                    {"new_price": new_price, "sku": product_sku},
+        # Apply rules
+        rules_applied = []
+        if product_sku in self.rules:
+            for rule_name, rule_data in self.rules[product_sku].items():
+                config = rule_data["config"]
+                rule_result = self._apply_rule(
+                    rule_name, base, config
                 )
-                await db.commit()
-
-                # Log the price adjustment
-                await db.execute(
-                    """
-                    INSERT INTO system_logs (event_type, event_data, sku, channel_name)
-                    VALUES ('price_adjustment', :event_data, :sku, 'internal')
-                    """,
-                    {
-                        "event_data": json.dumps({
-                            "action": pricing_action,
-                            "old_price": retail_price,
-                            "new_price": new_price,
-                            "margin_pct": round(margin_pct, 2),
-                            "stock": stock,
-                            "trigger": reason
-                        }),
-                        "sku": product_sku,
-                    },
-                )
-                await db.commit()
-
-            return {
-                "sku": product_sku,
-                "action": pricing_action,
-                "old_price": retail_price,
-                "new_price": new_price,
-                "margin_pct": round(margin_pct, 2),
-                "reason": reason,
-                "buffered_stock_ratio": round(buffered_stock / max(1, stock), 3) if stock > 0 else 0,
-                "timestamp": datetime.utcnow().isoformat(),
-            }
-
-    async def detect_fast_moving_stock(self, db_session, top_n: int = 10) -> List[Dict[str, Any]]:
-        """Detect the top N fast-moving products based on order velocity."""
-
-        from services.database import get_connection, close_connection
-
-        async with get_connection() as db:
-            result = await db.execute(
-                """
-                SELECT p.sku, p.title, p.retail_price, p.supplier_price, 
-                       p.stock, p.buffered_stock,
-                       COALESCE(o.order_count, 0) as order_count_30d,
-                       COALESCE(o.total_revenue, 0) as revenue_30d
-                FROM products p
-                LEFT JOIN (
-                    SELECT sku, 
-                           COUNT(*) as order_count,
-                           SUM(quantity * retail_price) as total_revenue
-                    FROM orders 
-                    WHERE created_at >= NOW() - INTERVAL '30 days'
-                    GROUP BY sku
-                ) o ON p.sku = o.sku
-                WHERE p.status = 'active'
-                ORDER BY o.order_count DESC NULLS LAST
-                LIMIT :limit
-                """,
-                {"limit": top_n},
-            )
-            rows = result.fetchall()
-
-            fast_movers = []
-            for row in rows:
-                margin_pct = ((float(row.retail_price) - float(row.supplier_price)) / float(row.retail_price)) * 100 if float(row.retail_price) > 0 else 0
-                fast_movers.append({
-                    "sku": row.sku,
-                    "title": row.title,
-                    "revenue_30d": round(float(row.revenue_30d), 2),
-                    "orders_30d": int(row.order_count_30d),
-                    "stock": int(row.stock),
-                    "buffered_stock": int(row.buffered_stock),
-                    "margin_pct": round(margin_pct, 2),
-                    "velocity_score": min(100, int(row.order_count_30d) * 3 + 20),
-                    "recommendation": self._get_restock_recommendation(int(row.buffered_stock), int(row.stock)),
+                rules_applied.append({
+                    "rule_name": rule_name,
+                    "result": rule_result,
                 })
 
-            return fast_movers
+        # Determine final recommendation
+        recommended_price = base["min_price_with_10pct_safety_margin"]
+        recommendation = base["recommendation"]
 
-    def _get_restock_recommendation(self, buffered: int, current: int) -> str:
-        """Get restock recommendation based on stock levels."""
-        if current == 0:
-            return "out_of_stock - immediate restock required"
-        ratio = current / max(1, buffered)
-        if ratio < 0.3:
-            return "critical - restock urgently needed"
-        elif ratio < 0.5:
-            return "warning - restock recommended soon"
-        elif ratio < 0.8:
-            return "normal - monitor stock levels"
-        else:
-            return "healthy - stock levels optimal"
+        # Check minimum margin rule
+        total_cost = base["total_cost_per_unit"]
+        min_price = base["min_price_with_10pct_safety_margin"]
+        current_margin_pct = ((retail_price - total_cost) / retail_price * 100) if retail_price > 0 else 0
 
-    async def generate_sales_report(self, db_session, period_days: int = 30) -> Dict[str, Any]:
-        """Generate a comprehensive sales automation report."""
-
-        from services.database import get_connection, close_connection
-
-        async with get_connection() as db:
-            # Overall metrics
-            metrics_result = await db.execute(
-                """
-                SELECT 
-                    COUNT(*) as total_products,
-                    COUNT(*) FILTER (WHERE status = 'active') as active_products,
-                    COUNT(*) FILTER (WHERE stock <= 0) as out_of_stock,
-                    COUNT(*) FILTER (WHERE buffered_stock / NULLIF(stock, 0) < 0.3) as critical_stock,
-                    SUM(retail_price * stock) as potential_revenue,
-                    SUM(supplier_price * stock) as potential_cost
-                FROM products
-                """
+        if current_margin_pct < self.min_margin_pct:
+            recommendation = "increase_price"
+            # Force price to minimum acceptable
+            recommended_price = max(
+                retail_price * (1 - 0.15),  # Max 15% reduction allowed
+                min_price,
             )
-            metrics = metrics.fetchone()
 
-            # Top fast movers
-            fast_movers = await self.detect_fast_moving_stock(db, top_n=5)
+        # Check if price would go below safety margin
+        if recommended_price < min_price:
+            recommended_price = min_price
+            if base["recommendation"] != "increase_price":
+                recommendation = "increase_price"
 
-            # Products needing price adjustment
-            pricing_result = await db.execute(
-                """
-                SELECT sku, title, retail_price, supplier_price, stock, buffered_stock
-                FROM products
-                WHERE status = 'active'
-                AND retail_price > 0
-                AND (retail_price / NULLIF(supplier_price, 0) - 1) * 100 < 15
-                """
+        return {
+            "product_sku": product_sku,
+            "retail_price": retail_price,
+            "recommended_price": round(recommended_price, 2),
+            "recommendation": recommendation,
+            "current_margin_pct": round(current_margin_pct, 2),
+            "min_acceptable_price": round(min_price, 2),
+            "safety_margin_percent": self.safety_margin_percent,
+            "min_margin_pct": self.min_margin_pct,
+            "rules_applied": rules_applied,
+            "requires_authorization": self.require_authorization,
+        }
+
+    def _apply_rule(
+        self,
+        rule_name: str,
+        base_result: Dict[str, Any],
+        config: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Apply a single pricing rule."""
+        rule_type = config.get("type", "none")
+
+        if rule_type == "minimum_price":
+            floor_price = config.get("floor_price", 0)
+            base_result["min_price_with_10pct_safety_margin"] = max(
+                floor_price, base_result["min_price_with_10pct_safety_margin"]
             )
-            pricing_rows = pricing_result.fetchall()
+        elif rule_type == "max_reduction_pct":
+            max_pct = config.get("max_reduction_pct", 0)
+            current_retail = base_result["retail_price"]
+            if max_pct > 0:
+                floor = current_retail * (1 - max_pct / 100)
+                base_result["min_price_with_10pct_safety_margin"] = max(
+                    floor, base_result["min_price_with_10pct_safety_margin"]
+                )
+        elif rule_type == "fixed_margin":
+            min_margin = config.get("min_margin", 0)
+            if min_margin > 0:
+                cost = base_result["total_cost_per_unit"]
+                base_result["min_price_with_10pct_safety_margin"] = max(
+                    cost * (1 + min_margin / 100), base_result["min_price_with_10pct_safety_margin"]
+                )
 
-            return {
-                "period_days": period_days,
-                "executive_summary": {
-                    "total_products": int(metrics.total_products) if metrics else 0,
-                    "active_products": int(metrics.active_products) if metrics else 0,
-                    "out_of_stock": int(metrics.out_of_stock) if metrics else 0,
-                    "critical_stock_items": int(metrics.critical_stock) if metrics else 0,
-                    "potential_total_revenue": round(float(metrics.potential_revenue) if metrics.potential_revenue else 0, 2),
-                    "potential_total_cost": round(float(metrics.potential_cost) if metrics.potential_cost else 0, 2),
-                },
-                "top_fast_movers": fast_movers,
-                "price_adjustment_candidates": [
-                    {
-                        "sku": row.sku,
-                        "title": row.title,
-                        "current_price": float(row.retail_price),
-                        "supplier_price": float(row.supplier_price),
-                        "current_margin_pct": round(((float(row.retail_price) - float(row.supplier_price)) / float(row.retail_price)) * 100, 2),
-                        "stock_ratio": round(float(row.buffered_stock) / max(1, float(row.stock)), 3),
-                    }
-                    for row in pricing_rows
-                ],
-                "automation_actions_recommended": len(fast_movers) + len(pricing_rows),
-                "generated_at": datetime.utcnow().isoformat(),
-            }
+        return base_result
+
+    def save_pending_change(
+        self,
+        product_sku: str,
+        new_price: float,
+        triggered_by: str,
+    ) -> str:
+        """Save a price change as pending (requires authorization)."""
+        change_id = f"{product_sku}_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}"
+        self.pending_changes[change_id] = {
+            "product_sku": product_sku,
+            "new_price": new_price,
+            "triggered_by": triggered_by,
+            "created_at": datetime.utcnow().isoformat(),
+            "status": "pending_authorization",
+        }
+        logger.info(f"Pending price change saved: {change_id} for {product_sku} at {new_price}")
+        return change_id
+
+    def get_pending_changes(self) -> List[Dict[str, Any]]:
+        """Get all pending price changes awaiting authorization."""
+        return [
+            change for change in self.pending_changes.values()
+            if change["status"] == "pending_authorization"
+        ]
+
+    def authorize_change(self, change_id: str) -> Dict[str, Any]:
+        """Authorize a pending price change."""
+        if change_id in self.pending_changes:
+            self.pending_changes[change_id]["status"] = "authorized"
+            logger.info(f"Price change authorized: {change_id}")
+            return self.pending_changes[change_id]
+        raise ValueError(f"Unknown change ID: {change_id}")
+
+    def get_rules_summary(self) -> Dict[str, Any]:
+        """Get summary of all active pricing rules."""
+        total_rules = sum(len(rules) for rules in self.rules.values())
+        products_with_rules = len(self.rules)
+
+        return {
+            "total_rules": total_rules,
+            "products_with_rules": products_with_rules,
+            "safety_margin_percent": self.safety_margin_percent,
+            "min_margin_pct": self.min_margin_pct,
+            "require_authorization": self.require_authorization,
+        }
 
 
-# Convenience function for FastAPI dependency injection
-def get_sales_automation_engine() -> SalesAutomationEngine:
-    """Factory function for SalesAutomationEngine instance."""
-    return SalesAutomationEngine()
+# Convenience function
+def get_sales_automation() -> Dict[str, Any]:
+    """Factory function for sales automation components."""
+    return {
+        "calculate_sales_velocity": calculate_sales_velocity,
+        "calculate_abc_classification": calculate_abc_classification,
+        "detect_slow_movers": detect_slow_movers,
+        "calculate_smart_price": calculate_smart_price,
+        "calculate_conversion_rate": calculate_conversion_rate,
+        "analyze_funnel": analyze_funnel,
+        "PricingRuleEngine": PricingRuleEngine,
+    }

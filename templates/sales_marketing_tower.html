@@ -26,112 +26,252 @@
         <!-- Control Tower Main Content -->
         <main class="p-6">
 
-            <!-- Sales Statistics Card -->
-            <div class="bg-slate-900 border border-slate-800 rounded-xl p-6 shadow-xl mb-6">
-                <h3 class="text-slate-400 text-sm font-semibold mb-4">Sales Control Tower</h3>
-                <div class="grid grid-cols-2 gap-4 text-slate-300">
-                    <div>
-                        <p class="text-xs text-gray-400 mb-2">Schnelldreher (Top 3)</p>
-                        <div id "fast-mover-1" class="font-medium">Lade...</div>
-                        <div id="fast-mover-2" class="font-medium">Lade...</div>
-                        <div id="fast-mover-3" class="font-medium">Lade...</div>
+            <!-- Sales Intelligence Section -->
+            <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
+                <!-- KPI Cards -->
+                <div class="lg:col-span-2 bg-slate-900 border border-slate-800 rounded-xl p-6 shadow-xl">
+                    <h3 class="text-slate-400 text-sm font-semibold mb-4">Sales Intelligence</h3>
+                    
+                    <div class="grid grid-cols-2 gap-4 mb-6">
+                        <div>
+                            <p class="text-xs text-gray-400 mb-2">Gesamtumsatz (30d)</p>
+                            <p id="total-revenue" class="text-2xl font-bold text-emerald-400">Lade...</p>
+                        </div>
+                        <div>
+                            <p class="text-xs text-gray-400 mb-2"> verkaufte Produkte (30d)</p>
+                            <p id="total-products" class="text-2xl font-bold text-sky-400">Lade...</p>
+                        </div>
                     </div>
+                    
+                    <div class="grid grid-cols-2 gap-4">
+                        <div>
+                            <p class="text-xs text-gray-400 mb-2">Top Seller</p>
+                            <p id="top-seller" class="text-emerald-400 font-medium">Lade...</p>
+                        </div>
+                        <div>
+                            <p class="text-xs text-gray-400 mb-2">Conversion Rate</p>
+                            <p id="conversion-rate" class="text-sky-400 font-medium">Lade...</p>
+                        </div>
+                    </div>
+                    
                     <div>
-                        <p class="text-xs text-gray-400 mb-2">Preisanpassungen erforderlich</p>
-                        <p id="price-adjust-need" class="font-medium text-emerald-400">Lade...</p>
+                        <p class="text-xs text-gray-400 mb-2">Warenkorbabbrüche</p>
+                        <p id="cart-abandonment" class="text-orange-400 font-medium">Lade...</p>
+                    </div>
+                    
+                    <div>
+                        <p class="text-xs text-gray-400 mb-2">Sales Velocity</p>
+                        <p id="sales-velocity" class="text-violet-400 font-medium">Lade...</p>
                     </div>
                 </div>
-                <p class="text-xs text-slate-500 mt-4">Bestellungen letzten 24h: <span id="recent-orders">Lade...</span></p>
-            </div>
 
-            <!-- Marketing Statistics Card -->
-            <div class="bg-slate-900 border border-slate-800 rounded-xl p-6 shadow-xl mb-6">
-                <h3 class="text-slate-400 text-sm font-semibold mb-4">Marketing Control Tower</h3>
-                <div class="grid grid-cols-2 gap-4 text-slate-300">
-                    <div>
-                        <p class="text-xs text-gray-400 mb-2">Aktive Kampagnen</p>
-                        <p id="active-campaigns" class="font-medium">3</p>
-                    </div>
-                    <div>
-                        <p class="text-xs text-gray-400 mb-2">Letzte Meta-Ad</p>
-                        <p id="last-meta-campaign" class="font-medium">Keine aktiv</p>
-                    </div>
-                    <div>
-                        <p class="text-xs text-gray-400 mb-2">Letzte Google-Ad</p>
-                        <p id="last-google-campaign" class="font-medium">Keine aktiv</p>
-                    </div>
-                    <div>
-                        <p class="text-xs text-gray-400 mb-2">Letzter Newsletter</p>
-                        <p id="last-email-campaign" class="font-medium">Keine versendet</p>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Channel Performance Charts -->
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
-                <!-- Margin Distribution Chart -->
+                <!-- ABC Classification -->
                 <div class="bg-slate-900 border border-slate-800 rounded-xl p-6 shadow-xl">
-                    <h3 class="text-slate-400 text-sm mb-4">Margen-Verteilung</h3>
-                    <canvas id="tower-margin-chart"></canvas>
-                </div>
-                <!-- Revenue by Channel -->
-                <div class="bg-slate-900 border border-slate-800 rounded-xl p-6 shadow-xl">
-                    <h3 class="text-slate-400 text-sm mb-4">Umsatz nach Kanal</h3>
-                    <canvas id="tower-revenue-chart"></canvas>
+                    <h3 class="text-slate-400 text-sm font-semibold mb-4">ABC Klassifizierung</h3>
+                    <div class="grid grid-cols-3 gap-3">
+                        <div class="bg-slate-800 rounded-lg p-4">
+                            <p class="text-slate-400 text-xs font-bold">A - Top</p>
+                            <p class="text-3xl font-bold text-emerald-400">---</p>
+                            <p class="text-xs text-slate-500">20% der Produkte, 80% des Umsatzes</p>
+                        </div>
+                        <div class="bg-slate-800 rounded-lg p-4">
+                            <p class="text-slate-400 text-xs font-bold">B - Mittel</p>
+                            <p class="text-3xl font-bold text-sky-400">---</p>
+                            <p class="text-xs text-slate-500">30% der Produkte, 20% des Umsatzes</p>
+                        </div>
+                        <div class="bg-slate-800 rounded-lg p-4">
+                            <p class="text-slate-400 text-xs font-bold">C - Rest</p>
+                            <p class="text-3xl font-bold text-slate-500">---</p>
+                            <p class="text-xs text-slate-500">50% der Produkte, 0% des Umsatzes</p>
+                        </div>
+                    </div>
                 </div>
             </div>
 
-            <!-- Quick Actions -->
-            <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
-                <!-- Sales Automation Actions -->
-                <div class="bg-slate-900 border border-slate-800 rounded-xl p-4">
-                    <h4 class="text-slate-400 text-xs font-medium mb-3">Sales Automation</h4>
-                    <div class="space-y-2">
-                        <button onclick="calculateConversion('SKU001')" 
-                                class="text-xs text-emerald-400 hover:text-emerald-300 underline cursor-pointer">
-                            Conversion Score berechnen
+            <!-- Conversion & Funnel Analysis -->
+            <div class="bg-slate-900 border border-slate-800 rounded-xl p-6 shadow-xl mb-6">
+                <h3 class="text-slate-400 text-sm font-semibold mb-4">Conversion & Funnel Analysis</h3>
+                <div class="grid grid-cols-2 gap-4">
+                    <div>
+                        <p class="text-xs text-gray-400 mb-2">Konversionsrate</p>
+                        <canvas id="funnel-conversion-chart" width="200" height="100"></canvas>
+                    </div>
+                    <div>
+                        <p class="text-xs text-gray-400 mb-2">Funnel Drop-off</p>
+                        <canvas id="funnel-dropoff-chart" width="200" height="100"></canvas>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Marketing Performance Section -->
+            <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
+                <!-- Active Campaigns -->
+                <div class="lg:col-span-2 bg-slate-900 border border-slate-800 rounded-xl p-6 shadow-xl">
+                    <h3 class="text-slate-400 text-sm font-semibold mb-4">Marketing Performance</h3>
+                    
+                    <div class="grid grid-cols-2 gap-4 mb-6">
+                        <div>
+                            <p class="text-xs text-gray-400 mb-2">Aktive Kampagnen</p>
+                            <p id="active-campaigns-count" class="text-2xl font-bold text-emerald-400">Lade...</p>
+                        </div>
+                        <div>
+                            <p class="text-xs text-gray-400 mb-2">Generierte Inhalte</p>
+                            <p id="generated-content-count" class="text-2xl font-bold text-sky-400">Lade...</p>
+                        </div>
+                    </div>
+                    
+                    <div class="grid grid-cols-2 gap-4">
+                        <div>
+                            <p class="text-xs text-gray-400 mb-2">ROAS durchschnittlich</p>
+                            <p id="avg-roas" class="text-sky-400 font-medium">Lade...</p>
+                        </div>
+                        <div>
+                            <p class="text-xs text-gray-400 mb-2">Gesamtausgaben</p>
+                            <p id="total-spend" class="text-emerald-400 font-medium">Lade...</p>
+                        </div>
+                    </div>
+                    
+                    <div>
+                        <p class="text-xs text-gray-400 mb-2">Kampagnenstatus</p>
+                        <div id="campaign-status" class="space-y-2">
+                            <p class="text-slate-500">Lade...</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Channel Performance -->
+                <div class="bg-slate-900 border border-slate-800 rounded-xl p-6 shadow-xl">
+                    <h3 class="text-slate-400 text-sm font-semibold mb-4">Kanalperformance</h3>
+                    <div class="grid grid-cols-2 gap-3">
+                        <div class="bg-slate-800 rounded-lg p-3">
+                            <p class="text-slate-400 text-xs font-bold">Shopify</p>
+                            <p class="text-2xl font-bold text-emerald-400">---</p>
+                            <p class="text-xs text-slate-500">Export, Feed</p>
+                        </div>
+                        <div class="bg-slate-800 rounded-lg p-3">
+                            <p class="text-slate-400 text-xs font-bold">Amazon</p>
+                            <p class="text-2xl font-bold text-sky-400">---</p>
+                            <p class="text-xs text-slate-500">Inventory, Pricing</p>
+                        </div>
+                        <div class="bg-slate-800 rounded-lg p-3">
+                            <p class="text-slate-400 text-xs font-bold">Google</p>
+                            <p class="text-2xl font-bold text-orange-400">---</p>
+                            <p class="text-xs text-slate-500">Shopping XML</p>
+                        </div>
+                        <div class="bg-slate-800 rounded-lg p-3">
+                            <p class="text-slate-400 text-xs font-bold">eBay</p>
+                            <p class="text-2xl font-bold text-violet-400">---</p>
+                            <p class="text-xs text-slate-500">Offers, Pricing</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Multi-Channel Management -->
+            <div class="bg-slate-900 border border-slate-800 rounded-xl p-6 shadow-xl mb-6">
+                <h3 class="text-slate-400 text-sm font-semibold mb-4">Multi-Channel Management</h3>
+                <div class="grid grid-cols-2 gap-4">
+                    <div class="bg-slate-800 rounded-lg p-4">
+                        <p class="text-slate-400 text-xs font-bold">Shopify</p>
+                        <p class="text-2xl font-bold text-emerald-400" id="channel-shopify-status">Verbindung prüfen...</p>
+                        <p class="text-xs text-slate-500">Letzter Export: ---</p>
+                        <p class="text-xs text-slate-500">Fehler: ---</p>
+                        <p class="text-xs text-slate-500">Produkte: ---</p>
+                    </div>
+                    <div class="bg-slate-800 rounded-lg p-4">
+                        <p class="text-slate-400 text-xs font-bold">Amazon</p>
+                        <p class="text-2xl font-bold text-sky-400" id="channel-amazon-status">Verbindung prüfen...</p>
+                        <p class="text-xs text-slate-500">Letzter Export: ---</p>
+                    </div>
+                    <div class="bg-slate-800 rounded-lg p-4">
+                        <p class="text-slate-400 text-xs font-bold">Google Shopping</p>
+                        <p class="text-2xl font-bold text-orange-400" id="channel-google-status">Verbindung prüfen...</p>
+                        <p class="text-xs text-slate-500">Letzter Export: ---</p>
+                    </div>
+                    <div class="bg-slate-800 rounded-lg p-4">
+                        <p class="text-slate-400 text-xs font-bold">eBay</p>
+                        <p class="text-2xl font-bold text-violet-400" id="channel-ebay-status">Verbindung prüfen...</p>
+                        <p class="text-xs text-slate-500">Letzter Export: ---</p>
+                    </div>
+                    <div class="bg-slate-800 rounded-lg p-4">
+                        <p class="text-slate-400 text-xs font-bold">Zalando</p>
+                        <p class="text-2xl font-bold text-fuchsia-400" id="channel-zalando-status">Verbindung prüfen...</p>
+                        <p class="text-xs text-slate-500">Letzter Export: ---</p>
+                    </div>
+                    <div class="bg-slate-800 rounded-lg p-4">
+                        <p class="text-slate-400 text-xs font-bold">About You</p>
+                        <p class="text-2xl font-bold text-rose-400" id="channel-aboutyou-status">Verbindung prüfen...</p>
+                        <p class="text-xs text-slate-500">Letzter Export: ---</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Automation Controls -->
+            <div class="grid grid-cols-1 lg:grid-cols-4 gap-6 mb-6">
+                <!-- Sales Automation Controls -->
+                <div class="bg-slate-900 border border-slate-800 rounded-xl p-6 shadow-xl">
+                    <h3 class="text-slate-400 text-sm font-semibold mb-4">Sales Automation</h3>
+                    <div class="space-y-3">
+                        <button onclick="runSalesScoring()" class="w-full flex items-center justify-between px-4 py-2 bg-emerald-600 text-slate-100 rounded-lg hover:bg-emerald-500 transition-colors text-sm">
+                            <span>Sales Scoring berechnen</span>
+                            <span class="text-sm text-emerald-300">→</span>
                         </button>
-                        <button onclick="smartPricing('SKU001')" 
-                                class="text-xs text-violet-400 hover:text-violet-300 underline cursor-pointer">
-                            Smart Pricing
+                        <button onclick="runPricingOptimization()" class="w-full flex items-center justify-between px-4 py-2 bg-violet-600 text-slate-100 rounded-lg hover:bg-violet-500 transition-colors text-sm">
+                            <span>Pricing Optimization</span>
+                            <span class="text-sm text-violet-300">→</span>
                         </button>
                     </div>
                 </div>
-                <!-- Marketing Actions -->
-                <div class="bg-slate-900 border border-slate-800 rounded-xl p-4">
-                    <h4 class="text-slate-400 text-xs font-medium mb-3">Marketing</h4>
-                    <div class="space-y-2">
-                        <button onclick="generateMetaAd('SKU001')" 
-                                class="text-xs text-blue-400 hover:text-blue-300 underline cursor-pointer">
-                            Meta Ad generieren
+
+                <!-- Marketing Content Generation -->
+                <div class="bg-slate-900 border border-slate-800 rounded-xl p-6 shadow-xl">
+                    <h3 class="text-slate-400 text-sm font-semibold mb-4">Marketing Content</h3>
+                    <div class="space-y-3">
+                        <button onclick="generateProductContentUI('SKU001')"
+                                class="w-full flex items-center justify-between px-4 py-2 bg-blue-600 text-slate-100 rounded-lg hover:bg-blue-500 transition-colors text-sm">
+                            <span>KI-Content generieren</span>
+                            <span class="text-sm text-blue-300">→</span>
                         </button>
-                        <button onclick="generateGoogleAds('SKU001')" 
-                                class="text-xs text-orange-400 hover:text-orange-300 underline cursor-pointer">
-                            Google Ads generieren
-                        </button>
-                    </div>
-                </div>
-                <!-- Export Actions -->
-                <div class="bg-slate-900 border border-slate-800 rounded-xl p-4">
-                    <h4 class="text-slate-400 text-xs font-medium mb-3">Export</h4>
-                    <div class="space-y-2">
-                        <button onclick="exportChannelFeed('shopify')" 
-                                class="text-xs text-cyan-400 hover:text-cyan-300 underline cursor-pointer">
-                            Shopify Feed
-                        </button>
-                        <button onclick="exportChannelFeed('amazon')" 
-                                class="text-xs text-green-400 hover:text-green-300 underline cursor-pointer">
-                            Amazon Feed
+                        <button onclick="createMarketingCampaign()"
+                                class="w-full flex items-center justify-between px-4 py-2 bg-indigo-600 text-slate-100 rounded-lg hover:bg-indigo-500 transition-colors text-sm">
+                            <span>Kampagne erstellen</span>
+                            <span class="text-sm text-indigo-300">→</span>
                         </button>
                     </div>
                 </div>
-                <!-- BI Analytics -->
-                <div class="bg-slate-900 border border-slate-800 rounded-xl p-4">
-                    <h4 class="text-slate-400 text-xs font-medium mb-3">BI Analytics</h4>
-                    <button onclick="window.location='/'" 
-                            class="text-xs text-emerald-400 hover:text-emerald-300 underline cursor-pointer">
-                        Zum Dashboard
-                    </button>
+
+                <!-- Export Controls -->
+                <div class="bg-slate-900 border border-slate-800 rounded-xl p-6 shadow-xl">
+                    <h3 class="text-slate-400 text-sm font-semibold mb-4">Export Control</h3>
+                    <div class="space-y-3">
+                        <button onclick="exportChannel('shopify')"
+                                class="w-full flex items-center justify-between px-4 py-2 bg-green-600 text-slate-100 rounded-lg hover:bg-green-500 transition-colors text-sm">
+                            <span>Shopify Export starten</span>
+                            <span class="text-sm text-green-300">→</span>
+                        </button>
+                        <button onclick="exportChannel('amazon')"
+                                class="w-full flex items-center justify-between px-4 py-2 bg-orange-600 text-slate-100 rounded-lg hover:bg-orange-500 transition-colors text-sm">
+                            <span>Amazon Feed generieren</span>
+                            <span class="text-sm text-orange-300">→</span>
+                        </button>
+                        <button onclick="exportChannel('google_shopping')"
+                                class="w-full flex items-center justify-between px-4 py-2 bg-yellow-600 text-slate-100 rounded-lg hover:bg-yellow-500 transition-colors text-sm">
+                            <span>Google Shopping Feed</span>
+                            <span class="text-sm text-yellow-300">→</span>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Synchronize All -->
+                <div class="bg-slate-900 border border-slate-800 rounded-xl p-6 shadow-xl">
+                    <h3 class="text-slate-400 text-sm font-semibold mb-4">Synchronisierung</h3>
+                    <div class="space-y-3">
+                        <button onclick="syncAllChannels()" class="w-full flex items-center justify-between px-4 py-2 bg-amber-600 text-slate-100 rounded-lg hover:bg-amber-500 transition-colors text-sm">
+                            <span>Alle Kanäle synchronisieren</span>
+                            <span class="text-sm text-amber-300">→</span>
+                        </button>
+                        <small class="text-slate-500 text-sm">Aktualisiert Produktdaten und exportiert alle aktiven Kanäle</small>
+                    </div>
                 </div>
             </div>
 
@@ -143,47 +283,111 @@
     <div id="flash-messages" class="fixed top-6 right-6 z-50 flex flex-col gap-2"></div>
 
     <script>
-        // Sales & Marketing Tower State
+        // Control Tower Tower State
         const tower = {
             init: async function() {
                 await this.loadSalesData();
+                await this.loadMarketingData();
+                await this.loadChannelStatus();
                 await this.loadCharts();
             },
+            
             // Load sales data from API
             async loadSalesData() {
                 try {
-                    // Fast moving products
-                    const salesResponse = await fetch('/api/sales/fast-moving');
+                    // Sales overview
+                    const salesResponse = await fetch('/api/sales/overview');
                     const salesData = await salesResponse.json();
-                    const fastMovers = salesData.fast_movers || [];
                     
-                    const fm1 = document.getElementById('fast-mover-1');
-                    const fm2 = document.getElementById('fast-mover-2');
-                    const fm3 = document.getElementById('fast-mover-3');
+                    const totalRevenue = document.getElementById('total-revenue');
+                    const totalProducts = document.getElementById('total-products');
+                    const topSeller = document.getElementById('top-seller');
+                    const conversionRate = document.getElementById('conversion-rate');
+                    const cartAbandonment = document.getElementById('cart-abandonment');
+                    const velocity = document.getElementById('sales-velocity');
                     
-                    fm1.textContent = fastMovers.length > 0 ? fastMovers[0].title || "Keine" : "Keine";
-                    fm2.textContent = fastMovers.length > 1 ? fastMovers[1].title || "Keine" : "Keine";
-                    fm3.textContent = fastMovers.length > 2 ? fastMovers[2].title || "Keine" : "Keine";
-                    
-                    const priceAdjust = document.getElementById('price-adjust-need');
-                    priceAdjust.textContent = salesData.price_adjustment_candidates || 0;
+                    totalRevenue.textContent = salesData.total_revenue || '0';
+                    totalProducts.textContent = salesData.total_products || '0';
+                    topSeller.textContent = salesData.top_seller || 'Keine';
+                    conversionRate.textContent = salesData.conversion_rate || '0';
+                    cartAbandonment.textContent = salesData.abandoned_carts || '0';
+                    velocity.textContent = salesData.daily_average || '0';
                     
                 } catch (error) {
                     console.error('Fehler beim Laden der Sales-Daten:', error);
-                    tower.showFlash('Datenladen fehlgeschlagen', 'error');
+                    tower.showFlash('Sales-Daten laden fehlgeschlagen', 'error');
                 }
             },
+            
+            // Load marketing data from API
+            async loadMarketingData() {
+                try {
+                    const campaignsResponse = await fetch('/api/marketing/campaigns');
+                    const campaignsData = await campaignsResponse.json();
+                    
+                    const activeCampaignsCount = document.getElementById('active-campaigns-count');
+                    const generatedContentCount = document.getElementById('generated-content-count');
+                    const avgROAS = document.getElementById('avg-roas');
+                    const totalSpend = document.getElementById('total-spend');
+                    const campaignStatus = document.getElementById('campaign-status');
+                    
+                    const campaigns = campaignsData.campaigns || [];
+                    activeCampaignsCount.textContent = campaigns.length || '0';
+                    generatedContentCount.textContent = campaigns.reduce((sum, c) => sum + (c.generated_texts?.length || 0), 0) || '0';
+                    avgROAS.textContent = campaignsData.average_roas || '0';
+                    totalSpend.textContent = campaignsData.total_spend || '0';
+                    
+                    // Campaign status tags
+                    if (campaignStatus) {
+                        const statuses = campaigns.map(c => c.status || 'draft').filter(s => s);
+                        campaignStatus.innerHTML = statuses.length > 0 
+                            ? statuses.map(s => `<span class="text-xs px-2 py-1 rounded bg-slate-700">${s}</span>`).join(' ')
+                            : '<span class="text-slate-500">Keine Kampagnen</span>';
+                    }
+                    
+                } catch (error) {
+                    console.error('Fehler beim Laden der Marketing-Daten:', error);
+                    tower.showFlash('Marketing-Daten laden fehlgeschlagen', 'error');
+                }
+            },
+            
+            // Load channel status from APIs
+            async loadChannelStatus() {
+                const adapterMap = {
+                    shopify: document.getElementById('channel-shopify-status'),
+                    amazon: document.getElementById('channel-amazon-status'),
+                    google_shopping: document.getElementById('channel-google-status'),
+                    ebay: document.getElementById('channel-ebay-status'),
+                    zalando: document.getElementById('channel-zalando-status'),
+                    about_you: document.getElementById('channel-aboutyou-status'),
+                };
+                
+                for (const [channel, el] of Object.entries(adapterMap)) {
+                    try {
+                        const response = await fetch(`/api/export/${channel}`);
+                        const data = await response.json();
+                        if (el) {
+                            el.textContent = data.status === 'ok' ? 'Verbunden' : 'Fehler';
+                        }
+                    } catch (error) {
+                        if (el) {
+                            el.textContent = 'Verbindungsfehler';
+                        }
+                    }
+                }
+            },
+            
             // Load and initialize charts
             async loadCharts() {
-                // Margin Distribution Chart
-                const marginCtx = document.getElementById('tower-margin-chart').getContext('2d');
-                window.towerMarginChart = new Chart(marginCtx, {
+                // Funnel Conversion Chart
+                const conversionCtx = document.getElementById('funnel-conversion-chart').getContext('2d');
+                window.funnelConversionChart = new Chart(conversionCtx, {
                     type: 'doughnut',
                     data: {
-                        labels: ['Shopify', 'Amazon', 'Google Shopping'],
+                        labels: ['Viewed', 'Added to Cart', 'Checked Out', 'Purchased'],
                         datasets: [{
-                            data: [35, 28, 32], // Default values, will be updated
-                            backgroundColor: ['#3b82f6', '#10b981', '#f59e0b']
+                            data: [100, 60, 30, 15],
+                            backgroundColor: ['#6b7280', '#3b82f6', '#10b981', '#f59e0b']
                         }]
                     },
                     options: {
@@ -195,16 +399,16 @@
                     }
                 });
 
-                // Revenue Chart
-                const revenueCtx = document.getElementById('tower-revenue-chart').getContext('2d');
-                window.towerRevenueChart = new Chart(revenueCtx, {
+                // Funnel Drop-off Chart
+                const dropoffCtx = document.getElementById('funnel-dropoff-chart').getContext('2d');
+                window.funnelDropoffChart = new Chart(dropoffCtx, {
                     type: 'bar',
                     data: {
-                        labels: ['Shopify', 'Amazon', 'Google Shopping'],
+                        labels: ['Viewed→Cart', 'Cart→Checkout', 'Checkout→Purchase'],
                         datasets: [{
-                            label: 'Umsatz (€)',
-                            data: [12500, 9800, 8700],
-                            backgroundColor: ['#3b82f6', '#10b981', '#f59e0b']
+                            label: 'Drop-off %',
+                            data: [40, 50, 55],
+                            backgroundColor: ['#f87171', '#fbbf24', '#3b82f6']
                         }]
                     },
                     options: {
@@ -216,6 +420,7 @@
                     }
                 });
             },
+            
             // Show flash messages
             showFlash: function(message, type = 'info') {
                 const container = document.getElementById('flash-messages');
@@ -244,6 +449,81 @@
 
         // Initialize on page load
         document.addEventListener('DOMContentLoaded', () => tower.init());
+        
+        // Automation functions
+        async function runSalesScoring() {
+            tower.showFlash('Sales Scoring wird berechnet...', 'info');
+            try {
+                const response = await fetch('/api/sales/product-scores');
+                const data = await response.json();
+                tower.showFlash('Sales Scoring completed', 'success');
+                console.log('Scoring data:', data);
+            } catch (error) {
+                tower.showFlash('Fehler bei Sales Scoring', 'error');
+            }
+        }
+        
+        async function smartPricing(sku) {
+            tower.showFlash('Optimiere Preise...', 'info');
+            try {
+                const response = await fetch('/api/sales/pricing-recommendations');
+                const data = await response.json();
+                tower.showFlash('Pricing Empfehlung erhalten', 'success');
+                console.log('Pricing data:', data);
+            } catch (error) {
+                tower.showFlash('Fehler bei Pricing', 'error');
+            }
+        }
+        
+        async function generateProductContentUI(sku) {
+            tower.showFlash('Generiere KI-Inhalte...', 'info');
+            try {
+                const response = await fetch(`/api/marketing/products/${sku}/generate-content`);
+                const data = await response.json();
+                tower.showFlash('Inhalte generiert', 'success');
+                console.log('Content generation:', data);
+            } catch (error) {
+                tower.showFlash('Fehler bei Content-Generierung', 'error');
+            }
+        }
+        
+        async function createMarketingCampaign() {
+            tower.showFlash('Erstelle Kampagne...', 'info');
+            try {
+                const response = await fetch('/api/marketing/campaigns/generate', { method: 'POST' });
+                const data = await response.json();
+                tower.showFlash('Kampagne erstellt', 'success');
+                console.log('Campaign:', data);
+            } catch (error) {
+                tower.showFlash('Fehler bei Kampagnenerstellung', 'error');
+            }
+        }
+        
+        async function exportChannel(channel) {
+            tower.showFlash(`Exportiere ${channel}...`, 'info');
+            try {
+                const response = await fetch(`/api/export/${channel}/generate`, { method: 'POST' });
+                const data = await response.json();
+                tower.showFlash(`Export ${channel} gestartet`, 'success');
+                console.log('Export:', data);
+            } catch (error) {
+                tower.showFlash(`Fehler bei ${channel} Export`, 'error');
+            }
+        }
+        
+        async function syncAllChannels() {
+            tower.showFlash('Synchronisiere alle Kanäle...', 'info');
+            try {
+                const response = await fetch('/api/export/channels', { method: 'POST' });
+                const data = await response.json();
+                tower.showFlash('Synchronisierung abgeschlossen', 'success');
+                console.log('Sync result:', data);
+                // Reload channel status
+                await tower.loadChannelStatus();
+            } catch (error) {
+                tower.showFlash('Fehler bei Synchronisierung', 'error');
+            }
+        }
     </script>
 </body>
 </html>
