@@ -75,6 +75,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 SECRET_KEY_MARKERS = ("api_key", "token", "secret", "password", "credential")
+SESSION_COOKIE_NAME = "omni_session"
+SESSION_TTL_SECONDS = 8 * 60 * 60
 
 
 class SettingsUpdate(BaseModel):
@@ -301,24 +303,85 @@ _INTERNAL_API_KEY_HEADER = "X-Internal-API-Key"
 _INTERNAL_API_EXCLUDED_PATHS = frozenset({"/api/health", "/docs", "/redoc", "/openapi.json"})
 
 
+def _session_token() -> str:
+    """Create a short-lived stateless browser session token."""
+    issued = str(int(time.time()))
+    secret = os.getenv("INTERNAL_API_KEY", "").strip()
+    signature = hmac.new(secret.encode(), issued.encode(), hashlib.sha256).hexdigest()
+    return f"{issued}.{signature}"
+
+
+def _valid_session(token: str) -> bool:
+    """Validate the signed browser session token and its TTL."""
+    if not token or "." not in token:
+        return False
+    issued, signature = token.split(".", 1)
+    if not issued.isdigit():
+        return False
+    if int(time.time()) - int(issued) > SESSION_TTL_SECONDS:
+        return False
+    secret = os.getenv("INTERNAL_API_KEY", "").strip()
+    expected = hmac.new(secret.encode(), issued.encode(), hashlib.sha256).hexdigest()
+    return bool(secret) and hmac.compare_digest(signature, expected)
+
+
 @app.middleware("http")
 async def internal_api_key_middleware(request: Request, call_next):
-    if request.url.path in _INTERNAL_API_EXCLUDED_PATHS:
+    if request.url.path in _INTERNAL_API_EXCLUDED_PATHS or request.url.path in {"/login", "/api/auth/login", "/api/auth/logout"}:
         return await call_next(request)
 
     provided_api_key = request.headers.get(_INTERNAL_API_KEY_HEADER, "")
+    session_token = request.cookies.get(SESSION_COOKIE_NAME, "")
     expected_api_key = os.getenv("INTERNAL_API_KEY", "").strip()
-    if not expected_api_key or not hmac.compare_digest(provided_api_key, expected_api_key):
-        return JSONResponse(status_code=401, content={"detail": "Unauthorized"})
-
+    authenticated = bool(expected_api_key) and (
+        hmac.compare_digest(provided_api_key, expected_api_key) or _valid_session(session_token)
+    )
+    if not authenticated:
+        if request.url.path.startswith("/api/"):
+            return JSONResponse(status_code=401, content={"detail": "Unauthorized"})
+        return Response(status_code=303, headers={"Location": "/login"})
     return await call_next(request)
+
+
+@app.get("/login", response_class=HTMLResponse)
+async def login_page(request: Request) -> HTMLResponse:
+    """Render the local control-plane login page."""
+    return templates.TemplateResponse("login.html", {"request": request})
+
+
+class LoginRequest(BaseModel):
+    api_key: str = Field(min_length=1, max_length=4096)
+
+
+@app.post("/api/auth/login")
+async def login(payload: LoginRequest, response: Response) -> dict[str, str]:
+    """Authenticate a browser session using the configured internal API key."""
+    expected = os.getenv("INTERNAL_API_KEY", "").strip()
+    if not expected or not hmac.compare_digest(payload.api_key, expected):
+        raise HTTPException(status_code=401, detail="Invalid API key")
+    response.set_cookie(
+        SESSION_COOKIE_NAME,
+        _session_token(),
+        max_age=SESSION_TTL_SECONDS,
+        httponly=True,
+        samesite="lax",
+        secure=False,
+    )
+    return {"status": "ok", "message": "Authenticated"}
+
+
+@app.post("/api/auth/logout")
+async def logout(response: Response) -> dict[str, str]:
+    """Clear the browser session cookie."""
+    response.delete_cookie(SESSION_COOKIE_NAME)
+    return {"status": "ok"}
 
 
 @app.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request) -> HTMLResponse:
-    """Render the server-side master dashboard."""
+    """Render the unified Omni-Core Control Center."""
     return templates.TemplateResponse(
-        "dashboard.html",
+        "control_center.html",
         {
             "request": request,
             "metrics": await count_dashboard_metrics(),
@@ -343,7 +406,7 @@ async def orders_page(request: Request) -> HTMLResponse:
     return templates.TemplateResponse("orders.html", {"request": request, "orders": await list_orders(100)})
 
 
-@app.get("/admin/settings", response_class=HTMLResponse)
+@app.get("/settings", response_class=HTMLResponse)
 async def settings_page(request: Request) -> HTMLResponse:
     """Render settings with database-masked secrets."""
     return templates.TemplateResponse("settings.html", {"request": request, "settings": await list_settings()})
@@ -1708,6 +1771,12 @@ async def control_center_dashboard() -> dict[str, Any]:
     if runtime.control_center is None:
         raise HTTPException(status_code=503, detail="Control center not initialized")
     return await runtime.control_center.get_full_dashboard()
+
+
+@app.get("/control-center", response_class=HTMLResponse)
+async def control_center_page(request: Request) -> HTMLResponse:
+    """Render the unified global control center."""
+    return templates.TemplateResponse("control_center.html", {"request": request})
 
 
 @app.get("/api/control-center/system")
