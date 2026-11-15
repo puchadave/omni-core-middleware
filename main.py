@@ -2874,7 +2874,7 @@ async def api_ai_agent_chat(payload: _AgentChatPayload, user: dict[str, Any] = D
     from services.ai_agent_controller import chat_with_agent
     actor = str(user.get("email") or user.get("username") or user.get("id") or "admin")
     try:
-        return await chat_with_agent(payload.message, payload.conversation_id, actor=actor)
+        return await chat_with_agent(payload.message, payload.conversation_id, actor=actor, runtime=runtime)
     except Exception as exc:
         logger.exception("AI agent chat failed")
         raise HTTPException(status_code=502, detail=f"AI agent unavailable: {exc}") from exc
@@ -2886,7 +2886,7 @@ async def api_ai_agent_confirm(action_id: str, user: dict[str, Any] = Depends(re
     from services.ai_agent_controller import execute_confirmed
     actor = str(user.get("email") or user.get("username") or user.get("id") or "admin")
     try:
-        result = await execute_confirmed(action_id, actor=actor)
+        result = await execute_confirmed(action_id, actor=actor, runtime=runtime)
         return {"status": "confirmed", "action_id": action_id, "result": result}
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -2902,6 +2902,137 @@ async def api_ai_agent_cancel(action_id: str, user: dict[str, Any] = Depends(req
         return result
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+# ---------------------------------------------------------------------------
+# Multimodal Creative / Photoshooting APIs (foundation)
+# ---------------------------------------------------------------------------
+
+class _CreativeImagePlanPayload(BaseModel):
+    prompt: str = Field(min_length=1, max_length=8000)
+    negative_prompt: str = Field(default="", max_length=4000)
+    variants: int = Field(default=1, ge=1, le=12)
+    product_sku: str = Field(default="", max_length=128)
+    model_profile_id: str = Field(default="", max_length=128)
+    project_id: str = Field(default="", max_length=128)
+    execute: bool = False
+
+
+class _ProductPhotoPlanPayload(BaseModel):
+    product_sku: str = Field(default="", max_length=128)
+    models: list[str] = Field(default_factory=list)
+    scene: str = Field(default="studio", max_length=128)
+    shot_type: str = Field(default="product", max_length=128)
+    variants: int = Field(default=2, ge=1, le=12)
+    pose: str = Field(default="", max_length=128)
+    camera: str = Field(default="", max_length=128)
+    lighting: str = Field(default="", max_length=128)
+    aspect_ratio: str = Field(default="4:5", max_length=32)
+    project_id: str = Field(default="", max_length=128)
+    execute: bool = False
+
+
+@app.get("/api/creative/capabilities")
+async def api_creative_capabilities(user: dict[str, Any] = Depends(require_permission("ai.configure"))) -> dict[str, Any]:
+    from services.creative_foundation import CreativeCapabilityRegistry
+    caps = CreativeCapabilityRegistry.from_runtime(runtime)
+    routing = await CreativeCapabilityRegistry.route_with_fallback(runtime, "image_generation")
+    return {"status": "ok", **caps, "routing": {"image_generation": routing}}
+
+
+@app.post("/api/creative/models/seed")
+async def api_creative_seed_models(user: dict[str, Any] = Depends(require_permission("ai.configure"))) -> dict[str, Any]:
+    from services.creative_foundation import ModelIdentityManager
+    seeded = await ModelIdentityManager.seed_canonical_profiles()
+    return {"status": "ok", "count": len(seeded), "profiles": [s.get("slug") for s in seeded]}
+
+
+@app.get("/api/creative/models")
+async def api_creative_models(user: dict[str, Any] = Depends(require_permission("ai.configure"))) -> dict[str, Any]:
+    from services.creative_foundation import ModelIdentityManager
+    return {"status": "ok", "profiles": await ModelIdentityManager.list_profiles()}
+
+
+@app.get("/api/creative/projects")
+async def api_creative_projects(user: dict[str, Any] = Depends(require_permission("ai.configure"))) -> dict[str, Any]:
+    from services.creative_foundation import CreativeJobService
+    return {"status": "ok", "projects": await CreativeJobService.list_projects()}
+
+
+@app.get("/api/creative/jobs")
+async def api_creative_jobs(project_id: str | None = None, user: dict[str, Any] = Depends(require_permission("ai.configure"))) -> dict[str, Any]:
+    from services.creative_foundation import CreativeJobService
+    return {"status": "ok", "jobs": await CreativeJobService.list_jobs(project_id=project_id)}
+
+
+@app.get("/api/creative/jobs/{job_id}")
+async def api_creative_job(job_id: str, user: dict[str, Any] = Depends(require_permission("ai.configure"))) -> dict[str, Any]:
+    from services.creative_foundation import CreativeJobService
+    job = await CreativeJobService.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return {"status": "ok", "job": job}
+
+
+@app.get("/api/creative/outputs")
+async def api_creative_outputs(product_sku: str | None = None, job_id: str | None = None, user: dict[str, Any] = Depends(require_permission("ai.configure"))) -> dict[str, Any]:
+    from services.creative_foundation import MediaDAM
+    assets = await MediaDAM.list_assets(product_sku=product_sku, job_id=job_id)
+    return {"status": "ok", "assets": assets}
+
+
+@app.post("/api/creative/image/plan")
+async def api_creative_image_plan(payload: _CreativeImagePlanPayload, user: dict[str, Any] = Depends(require_permission("ai.configure"))) -> dict[str, Any]:
+    from services.ai_photoshooting import ImageGenerationAgent
+    actor = str(user.get("email") or user.get("username") or user.get("id") or "admin")
+    plan = await ImageGenerationAgent.plan(payload.prompt, negative_prompt=payload.negative_prompt, variants=payload.variants, product_sku=payload.product_sku, model_profile_id=payload.model_profile_id, runtime=runtime)
+    if payload.execute:
+        res = await ImageGenerationAgent.execute_plan(plan, actor=actor, project_id=payload.project_id or None, runtime=runtime)
+        return {"status": "ok", "mode": "executed", "plan": plan, **res}
+    return {"status": "ok", "mode": "planned", "plan": plan}
+
+
+@app.post("/api/creative/photoshoot/plan")
+async def api_creative_photoshoot_plan(payload: _ProductPhotoPlanPayload, user: dict[str, Any] = Depends(require_permission("ai.configure"))) -> dict[str, Any]:
+    from services.ai_photoshooting import ProductPhotographyAgent
+    actor = str(user.get("email") or user.get("username") or user.get("id") or "admin")
+    plan = await ProductPhotographyAgent.plan(payload.product_sku, models=payload.models, scene=payload.scene, shot_type=payload.shot_type, variants=payload.variants, pose=payload.pose, camera=payload.camera, lighting=payload.lighting, aspect_ratio=payload.aspect_ratio, runtime=runtime)
+    if payload.execute:
+        res = await ProductPhotographyAgent.execute_plan(plan, actor=actor, project_id=payload.project_id or None, runtime=runtime)
+        return {"status": "ok", "mode": "executed", "plan": plan, **res}
+    return {"status": "ok", "mode": "planned", "plan": plan}
+
+
+@app.post("/api/photoshoot/start")
+async def api_photoshoot_start(payload: _ProductPhotoPlanPayload, user: dict[str, Any] = Depends(require_permission("ai.configure"))) -> dict[str, Any]:
+    from services.ai_photoshooting import ProductPhotographyAgent
+    actor = str(user.get("email") or user.get("username") or user.get("id") or "admin")
+    plan = await ProductPhotographyAgent.plan(payload.product_sku, models=payload.models, scene=payload.scene, shot_type=payload.shot_type, variants=payload.variants, pose=payload.pose, camera=payload.camera, lighting=payload.lighting, aspect_ratio=payload.aspect_ratio, runtime=runtime)
+    res = await ProductPhotographyAgent.execute_plan(plan, actor=actor, project_id=payload.project_id or None, runtime=runtime)
+    job = res.get("job") or {}
+    return {"status": "ok", "shoot_id": job.get("id"), "job_id": job.get("id"), "result": res, "plan": plan}
+
+
+@app.get("/api/photoshoot/status/{job_id}")
+async def api_photoshoot_status(job_id: str, user: dict[str, Any] = Depends(require_permission("ai.configure"))) -> dict[str, Any]:
+    from services.creative_foundation import CreativeJobService
+    if job_id == "demo":
+        return {"status": "ok", "job": {"id": "demo", "status": "demo", "note": "No demo job executed; configure provider and start a real shoot."}}
+    job = await CreativeJobService.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Shoot/job not found")
+    return {"status": "ok", "job": job}
+
+
+@app.get("/api/photoshoot/results/{job_id}")
+async def api_photoshoot_results(job_id: str, user: dict[str, Any] = Depends(require_permission("ai.configure"))) -> dict[str, Any]:
+    from services.creative_foundation import CreativeJobService, MediaDAM, ProductFidelityEngine
+    job = await CreativeJobService.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Shoot/job not found")
+    assets = await MediaDAM.list_assets(job_id=job_id)
+    fidelity = await ProductFidelityEngine.list_checks(job_id=job_id)
+    return {"status": "ok", "job": job, "assets": assets, "fidelity": fidelity, "output": job.get("output_json")}
 
 
 @app.get("/api/integrations/status")

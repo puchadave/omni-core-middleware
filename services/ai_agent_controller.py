@@ -66,6 +66,28 @@ class CrmCalendarInput(BaseModel):
     body: str = Field(default="", max_length=12000)
 
 
+class CreativeToolInput(BaseModel):
+    action: Literal[
+        "capabilities", "list_models", "list_projects", "list_jobs", "list_assets",
+        "list_model_profiles", "seed_model_profiles", "plan_image_generation",
+        "plan_product_photography", "execute_job"
+    ]
+    job_id: str = Field(default="", max_length=128)
+    prompt: str = Field(default="", max_length=8000)
+    negative_prompt: str = Field(default="", max_length=4000)
+    variants: int = Field(default=1, ge=1, le=12)
+    product_sku: str = Field(default="", max_length=128)
+    model_profile_id: str = Field(default="", max_length=128)
+    models: list[str] = Field(default_factory=list)
+    scene: str = Field(default="studio", max_length=128)
+    shot_type: str = Field(default="product", max_length=128)
+    pose: str = Field(default="", max_length=128)
+    camera: str = Field(default="", max_length=128)
+    lighting: str = Field(default="", max_length=128)
+    aspect_ratio: str = Field(default="4:5", max_length=32)
+    project_id: str = Field(default="", max_length=128)
+
+
 TOOL_DEFINITIONS = [
     {"type": "function", "function": {
         "name": "system_diagnostics",
@@ -99,6 +121,18 @@ TOOL_DEFINITIONS = [
             "title": {"type": "string"}, "starts_at": {"type": "string"}, "ends_at": {"type": "string"},
             "customer_id": {"type": "string"}, "customer_reference": {"type": "string"},
             "notes": {"type": "string"}, "body": {"type": "string"}
+        }, "required": ["action"], "additionalProperties": False}
+    }},
+    {"type": "function", "function": {
+        "name": "multimodal_creative",
+        "description": "Multimodal creative engine: read capabilities/models/projects/jobs/assets/profiles or PREPARE image/product-photography generation plans and job execution (execution requires confirmation). Uses configured OmniRoute/provider capabilities; never fabricates outputs.",
+        "parameters": {"type": "object", "properties": {
+            "action": {"type": "string", "enum": ["capabilities", "list_models", "list_projects", "list_jobs", "list_assets", "list_model_profiles", "seed_model_profiles", "plan_image_generation", "plan_product_photography", "execute_job"]},
+            "job_id": {"type": "string"}, "prompt": {"type": "string"}, "negative_prompt": {"type": "string"},
+            "variants": {"type": "integer"}, "product_sku": {"type": "string"}, "model_profile_id": {"type": "string"},
+            "models": {"type": "array", "items": {"type": "string"}}, "scene": {"type": "string"}, "shot_type": {"type": "string"},
+            "pose": {"type": "string"}, "camera": {"type": "string"}, "lighting": {"type": "string"}, "aspect_ratio": {"type": "string"},
+            "project_id": {"type": "string"}
         }, "required": ["action"], "additionalProperties": False}
     }},
 ]
@@ -146,14 +180,65 @@ async def _diagnostics(args: dict[str, Any]) -> dict[str, Any]:
         orders = [o for o in orders if str(o.get("payment_status") or "").lower() not in ("paid", "succeeded", "captured")]
     elif scope == "tracking":
         orders = [o for o in orders if not (o.get("tracking_number") or o.get("tracking_url"))]
-    # strip secrets/PII-heavy blobs; keep operational fields
     slim = []
     for o in orders[:25]:
         slim.append({k: o.get(k) for k in ("order_id", "sku", "quantity", "marketplace", "payment_status", "fulfillment_locked", "status", "tracking_number", "tracking_url", "created_at", "updated_at") if k in o})
     return {"scope": scope, "orders": slim, "count": len(slim)}
 
 
-async def execute_tool_call(name: str, args: dict[str, Any], *, actor: str, prompt: str = "", conversation_id: str = "") -> dict[str, Any]:
+async def _creative_read(payload: CreativeToolInput, runtime: Any = None) -> dict[str, Any]:
+    from services.creative_foundation import CreativeCapabilityRegistry, CreativeJobService, MediaDAM, ModelIdentityManager
+    a = payload.action
+    if a == "capabilities":
+        return {"action": a, "capabilities": CreativeCapabilityRegistry.from_runtime(runtime), "routing_image": await CreativeCapabilityRegistry.route_with_fallback(runtime, "image_generation")}
+    if a == "list_models":
+        reg = CreativeCapabilityRegistry.from_runtime(runtime)
+        return {"action": a, "models": reg.get("models", [])}
+    if a == "list_projects":
+        return {"action": a, "projects": await CreativeJobService.list_projects()}
+    if a == "list_jobs":
+        return {"action": a, "jobs": await CreativeJobService.list_jobs(project_id=payload.project_id or None)}
+    if a == "list_assets":
+        return {"action": a, "assets": await MediaDAM.list_assets(product_sku=payload.product_sku or None)}
+    if a == "list_model_profiles":
+        return {"action": a, "profiles": await ModelIdentityManager.list_profiles()}
+    if a == "seed_model_profiles":
+        # seeding is a state change -> handled as write path
+        return {"action": a}
+    return {"action": a}
+
+
+async def _prepare_creative_action(payload: CreativeToolInput, *, actor: str, prompt: str, conversation_id: str, runtime: Any = None) -> dict[str, Any]:
+    from services.ai_photoshooting import ImageGenerationAgent, ProductPhotographyAgent
+    if payload.action == "seed_model_profiles":
+        diff = {"action": "seed_model_profiles", "note": "Seed canonical model identity profiles (incl. Luna/Raven/Nyx) from references."}
+        summary = "Model-Profile (kanonisch) seeden/aktualisieren"
+        args = payload.model_dump()
+    elif payload.action == "plan_image_generation":
+        plan = await ImageGenerationAgent.plan(payload.prompt, negative_prompt=payload.negative_prompt, variants=payload.variants, product_sku=payload.product_sku, model_profile_id=payload.model_profile_id, runtime=runtime)
+        diff = {"action": payload.action, "executable": plan.get("executable"), "routing": plan.get("routing"), "provider": plan.get("provider"), "variants": payload.variants, "product_sku": payload.product_sku}
+        summary = f"Bildgenerierung vorbereiten ({payload.variants} Variante(n))"
+        args = {**payload.model_dump(), "_plan": plan}
+    elif payload.action == "plan_product_photography":
+        plan = await ProductPhotographyAgent.plan(payload.product_sku, models=payload.models, scene=payload.scene, shot_type=payload.shot_type, variants=payload.variants, pose=payload.pose, camera=payload.camera, lighting=payload.lighting, aspect_ratio=payload.aspect_ratio, runtime=runtime)
+        diff = {"action": payload.action, "product_sku": payload.product_sku, "scene": payload.scene, "shot_type": payload.shot_type, "models": payload.models, "variants": payload.variants, "routing": plan.get("routing"), "executable": plan.get("executable")}
+        summary = f"Produkt-/Model-Fotoshooting vorbereiten: {payload.product_sku or 'Produkt'}"
+        args = {**payload.model_dump(), "_plan": plan}
+    elif payload.action == "execute_job":
+        diff = {"action": "execute_job", "job_id": payload.job_id}
+        summary = f"Creative Job ausführen: {payload.job_id or '(aus Plan)'}"
+        args = payload.model_dump()
+    else:
+        raise ValueError("Unsupported creative write action")
+    action = await agent_action_create({
+        "actor": actor, "prompt": prompt, "tool_name": "multimodal_creative", "args_json": args,
+        "preview_json": {"summary": summary, "diff": diff, "conversation_id": conversation_id},
+        "status": "pending_confirmation", "requires_confirmation": True,
+    })
+    return {"readOnly": False, "requiresConfirmation": True, "pendingAction": {"action_id": action["id"], "tool_name": "multimodal_creative", "summary": summary, "diff": diff}}
+
+
+async def execute_tool_call(name: str, args: dict[str, Any], *, actor: str, prompt: str = "", conversation_id: str = "", runtime: Any = None) -> dict[str, Any]:
     """Execute/prepare a tool call. Read-only -> immediate result; writes -> pending action."""
     if name == "system_diagnostics":
         return {"readOnly": True, "result": await _diagnostics(args)}
@@ -165,24 +250,9 @@ async def execute_tool_call(name: str, args: dict[str, Any], *, actor: str, prom
         setting_key = f"channel.{payload['channel']}.{payload['key']}"
         old = await get_setting(setting_key)
         secret = any(x in payload["key"].lower() for x in ("key", "token", "secret", "password", "credential"))
-        diff = {
-            "setting_key": setting_key,
-            "operation": payload["operation"],
-            "old_value": _masked(str(old or "")) if (old and secret) else (old or ""),
-            "new_value": "" if payload["operation"] == "remove" else (_masked(payload["value"]) if secret else payload["value"]),
-        }
-        action = await agent_action_create({
-            "actor": actor,
-            "prompt": prompt,
-            "tool_name": name,
-            "args_json": payload,
-            "preview_json": {"summary": f"{payload['channel']} config {payload['operation']}: {payload['key']}", "diff": diff, "conversation_id": conversation_id},
-            "status": "pending_confirmation",
-            "requires_confirmation": True,
-        })
-        return {"readOnly": False, "requiresConfirmation": True, "pendingAction": {
-            "action_id": action["id"], "tool_name": name, "summary": f"{payload['channel']} Konfiguration {payload['operation']}: {payload['key']}", "diff": diff,
-        }}
+        diff = {"setting_key": setting_key, "operation": payload["operation"], "old_value": _masked(str(old or "")) if (old and secret) else (old or ""), "new_value": "" if payload["operation"] == "remove" else (_masked(payload["value"]) if secret else payload["value"])}
+        action = await agent_action_create({"actor": actor, "prompt": prompt, "tool_name": name, "args_json": payload, "preview_json": {"summary": f"{payload['channel']} config {payload['operation']}: {payload['key']}", "diff": diff, "conversation_id": conversation_id}, "status": "pending_confirmation", "requires_confirmation": True})
+        return {"readOnly": False, "requiresConfirmation": True, "pendingAction": {"action_id": action["id"], "tool_name": name, "summary": f"{payload['channel']} Konfiguration {payload['operation']}: {payload['key']}", "diff": diff}}
 
     if name == "manage_business_rules":
         payload = BusinessRuleInput.model_validate(args).model_dump()
@@ -191,31 +261,27 @@ async def execute_tool_call(name: str, args: dict[str, Any], *, actor: str, prom
         setting_key = f"business_rule.{payload['rule_key']}"
         old = await get_setting(setting_key)
         diff = {"setting_key": setting_key, "old_value": old or "", "new_value": payload["value"], "description": payload.get("description", "")}
-        action = await agent_action_create({
-            "actor": actor, "prompt": prompt, "tool_name": name, "args_json": payload,
-            "preview_json": {"summary": f"Geschäftsregel ändern: {payload['rule_key']}", "diff": diff, "conversation_id": conversation_id},
-            "status": "pending_confirmation", "requires_confirmation": True,
-        })
-        return {"readOnly": False, "requiresConfirmation": True, "pendingAction": {
-            "action_id": action["id"], "tool_name": name, "summary": f"Geschäftsregel ändern: {payload['rule_key']}", "diff": diff,
-        }}
+        action = await agent_action_create({"actor": actor, "prompt": prompt, "tool_name": name, "args_json": payload, "preview_json": {"summary": f"Geschäftsregel ändern: {payload['rule_key']}", "diff": diff, "conversation_id": conversation_id}, "status": "pending_confirmation", "requires_confirmation": True})
+        return {"readOnly": False, "requiresConfirmation": True, "pendingAction": {"action_id": action["id"], "tool_name": name, "summary": f"Geschäftsregel ändern: {payload['rule_key']}", "diff": diff}}
 
     if name == "crm_and_calendar_actions":
         payload = CrmCalendarInput.model_validate(args).model_dump()
         diff = {k: v for k, v in payload.items() if v}
-        action = await agent_action_create({
-            "actor": actor, "prompt": prompt, "tool_name": name, "args_json": payload,
-            "preview_json": {"summary": f"CRM/Kalender-Aktion: {payload['action']}", "diff": diff, "conversation_id": conversation_id},
-            "status": "pending_confirmation", "requires_confirmation": True,
-        })
-        return {"readOnly": False, "requiresConfirmation": True, "pendingAction": {
-            "action_id": action["id"], "tool_name": name, "summary": f"CRM/Kalender-Aktion: {payload['action']}", "diff": diff,
-        }}
+        action = await agent_action_create({"actor": actor, "prompt": prompt, "tool_name": name, "args_json": payload, "preview_json": {"summary": f"CRM/Kalender-Aktion: {payload['action']}", "diff": diff, "conversation_id": conversation_id}, "status": "pending_confirmation", "requires_confirmation": True})
+        return {"readOnly": False, "requiresConfirmation": True, "pendingAction": {"action_id": action["id"], "tool_name": name, "summary": f"CRM/Kalender-Aktion: {payload['action']}", "diff": diff}}
+
+    if name == "multimodal_creative":
+        payload = CreativeToolInput.model_validate(args)
+        read_actions = {"capabilities", "list_models", "list_projects", "list_jobs", "list_assets", "list_model_profiles"}
+        if payload.action in read_actions:
+            return {"readOnly": True, "result": await _creative_read(payload, runtime=runtime)}
+        # seed/plan/execute -> require confirmation
+        return await _prepare_creative_action(payload, actor=actor, prompt=prompt, conversation_id=conversation_id, runtime=runtime)
 
     raise ValueError(f"Tool not allowed: {name}")
 
 
-async def execute_confirmed(action_id: str, *, actor: str) -> dict[str, Any]:
+async def execute_confirmed(action_id: str, *, actor: str, runtime: Any = None) -> dict[str, Any]:
     action = await agent_action_get(action_id)
     if not action:
         raise ValueError("Aktion nicht gefunden.")
@@ -252,18 +318,31 @@ async def execute_confirmed(action_id: str, *, actor: str) -> dict[str, Any]:
         elif tool_name == "crm_and_calendar_actions":
             payload = CrmCalendarInput.model_validate(args).model_dump()
             if payload["action"] == "create_appointment":
-                appt = await crm_create_appointment({
-                    "customer_id": payload.get("customer_id") or "",
-                    "title": payload.get("title") or "Termin",
-                    "starts_at": payload.get("starts_at") or utc_now(),
-                    "ends_at": payload.get("ends_at") or "",
-                    "notes": payload.get("notes") or payload.get("body") or "",
-                    "status": "scheduled",
-                })
+                appt = await crm_create_appointment({"customer_id": payload.get("customer_id") or "", "title": payload.get("title") or "Termin", "starts_at": payload.get("starts_at") or utc_now(), "ends_at": payload.get("ends_at") or "", "notes": payload.get("notes") or payload.get("body") or "", "status": "scheduled"})
                 result = {"status": "created", "appointment": appt}
             else:
-                # message draft stored as setting-like artifact? safer: audit-only placeholder in result (no external send)
                 result = {"status": "draft_prepared", "channel_action": "not_executed", "note": "Message draft recorded; external send adapters must execute explicitly when configured.", "draft": {k: payload.get(k) for k in ("customer_reference", "body", "title")}}
+        elif tool_name == "multimodal_creative":
+            payload = CreativeToolInput.model_validate(args)
+            from services.creative_foundation import ModelIdentityManager, CreativeJobService
+            from services.ai_photoshooting import ImageGenerationAgent, ProductPhotographyAgent
+            if payload.action == "seed_model_profiles":
+                seeded = await ModelIdentityManager.seed_canonical_profiles()
+                result = {"status": "seeded", "count": len(seeded), "profiles": [s.get("slug") for s in seeded]}
+            elif payload.action == "plan_image_generation":
+                plan = args.get("_plan") or await ImageGenerationAgent.plan(payload.prompt, negative_prompt=payload.negative_prompt, variants=payload.variants, product_sku=payload.product_sku, model_profile_id=payload.model_profile_id, runtime=runtime)
+                exec_res = await ImageGenerationAgent.execute_plan(plan, actor=actor, project_id=payload.project_id or None, runtime=runtime)
+                result = {"status": exec_res.get("status"), "job": exec_res.get("job"), "outputs": exec_res.get("outputs"), "fidelity": exec_res.get("fidelity")}
+            elif payload.action == "plan_product_photography":
+                plan = args.get("_plan") or await ProductPhotographyAgent.plan(payload.product_sku, models=payload.models, scene=payload.scene, shot_type=payload.shot_type, variants=payload.variants, pose=payload.pose, camera=payload.camera, lighting=payload.lighting, aspect_ratio=payload.aspect_ratio, runtime=runtime)
+                exec_res = await ProductPhotographyAgent.execute_plan(plan, actor=actor, project_id=payload.project_id or None, runtime=runtime)
+                result = {"status": exec_res.get("status"), "job": exec_res.get("job"), "outputs": exec_res.get("outputs"), "fidelity": exec_res.get("fidelity")}
+            elif payload.action == "execute_job":
+                # generic execute of existing planned job not implemented beyond plan-exec flow
+                job = await CreativeJobService.get_job(payload.job_id) if payload.job_id else None
+                result = {"status": "not_executed", "reason": "direct_job_execute_not_supported", "job": job}
+            else:
+                raise ValueError(f"Unsupported creative action: {payload.action}")
         else:
             raise ValueError(f"Unknown or non-confirmable tool: {tool_name}")
     except Exception as exc:
@@ -272,7 +351,6 @@ async def execute_confirmed(action_id: str, *, actor: str) -> dict[str, Any]:
         raise
 
     await agent_action_update(action_id, status="executed", result_json=result, error_message="", executed_at=utc_now())
-    # audit
     try:
         from database import add_audit_log
         await add_audit_log(action="ai_agent.action_executed", entity_type="ai_agent_action", entity_id=action_id, user_id=actor, old_value={"prompt": prompt, "tool": tool_name, "args": args}, new_value=result)
@@ -293,7 +371,7 @@ async def cancel_action(action_id: str, *, actor: str) -> dict[str, Any]:
     return {"status": "cancelled", "action_id": action_id}
 
 
-async def chat_with_agent(message: str, conversation_id: str | None, *, actor: str) -> dict[str, Any]:
+async def chat_with_agent(message: str, conversation_id: str | None, *, actor: str, runtime: Any = None) -> dict[str, Any]:
     base_url = await get_setting("omniroute_url") or await get_setting("omni_route_base_url")
     api_key = await get_setting("omniroute_api_key") or await get_setting("omni_route_api_key")
     if not base_url:
@@ -301,9 +379,10 @@ async def chat_with_agent(message: str, conversation_id: str | None, *, actor: s
     client = OmniRouteClient(base_url, api_key or "")
     model = await get_setting("omniroute_agent_model") or "gemini-2.5-flash"
     system = (
-        "Du bist der sichere Omni-Core Admin & Business Copilot (Control Agent). "
-        "Nutze ausschließlich die bereitgestellten Tools. Lies Daten zuerst, bevor du Änderungen vorbereitest. "
-        "Schreibende Tools erzeugen IMMER eine Bestätigungsvorschau (requiresConfirmation) und führen nichts direkt aus. "
+        "Du bist der sichere Omni-Core Admin & Business Copilot (Control Agent) inkl. Multimodal Creative Engine. "
+        "Nutze ausschließlich die bereitgestellten Tools. Lies Daten zuerst, bevor du Änderungen oder Generierungen vorbereitest. "
+        "Schreibende/generierende Tools erzeugen IMMER eine Bestätigungsvorschau (requiresConfirmation) und führen nichts direkt aus. "
+        "Führe keine Generation aus und behaupte keine Ergebnisse, wenn Provider/Model/Capabilities nicht konfiguriert sind. "
         "Die Fulfillment-Sperre für unbezahlte Bestellungen ist unveränderbar: payment_status != 'paid' => fulfillment blocked. "
         "Keine Shell-, SQL-, Datei-, Netzwerk- oder beliebige Code-Ausführung. Keine Geheimnisse im Chat ausgeben. "
         "Antworte präzise auf Deutsch und fasse geplante Änderungen klar zusammen."
@@ -318,9 +397,7 @@ async def chat_with_agent(message: str, conversation_id: str | None, *, actor: s
         calls = result.get("tool_calls", []) or []
         if not calls:
             return {"conversation_id": conversation_id, "message": result.get("content") or "Aktion vorbereitet.", "pending_actions": pending, "tool_results": tool_results, "requiresConfirmation": bool(pending)}
-        assistant_message = {"role": "assistant", "content": result.get("content") or "", "tool_calls": [
-            {"id": c.get("id"), "type": "function", "function": {"name": c.get("name"), "arguments": c.get("arguments", "{}")}} for c in calls
-        ]}
+        assistant_message = {"role": "assistant", "content": result.get("content") or "", "tool_calls": [{"id": c.get("id"), "type": "function", "function": {"name": c.get("name"), "arguments": c.get("arguments", "{}")}} for c in calls]}
         messages.append(assistant_message)
         stop_for_confirmation = False
         for call in calls:
@@ -330,7 +407,7 @@ async def chat_with_agent(message: str, conversation_id: str | None, *, actor: s
                 args = json.loads(raw_args) if isinstance(raw_args, str) else (raw_args or {})
             except Exception:
                 args = {}
-            execution = await execute_tool_call(name, args, actor=actor, prompt=message, conversation_id=conversation_id)
+            execution = await execute_tool_call(name, args, actor=actor, prompt=message, conversation_id=conversation_id, runtime=runtime)
             tool_results.append({"tool": name, "result": execution})
             if execution.get("pendingAction"):
                 pending.append(execution["pendingAction"])

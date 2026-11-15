@@ -1,8 +1,10 @@
-"""AI Photoshooting Pipeline for Uptempo Clubwear.
+"""Multimodal Creative / AI Photoshooting agents (foundation, step 2).
 
-Orchestrates the complete pipeline from product selection through to
-generated images with model identity preservation and product fidelity validation.
-Uses OmniRoute as the central gateway for image generation via /v1/images/edits.
+Provides ImageGenerationAgent and ProductPhotographyAgent that plan and execute creative jobs
+using the Creative Engine foundation (capability routing, DAM, model identity, fidelity checks).
+Generations run via configured OmniRoute/provider capabilities when available; otherwise jobs are
+recorded with a not-configured outcome (no fabricated outputs). Matterhorn/original images are
+never overwritten.
 """
 
 from __future__ import annotations
@@ -11,278 +13,335 @@ import json
 import logging
 import os
 import random
-import time
-from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple
+import uuid
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
 
 import aiohttp
 
-from services.model_reference import (
-    get_model,
-    get_display_name,
-    get_all_models,
-    is_model_active,
-    get_github_raw_url,
-    get_local_reference_path,
-    export_manifest,
-    import_manifest,
-    MODEL_NAMES,
+from database import fetch_product, get_setting, utc_now
+from services.creative_foundation import (
+    CreativeCapabilityRegistry,
+    CreativeJobService,
+    MediaDAM,
+    ModelIdentityManager,
+    ProductFidelityEngine,
 )
 
-logger = logging.getLogger("omni.photoshooting")
+logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# OmniRoute Gateway Configuration
-# ---------------------------------------------------------------------------
-OMNIROUTE_BASE_URL = os.environ.get("OMNIROUTE_BASE_URL", "https://omniroute.example.com")
-OMNIROUTE_API_KEY = os.environ.get("OMNIROUTE_API_KEY", "")
-OMNIROUTE_IMAGE_MODEL = os.environ.get("OMNIROUTE_IMAGE_MODEL", "flux")
-OMNIROUTE_TIMEOUT = int(os.environ.get("OMNIROUTE_TIMEOUT", "30"))
-
-OMNIROUTE_GENERATIONS_ENDPOINT = "/v1/images/generations"
-OMNIROUTE_EDITS_ENDPOINT = "/v1/images/edits"
-
-_reference_session: "aiohttp.ClientSession | None" = None
+GENERATED_DIR = Path("media/generated")
 
 
-async def _get_session() -> "aiohttp.ClientSession":
-    global _reference_session
-    if _reference_session is None or _reference_session.closed:
-        _reference_session = aiohttp.ClientSession(
-            timeout=aiohttp.ClientTimeout(total=OMNIROUTE_TIMEOUT)
-        )
-    return _reference_session
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-# ---------------------------------------------------------------------------
-# ImageGenerationProvider Interface
-# ---------------------------------------------------------------------------
-
+# ── Provider interface (backward compatible) ──────────────────────────────
 
 class ImageGenerationProvider:
-    async def generate(self, request: Dict[str, Any]) -> Dict[str, Any]:
+    async def generate(self, request: dict[str, Any]) -> dict[str, Any]:
         raise NotImplementedError
 
     async def health_check(self) -> bool:
         return False
 
 
-# ---------------------------------------------------------------------------
-# OmniRouteProvider Implementation
-# ---------------------------------------------------------------------------
-
-
 class OmniRouteProvider(ImageGenerationProvider):
-    """Provider that delegates to OmniRoute Gateway.
+    """Delegates to OmniRoute gateway if configured."""
 
-    Supports /v1/images/edits for reference-based image editing
-    and /v1/images/generations for Text-to-Image.
-    """
+    def __init__(self, base_url: str | None = None, api_key: str | None = None, model: str | None = None, timeout: int = 30) -> None:
+        self.base_url = (base_url or os.environ.get("OMNIROUTE_BASE_URL") or "").rstrip("/")
+        self.api_key = api_key or os.environ.get("OMNIROUTE_API_KEY") or ""
+        self.model = model or os.environ.get("OMNIROUTE_IMAGE_MODEL") or ""
+        self.timeout = timeout
 
-    async def generate(self, request: Dict[str, Any]) -> Dict[str, Any]:
-        prompt = request.get("prompt", "")
-        model_reference = request.get("model_reference")
-        product_reference = request.get("product_reference")
-        negative_prompt = request.get("negative_prompt", "")
-
-        omniroute_request: Dict[str, Any] = {
-            "model": os.environ.get("OMNIROUTE_IMAGE_MODEL", "flux"),
-            "prompt": prompt,
-            "style": "photo realism",
-            "negative_prompt": negative_prompt,
+    async def generate(self, request: dict[str, Any]) -> dict[str, Any]:
+        if not self.base_url or not self.model:
+            return {"error": "omniroute_not_configured", "configured": False}
+        headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
+        payload = {
+            "model": self.model,
+            "prompt": request.get("prompt", ""),
+            "negative_prompt": request.get("negative_prompt", ""),
             "seed": request.get("seed", random.randint(0, 2**31 - 1)),
         }
-
-        if "width" in request:
-            omniroute_request["width"] = request["width"]
-        if "height" in request:
-            omniroute_request["height"] = request["height"]
-        if "guidance" in request:
-            omniroute_request["guidance_scale"] = request["guidance"]
-
-        has_references = bool(model_reference or product_reference)
-
-        if has_references:
-            return await self._omniroute_edits(omniroute_request, model_reference, product_reference)
-        else:
-            omniroute_request["endpoint"] = OMNIROUTE_GENERATIONS_ENDPOINT
-            return await self._omniroute_generations(omniroute_request)
-
-    async def _omniroute_generations(self, request: Dict[str, Any]) -> Dict[str, Any]:
-        session = await _get_session()
-        headers = {}
-        if OMNIROUTE_API_KEY:
-            headers["Authorization"] = f"Bearer {OMNIROUTE_API_KEY}"
-
+        endpoint = request.get("endpoint") or "/v1/images/generations"
         try:
-            async with session.post(
-                f"{OMNIROUTE_BASE_URL}{OMNIROUTE_GENERATIONS_ENDPOINT}",
-                json=request,
-                headers=headers,
-            ) as resp:
-                if resp.status == 200:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=self.timeout)) as session:
+                async with session.post(f"{self.base_url}{endpoint}", json=payload, headers=headers) as resp:
+                    if resp.status != 200:
+                        return {"error": f"http_{resp.status}", "configured": True}
                     data = await resp.json()
-                    return {
-                        "image_url": data.get("image", data.get("url", "")),
-                        "fidelity_score": data.get("fidelity", 0.8),
-                        "model_preserved": True,
-                        "product_preserved": True,
-                        "provider": "omniroute",
-                        "generation_type": "text_to_image",
-                    }
-                else:
-                    logger.error(f"OmniRoute generations failed: {resp.status}")
-                    return {"error": f"OmniRoute error: {resp.status}"}
-        except aiohttp.ClientError as e:
-            logger.error(f"OmniRoute connection error: {e}")
-            return {"error": f"Connection error: {str(e)}"}
-
-    async def _omniroute_edits(
-        self, base_request: Dict[str, Any], model_reference: str | None, product_reference: str | None
-    ) -> Dict[str, Any]:
-        session = await _get_session()
-        headers = {}
-        if OMNIROUTE_API_KEY:
-            headers["Authorization"] = f"Bearer {OMNIROUTE_API_KEY}"
-
-        form = aiohttp.FormData()
-        form.add_field("prompt", base_request.get("prompt", ""))
-        if base_request.get("negative_prompt"):
-            form.add_field("negative_prompt", base_request["negative_prompt"])
-
-        # Add model reference image if provided
-        if model_reference:
-            model_image = await self._fetch_reference_image(model_reference)
-            if model_image:
-                form.add_field(
-                    "image", model_image, filename="model_reference.png", content_type="image/png"
-                )
-                form.add_field("model_reference", "true")
-
-        # Add product reference image if provided
-        if product_reference:
-            product_image = await self._fetch_reference_image(product_reference)
-            if product_image:
-                form.add_field(
-                    "image", product_image, filename="product_reference.png", content_type="image/png"
-                )
-                form.add_field("product_reference", "true")
-
-        if "width" in base_request:
-            form.add_field("width", str(base_request["width"]))
-        if "height" in base_request:
-            form.add_field("height", str(base_request["height"]))
-        if "guidance" in base_request:
-            form.add_field("guidance_scale", str(base_request["guidance"]))
-
-        try:
-            async with session.post(
-                f"{OMNIROUTE_BASE_URL}{OMNIROUTE_EDITS_ENDPOINT}",
-                data=form,
-                headers=headers,
-            ) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    return {
-                        "image_url": data.get("image", data.get("url", "")),
-                        "fidelity_score": data.get("fidelity", 0.85),
-                        "model_preserved": data.get("model_preserved", True),
-                        "product_preserved": data.get("product_preserved", True),
-                        "provider": "omniroute",
-                        "generation_type": "reference_based_edit",
-                    }
-                else:
-                    error_text = await resp.text()
-                    logger.error(f"OmniRoute edits failed: {resp.status} - {error_text}")
-                    return await self._omniroute_generations(base_request)
-        except aiohttp.ClientError as e:
-            logger.error(f"OmniRoute edits connection error: {e}")
-            return await self._omniroute_generations(base_request)
-
-    async def _fetch_reference_image(self, reference_path: str) -> bytes | None:
-        """Fetch reference image from local path or GitHub RAW URL."""
-        # Try local path first
-        if os.path.exists(reference_path):
-            try:
-                with open(reference_path, "rb") as f:
-                    return f.read()
-            except Exception:
-                pass
-
-        # Try GitHub RAW URL
-        try:
-            session = await _get_session()
-            async with session.get(reference_path) as resp:
-                if resp.status == 200:
-                    return await resp.read()
-                else:
-                    logger.warning(f"Could not fetch reference image: {resp.status}")
-        except aiohttp.ClientError as e:
-            logger.warning(f"Could not fetch reference image from URL: {e}")
-
-        return None
+                    return {"image_url": data.get("url") or data.get("image"), "provider": "omniroute", "raw": data, "configured": True}
+        except Exception as exc:
+            logger.warning("OmniRoute image generation failed: %s", exc)
+            return {"error": str(exc), "configured": True}
 
     async def health_check(self) -> bool:
+        if not self.base_url:
+            return False
         try:
-            session = await _get_session()
-            async with session.get(
-                f"{OMNIROUTE_BASE_URL}/health",
-                headers={"Authorization": f"Bearer {OMNIROUTE_API_KEY}"} if OMNIROUTE_API_KEY else {},
-            ) as resp:
-                return resp.status == 200
+            headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5)) as session:
+                async with session.get(f"{self.base_url}/models", headers=headers) as resp:
+                    return resp.status == 200
         except Exception:
             return False
 
 
-# Bequem-Instanz
-_default_provider: "OmniRouteProvider | None" = None
-
-
-def get_provider() -> "OmniRouteProvider":
-    global _default_provider
-    if _default_provider is None:
-        _default_provider = OmniRouteProvider()
-    return _default_provider
-
-
-def set_provider(provider: "OmniRouteProvider") -> None:
-    global _default_provider
-    _default_provider = provider
-
 class LocalPlaceholderProvider(ImageGenerationProvider):
-    """Placeholder provider that simulates image generation for development/testing."""
+    """Explicit placeholder/simulation (no real generation)."""
 
-    async def generate(self, request: Dict[str, Any]) -> Dict[str, Any]:
-        """Simulate image generation for development/testing."""
-        import hashlib
-        hash_input = f"{request.get('prompt', '')}{request.get('seed', 0)}{request.get('model_reference', '')}"
-        hash_val = hashlib.md5(hash_input.encode()).hexdigest()[:8]
-        result_path = f"generated/shoot_{request.get('seed', 0)}_{hash_val}.jpg"
-
-        return {
-            "image_path": result_path,
-            "fidelity_score": round(0.7 + (hash_val.count('a') % 3) * 0.1, 2),
-            "model_preserved": True,
-            "product_preserved": True,
-            "simulated": True,
-            "provider": "local_placeholder",
-        }
+    async def generate(self, request: dict[str, Any]) -> dict[str, Any]:
+        return {"simulated": True, "provider": "local_placeholder", "configured": False, "image_url": "", "note": "No image provider configured; generation not executed."}
 
     async def health_check(self) -> bool:
         return True
 
 
-# Convenience instance
-_default_provider: "OmniRouteProvider | None" = None
+_default_provider: ImageGenerationProvider | None = None
 
 
-def get_provider() -> "OmniRouteProvider":
+def get_provider() -> ImageGenerationProvider:
     global _default_provider
     if _default_provider is None:
         _default_provider = OmniRouteProvider()
     return _default_provider
 
 
-def set_provider(provider: "OmniRouteProvider") -> None:
+def set_provider(provider: ImageGenerationProvider) -> None:
     global _default_provider
     _default_provider = provider
+
+
+async def _resolve_provider(runtime: Any = None) -> tuple[ImageGenerationProvider, dict[str, Any]]:
+    base = await get_setting("omniroute_url") or await get_setting("omni_route_base_url") or os.environ.get("OMNIROUTE_BASE_URL") or ""
+    key = await get_setting("omniroute_api_key") or await get_setting("omni_route_api_key") or os.environ.get("OMNIROUTE_API_KEY") or ""
+    model = await get_setting("omniroute_image_model") or os.environ.get("OMNIROUTE_IMAGE_MODEL") or ""
+    if base and model:
+        return OmniRouteProvider(base, key, model), {"configured": True, "base_url": base, "model": model}
+    return LocalPlaceholderProvider(), {"configured": False, "reason": "omniroute_image_not_configured"}
+
+
+# ── Agents ───────────────────────────────────────────────────────────────
+
+class ImageGenerationAgent:
+    capability = "image_generation"
+
+    @classmethod
+    async def plan(
+        cls,
+        prompt: str,
+        *,
+        negative_prompt: str = "",
+        variants: int = 1,
+        product_sku: str = "",
+        model_profile_id: str = "",
+        references: list[str] | None = None,
+        runtime: Any = None,
+        extra: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        variants = max(1, min(int(variants or 1), 8))
+        route = await CreativeCapabilityRegistry.route_with_fallback(runtime, cls.capability)
+        _, prov_info = await _resolve_provider(runtime)
+        model_profile = await ModelIdentityManager.get_profile(model_profile_id) if model_profile_id else None
+        plan = {
+            "agent": "ImageGenerationAgent",
+            "capability": cls.capability,
+            "prompt": prompt,
+            "negative_prompt": negative_prompt,
+            "variants": variants,
+            "product_sku": product_sku,
+            "model_profile_id": model_profile_id,
+            "model_profile": model_profile,
+            "references": references or [],
+            "routing": route,
+            "provider": prov_info,
+            "executable": bool(prov_info.get("configured") and route.get("ok")),
+            "notes": [] if (prov_info.get("configured") and route.get("ok")) else ["Provider/model not configured or capability unavailable; execution will record not-configured outcome (no fabricated images)."],
+            "extra": extra or {},
+        }
+        return plan
+
+    @classmethod
+    async def execute_plan(cls, plan: dict[str, Any], *, actor: str = "system", project_id: str | None = None, runtime: Any = None) -> dict[str, Any]:
+        prompt = str(plan.get("prompt") or "")
+        variants = max(1, min(int(plan.get("variants") or 1), 8))
+        provider, prov_info = await _resolve_provider(runtime)
+        route = plan.get("routing") or await CreativeCapabilityRegistry.route_with_fallback(runtime, cls.capability)
+        selected = (route.get("selected") or {}) if isinstance(route, dict) else {}
+        job = await CreativeJobService.create_job({
+            "project_id": project_id,
+            "job_type": "image_generation",
+            "capability": cls.capability,
+            "status": "running",
+            "provider_id": selected.get("provider_id") or "omniroute",
+            "model_id": selected.get("model_id") or "",
+            "prompt": prompt,
+            "negative_prompt": str(plan.get("negative_prompt") or ""),
+            "input_json": {"plan": plan},
+            "output_json": {},
+            "cost_json": {},
+            "created_by": actor,
+            "started_at": _now(),
+        })
+        outputs: list[dict[str, Any]] = []
+        fidelity: list[dict[str, Any]] = []
+        GENERATED_DIR.mkdir(parents=True, exist_ok=True)
+        for i in range(variants):
+            req = {"prompt": prompt, "negative_prompt": plan.get("negative_prompt", ""), "seed": random.randint(0, 2**31 - 1)}
+            gen = await provider.generate(req)
+            asset_rec = None
+            if prov_info.get("configured") and not gen.get("error") and gen.get("image_url"):
+                # register reference/URL asset (download pipeline can materialize later)
+                asset_rec = await MediaDAM.register_file(
+                    GENERATED_DIR / f"{job['id']}_{i+1}.url",
+                    asset_type="image",
+                    source_kind="generated",
+                    product_sku=str(plan.get("product_sku") or ""),
+                    model_profile_id=str(plan.get("model_profile_id") or ""),
+                    job_id=job["id"],
+                    metadata={"generation": gen, "variant": i + 1, "materialized": False},
+                    url=str(gen.get("image_url") or ""),
+                )
+            else:
+                # no fabricated output
+                gen = {**gen, "status": "not_executed", "reason": gen.get("error") or prov_info.get("reason") or "not_configured"}
+            out_entry = {"variant": i + 1, "generation": gen, "asset": asset_rec}
+            outputs.append(out_entry)
+            # fidelity check hook (manual review when no automated vision scorer configured)
+            if asset_rec and plan.get("product_sku"):
+                try:
+                    chk = await ProductFidelityEngine.create_check(
+                        job_id=job["id"], output_asset_id=str(asset_rec.get("id") or ""), product_sku=str(plan.get("product_sku")),
+                        original_asset_ids=[r for r in (plan.get("references") or []) if isinstance(r, str)], scores={}, vision_provider_configured=False,
+                        details={"variant": i + 1})
+                    fidelity.append(chk)
+                except Exception:
+                    logger.exception("Fidelity check hook failed")
+        status = "succeeded" if (prov_info.get("configured") and any(o.get("asset") for o in outputs)) else "failed"
+        if not prov_info.get("configured"):
+            status = "review_required"
+        job = await CreativeJobService.update_job(
+            job["id"], status=status, output_json={"outputs": outputs, "fidelity": fidelity, "provider": prov_info, "routing": route},
+            error_message="" if status != "failed" else "generation_not_configured_or_failed", completed_at=_now(), requires_review=(status == "review_required"),
+        ) or job
+        return {"job": job, "outputs": outputs, "fidelity": fidelity, "status": status}
+
+
+class ProductPhotographyAgent:
+    capability = "image_generation"
+
+    @classmethod
+    async def plan(
+        cls,
+        product_sku: str,
+        *,
+        models: list[str] | None = None,
+        scene: str = "studio",
+        shot_type: str = "product",
+        variants: int = 2,
+        pose: str = "",
+        camera: str = "",
+        lighting: str = "",
+        aspect_ratio: str = "4:5",
+        runtime: Any = None,
+        extra: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        product = await fetch_product(product_sku) if product_sku else None
+        model_profiles = []
+        for slug in (models or []):
+            mp = await ModelIdentityManager.get_profile(slug)
+            if mp:
+                model_profiles.append(mp)
+        # collect original/reference assets for product (Matterhorn originals preserved)
+        refs = await MediaDAM.list_assets(product_sku=product_sku) if product_sku else []
+        original_refs = [a for a in refs if str(a.get("source_kind")) == "original" or a.get("immutable_original")]
+        prompt = (
+            f"{shot_type} photography, scene={scene}, product={product.get('title') if product else product_sku}, "
+            f"sku={product_sku}, aspect_ratio={aspect_ratio}, pose={pose}, camera={camera}, lighting={lighting}. "
+            f"Preserve product fidelity (color, material, pattern, cut, logos, seams, details, item count)."
+        )
+        route = await CreativeCapabilityRegistry.route_with_fallback(runtime, cls.capability)
+        _, prov_info = await _resolve_provider(runtime)
+        return {
+            "agent": "ProductPhotographyAgent",
+            "capability": cls.capability,
+            "product_sku": product_sku,
+            "product": {k: (product or {}).get(k) for k in ("sku", "title", "category", "raw_description", "ai_title") if (product or {}).get(k) is not None} if product else None,
+            "models": models or [],
+            "model_profiles": model_profiles,
+            "scene": scene,
+            "shot_type": shot_type,
+            "pose": pose, "camera": camera, "lighting": lighting, "aspect_ratio": aspect_ratio,
+            "variants": max(1, min(int(variants or 1), 12)),
+            "reference_assets": [{"id": a.get("id"), "path": a.get("storage_path"), "source_kind": a.get("source_kind"), "immutable_original": a.get("immutable_original")} for a in (original_refs or refs)[:20]],
+            "prompt": prompt,
+            "routing": route,
+            "provider": prov_info,
+            "executable": bool(prov_info.get("configured") and route.get("ok")),
+            "notes": ["Matterhorn/original product images are treated as immutable references and are never overwritten."],
+            "extra": extra or {},
+        }
+
+    @classmethod
+    async def execute_plan(cls, plan: dict[str, Any], *, actor: str = "system", project_id: str | None = None, runtime: Any = None) -> dict[str, Any]:
+        # reuse image generation per variant; model identity context carried in prompt/metadata
+        prompt = str(plan.get("prompt") or "")
+        variants = max(1, min(int(plan.get("variants") or 1), 2))
+        provider, prov_info = await _resolve_provider(runtime)
+        route = plan.get("routing") or await CreativeCapabilityRegistry.route_with_fallback(runtime, cls.capability)
+        selected = (route.get("selected") or {}) if isinstance(route, dict) else {}
+        job = await CreativeJobService.create_job({
+            "project_id": project_id,
+            "job_type": "product_photography",
+            "capability": cls.capability,
+            "status": "running",
+            "provider_id": selected.get("provider_id") or "omniroute",
+            "model_id": selected.get("model_id") or "",
+            "prompt": prompt,
+            "input_json": {"plan": plan},
+            "output_json": {},
+            "created_by": actor,
+            "started_at": _now(),
+        })
+        outputs: list[dict[str, Any]] = []
+        fidelity: list[dict[str, Any]] = []
+        GENERATED_DIR.mkdir(parents=True, exist_ok=True)
+        original_ids = [r.get("id") for r in (plan.get("reference_assets") or []) if isinstance(r, dict) and r.get("id")]
+        for i in range(variants):
+            gen = await provider.generate({"prompt": prompt, "seed": random.randint(0, 2**31 - 1)})
+            asset_rec = None
+            if prov_info.get("configured") and not gen.get("error") and gen.get("image_url"):
+                asset_rec = await MediaDAM.register_file(
+                    GENERATED_DIR / f"{job['id']}_{i+1}.url",
+                    asset_type="image", source_kind="generated",
+                    product_sku=str(plan.get("product_sku") or ""), job_id=job["id"],
+                    metadata={"generation": gen, "variant": i + 1, "scene": plan.get("scene"), "shot_type": plan.get("shot_type"), "models": plan.get("models"), "materialized": False},
+                    url=str(gen.get("image_url") or ""),
+                )
+            else:
+                gen = {**gen, "status": "not_executed", "reason": gen.get("error") or prov_info.get("reason") or "not_configured"}
+            outputs.append({"variant": i + 1, "generation": gen, "asset": asset_rec})
+            if asset_rec and plan.get("product_sku"):
+                try:
+                    chk = await ProductFidelityEngine.create_check(job_id=job["id"], output_asset_id=str(asset_rec.get("id") or ""), product_sku=str(plan.get("product_sku")), original_asset_ids=original_ids, scores={}, vision_provider_configured=False, details={"variant": i + 1, "scene": plan.get("scene")})
+                    fidelity.append(chk)
+                except Exception:
+                    logger.exception("Fidelity check hook failed")
+        status = "succeeded" if (prov_info.get("configured") and any(o.get("asset") for o in outputs)) else "review_required"
+        if prov_info.get("configured") and not any(o.get("asset") for o in outputs):
+            status = "failed"
+        job = await CreativeJobService.update_job(job["id"], status=status, output_json={"outputs": outputs, "fidelity": fidelity, "provider": prov_info, "routing": route}, completed_at=_now(), requires_review=(status != "succeeded"), error_message="" if status != "failed" else "generation_failed") or job
+        return {"job": job, "outputs": outputs, "fidelity": fidelity, "status": status}
+
+
+# backward-compat aliases expected by older imports
+def get_model_names() -> list[str]:
+    try:
+        from services.model_reference import MODEL_NAMES
+        return list(MODEL_NAMES)
+    except Exception:
+        return []
