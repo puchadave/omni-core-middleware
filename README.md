@@ -17,11 +17,12 @@ Windows:
 start.bat
 ```
 
-The startup script generates a private `.env` with a random database password on first launch, builds the image, waits for PostgreSQL and verifies application health.
+The startup script generates a private `.env` with random database and internal API secrets on first launch, builds the image, waits for PostgreSQL and verifies application health.
 
 Open:
 
-- Dashboard: http://localhost:8000
+- Dashboard / Global Control Center: http://localhost:8000
+- Login: use the generated `INTERNAL_API_KEY` from `.env`
 - API documentation: http://localhost:8000/docs
 - Health endpoint: http://localhost:8000/api/health
 
@@ -74,3 +75,17 @@ docker compose down -v
 ## Scope
 
 Omni-Core is an ERP/middleware control plane. It does not implement a public storefront, shopping cart, checkout or payment processing.
+
+
+## Control Plane UI
+
+The root route is the unified Global Control Center. Browser access is authenticated through a short-lived, HttpOnly signed session derived from `INTERNAL_API_KEY`. Direct API clients can continue to authenticate with `X-Internal-API-Key`.
+
+Main operational areas:
+- Global Control Center: system, ERP/BI, AI, marketplace and security telemetry.
+- Products and Orders: operational administration.
+- Settings: integration configuration with masked secrets.
+- OmniRoute: provider, model and routing administration.
+- Google Merchant: account and export operations.
+
+The dashboard polls control-center telemetry every 15 seconds and exposes safe operational actions for Matterhorn import and trend analysis.
