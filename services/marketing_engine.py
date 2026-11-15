@@ -12,8 +12,8 @@ from __future__ import annotations
 import os
 import json
 import logging
-from datetime import datetime
-from typing import Any, Dict, List, Optional
+from datetime import datetime, timezone
+from typing import Any, Dict, List
 
 from services.omniroute_client import OmniRouteClient
 
@@ -45,7 +45,6 @@ class MarketingEngine:
         product_title = product_data.get("title", "Product")
         product_category = product_data.get("category", "Uncategorized")
         product_price = product_data.get("retail_price", 0)
-        product_features = product_data.get("attributes", {})
 
         # Prepare prompt for Omni-Route Gateway
         prompt = f"""Du bist ein erfahrener Meta/Instagram Advertising Experte. 
@@ -82,11 +81,11 @@ Formatiere die Ausgabe als JSON mit den Schlüsseln: headline, main_text, cta_bu
                 return {
                     "success": True,
                     "headline": parsed.get("headline", f"Entdecke {product_title}"),
-                    "main_text": parsed.get("main_text", f"Erleben Sie Qualität zum besten Preis"),
+                    "main_text": parsed.get("main_text", "Erleben Sie Qualität zum besten Preis"),
                     "cta_buttons": parsed.get("cta_buttons", ["Jetzt kaufen", "Mehr erfahren", "Angebot anfordern"]),
                     "image_ideas": parsed.get("image_ideas", [f"Produktfoto von {product_title}"]),
                     "platform": "meta",
-                    "generated_at": datetime.utcnow().isoformat(),
+                    "generated_at": datetime.now(timezone.utc).isoformat(),
                 }
             else:
                 return {"success": False, "error": "Invalid JSON response from AI"}
@@ -147,11 +146,11 @@ Formatiere als JSON mit: headlines (Array), descriptions (Array), display_url, e
                 return {
                     "success": True,
                     "headlines": parsed.get("headlines", [f"{product_title} kaufen", f"Top Qualität {product_title}", f"{product_price} EUR"]),
-                    "descriptions": parsed.get("descriptions", [f"Top-bewertetes Produkt in {product_category}", f"Jetzt bestellen und sparen"]),
+                    "descriptions": parsed.get("descriptions", [f"Top-bewertetes Produkt in {product_category}", "Jetzt bestellen und sparen"]),
                     "display_url": parsed.get("display_url", f"domain.com/{product_sku.lower()}"),
                     "extensions": parsed.get("extensions", ["Kostenlose Lieferung", "10% Neukundenrabatt"]),
                     "platform": "google_ads",
-                    "generated_at": datetime.utcnow().isoformat(),
+                    "generated_at": datetime.now(timezone.utc).isoformat(),
                 }
             else:
                 return {"success": False, "error": "Invalid JSON response from AI"}
@@ -163,7 +162,7 @@ Formatiere als JSON mit: headlines (Array), descriptions (Array), display_url, e
                 "error": str(e),
                 "fallback": {
                     "headlines": [f"{product_title} kaufen", f"Top Qualität {product_title}", f"{product_price} EUR"],
-                    "descriptions": [f"Top-bewertetes Produkt", f"Jetzt bestellen und sparen"],
+                    "descriptions": ["Top-bewertetes Produkt", "Jetzt bestellen und sparen"],
                     "display_url": f"domain.com/{product_sku.lower()}",
                     "extensions": ["Kostenlose Lieferung", "10% Neukundenrabatt"],
                     "platform": "google_ads",
@@ -214,12 +213,12 @@ Formatiere als JSON mit: subject_line, preheader, opening, product_offer, cta_te
                     "success": True,
                     "subject_line": parsed.get("subject_line", f"Neuheit: {product_title} - Jetzt entdecken"),
                     "preheader": parsed.get("preheader", f"Sonderangebot von {discount_pct} bis {product_price} EUR"),
-                    "opening": parsed.get("opening", f"Hallo Lieber Kunde, wir haben ein besonderes Angebot für Sie:"),
+                    "opening": parsed.get("opening", "Hallo Lieber Kunde, wir haben ein besonderes Angebot für Sie:"),
                     "product_offer": parsed.get("product_offer", f"Entdecken Sie {product_title} - ein hochwertiges Produkt aus der Kategorie {product_category}"),
                     "cta_text": parsed.get("cta_text", "Jetzt zum Angebot gehen"),
                     "disclaimer": parsed.get("disclaimer", "Ihr Warenkorb wird für 24 Stunden reserviert"),
                     "platform": "email",
-                    "generated_at": datetime.utcnow().isoformat(),
+                    "generated_at": datetime.now(timezone.utc).isoformat(),
                 }
             else:
                 return {"success": False, "error": "Invalid JSON response from AI"}
@@ -231,8 +230,8 @@ Formatiere als JSON mit: subject_line, preheader, opening, product_offer, cta_te
                 "error": str(e),
                 "fallback": {
                     "subject_line": f"Neuheit: {product_title} - Jetzt entdecken",
-                    "preheader": f"Sonderangebot entdecken",
-                    "opening": f"Hallo Lieber Kunde, wir haben ein besonderes Angebot für Sie:",
+                    "preheader": "Sonderangebot entdecken",
+                    "opening": "Hallo Lieber Kunde, wir haben ein besonderes Angebot für Sie:",
                     "product_offer": f"Entdecken Sie {product_title} - hochwertiges Produkt",
                     "cta_text": "Jetzt zum Angebot gehen",
                     "disclaimer": "Ihr Warenkorb wird für 24 Stunden reserviert",
@@ -259,7 +258,8 @@ Formatiere als JSON mit: subject_line, preheader, opening, product_offer, cta_te
             "product_category": product_category,
             "product_price": product_price,
             "campaigns": {},
-            "generated_at": datetime.utcnow().isoformat(),
+            "generated_at": datetime.now(timezone.utc).isoformat()
+,
         }
 
         # Generate for each requested platform

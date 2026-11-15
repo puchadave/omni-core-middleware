@@ -10,15 +10,18 @@ from __future__ import annotations
 import asyncio
 import csv
 import hashlib
+import hmac
 import io
+import json
 import logging
+import os
 import time
 import xml.etree.ElementTree as ET
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator
 
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse, Response, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
@@ -29,7 +32,6 @@ from database import (
     count_dashboard_metrics,
     create_order as persist_order,
     fetch_product,
-    finish_import_run,
     get_setting,
     init_db,
     list_bundles,
@@ -41,7 +43,6 @@ from database import (
     refresh_all_bundle_stocks,
     reserve_order_stock,
     set_setting,
-    start_import_run,
     update_order_status,
     upsert_product,
     write_log,
@@ -53,14 +54,14 @@ from services.omniroute_client import OmniRouteClient
 from services.pricing_engine import PricingEngine
 from services.shopware_connection_manager import ShopwareConnectionManager
 from services.shopware_mapping_engine import MappingEngine, FieldMapping, MAPPING_DIRECT, get_default_mappings
-from services.shopware_export_manager import ExportManager, ExportQueueItem
-from services.shopware_description_engine import DescriptionEngine, SEOCenter, DESCRIPTION_TEMPLATES
-from services.competitor_provider import provider_registry, SearchResult, ExampleProvider
-from services.competitor_matching import ProductMatchingEngine, classify_match_score, MatchResult
-from services.competitor_pricing import DynamicPricingEngine, PricingRule, STRATEGY_MARKET_AVERAGE
+from services.shopware_export_manager import ExportManager
+from services.shopware_description_engine import DescriptionEngine, SEOCenter
+from services.competitor_provider import provider_registry
+from services.competitor_matching import ProductMatchingEngine
+from services.competitor_pricing import DynamicPricingEngine
 from services.google_merchant_client import GoogleMerchantClient
-from services.google_product_mapper import GoogleProductMapper, GoogleProductValidator, build_export_record
-from services.google_export_engine import AutonomousExportEngine, ExportQueueItem as GMExportQueueItem
+from services.google_product_mapper import GoogleProductMapper, GoogleProductValidator
+from services.google_export_engine import AutonomousExportEngine
 from services.omniroute_provider import AIProvider, ProviderManager
 from services.omniroute_model_registry import AIModel, ModelRegistry, RoutingRule, RoutingPolicy, IntelligentRoutingEngine, CostCalculator
 from services.trend_engine import TrendEngine
@@ -295,6 +296,22 @@ app = FastAPI(
     description="Lean multi-channel e-commerce middleware with PostgreSQL and SQLite WAL fallback.",
     lifespan=lifespan,
 )
+
+_INTERNAL_API_KEY_HEADER = "X-Internal-API-Key"
+_INTERNAL_API_EXCLUDED_PATHS = frozenset({"/api/health", "/docs", "/redoc", "/openapi.json"})
+
+
+@app.middleware("http")
+async def internal_api_key_middleware(request: Request, call_next):
+    if request.url.path in _INTERNAL_API_EXCLUDED_PATHS:
+        return await call_next(request)
+
+    provided_api_key = request.headers.get(_INTERNAL_API_KEY_HEADER, "")
+    expected_api_key = os.getenv("INTERNAL_API_KEY", "").strip()
+    if not expected_api_key or not hmac.compare_digest(provided_api_key, expected_api_key):
+        return JSONResponse(status_code=401, content={"detail": "Unauthorized"})
+
+    return await call_next(request)
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -539,7 +556,6 @@ if __name__ == "__main__":
 @app.get("/api/sales/overview")
 async def sales_overview():
     """Get sales overview with velocity and metrics."""
-    from services.sales_automation import calculate_sales_velocity, get_sales_automation
     
     return {
         "status": "ok",
@@ -549,7 +565,6 @@ async def sales_overview():
 @app.get("/api/sales/product-scores")
 async def product_scores():
     """Get product ABC classification and scores."""
-    from services.sales_automation import calculate_abc_classification
     
     return {
         "status": "ok",
@@ -592,10 +607,6 @@ async def list_campaigns():
 @app.post("/api/marketing/campaigns/generate")
 async def generate_campaign():
     """Generate a new marketing campaign."""
-    from services.database import get_connection
-    from services.marketing_engine import MarketingEngine
-    
-    engine = MarketingEngine()
     return {
         "status": "ok",
         "message": "Campaign generation endpoint - requires OmniRoute gateway",
@@ -604,10 +615,6 @@ async def generate_campaign():
 @app.post("/api/marketing/products/{product_id}/generate-content")
 async def generate_product_content(product_id: int):
     """Generate marketing content for a product."""
-    from services.database import get_connection
-    from services.marketing_engine import MarketingEngine
-    
-    engine = MarketingEngine()
     return {
         "status": "ok",
         "product_id": product_id,
@@ -1651,7 +1658,7 @@ async def pipeline_matterhorn_to_google(account_id: str, product_sku: str):
 @app.post("/api/pipeline/auto-export-imported")
 async def pipeline_auto_export_imported(account_id: str):
     """Auto-export all recently imported Matterhorn products to Google."""
-    from database import recent_import_runs, fetch_product, list_products
+    from database import list_products
     from services.canonical_product_mapping import CanonicalProduct
     
     exported = 0
@@ -1664,7 +1671,7 @@ async def pipeline_auto_export_imported(account_id: str):
         try:
             cp = CanonicalProduct.from_matterhorn("matterhorn", p)
             
-            queue_id = await runtime.google_export_engines[account_id].on_quality_check_passed(
+            await runtime.google_export_engines[account_id].on_quality_check_passed(
                 product_sku=p["sku"],
                 account_id=account_id,
                 canonical_product=cp,

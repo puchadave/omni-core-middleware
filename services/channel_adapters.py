@@ -10,7 +10,7 @@ import os
 
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from services.omniroute_client import OmniRouteClient
@@ -30,7 +30,7 @@ class ChannelAdapter:
 
     async def fetch_channel_content(self, sku: str, channel_name: str) -> Optional[Dict[str, Any]]:
         """Fetch channel-specific content from PostgreSQL channel_content table."""
-        from services.database import get_connection, close_connection
+        from services.database import get_connection
 
         if not self.db_session:
             async with get_connection() as db:
@@ -70,7 +70,7 @@ class ShopifyAdapter(ChannelAdapter):
 
     async def export_product_feed(self, skus: List[str] | None = None) -> Dict[str, Any]:
         """Export product feed for Shopify integration."""
-        from services.database import get_connection, close_connection
+        from services.database import get_connection
 
         async with get_connection() as db:
             if skus:
@@ -112,7 +112,7 @@ class ShopifyAdapter(ChannelAdapter):
                 "total_products": len(products),
                 "products": products,
                 "export_format": "shopify_rest_v2024_01",
-                "exported_at": datetime.utcnow().isoformat(),
+                "exported_at": datetime.now(timezone.utc).isoformat(),
             }
 
     async def generate_shopify_graphql_mutation(
@@ -151,7 +151,7 @@ class AmazonAdapter(ChannelAdapter):
 
     async def export_inventory_feed(self, skus: List[str] | None = None) -> Dict[str, Any]:
         """Export Amazon inventory feed XML."""
-        from services.database import get_connection, close_connection
+        from services.database import get_connection
 
         async with get_connection() as db:
             if skus:
@@ -193,12 +193,12 @@ class AmazonAdapter(ChannelAdapter):
                 "feed_format": "amazon_inventory_2005_10_31",
                 "total_products": len(rows),
                 "xml": "\n".join(xml_lines),
-                "exported_at": datetime.utcnow().isoformat(),
+                "exported_at": datetime.now(timezone.utc).isoformat(),
             }
 
     async def export_price_feed(self, skus: List[str] | None = None) -> Dict[str, Any]:
         """Export Amazon price feed with competitive pricing."""
-        from services.database import get_connection, close_connection
+        from services.database import get_connection
 
         async with get_connection() as db:
             if skus:
@@ -241,7 +241,7 @@ class AmazonAdapter(ChannelAdapter):
                 "feed_format": "amazon_price_feed",
                 "total_products": len(rows),
                 "xml": "\n".join(xml_lines),
-                "exported_at": datetime.utcnow().isoformat(),
+                "exported_at": datetime.now(timezone.utc).isoformat(),
             }
 
 
@@ -252,7 +252,7 @@ class GoogleShoppingAdapter(ChannelAdapter):
 
     async def export_merchant_center_feed(self, skus: List[str] | None = None) -> Dict[str, Any]:
         """Export Google Merchant Center compliant XML feed."""
-        from services.database import get_connection, close_connection
+        from services.database import get_connection
 
         async with get_connection() as db:
             if skus:
@@ -308,7 +308,7 @@ class GoogleShoppingAdapter(ChannelAdapter):
                 "feed_format": "google_shopping_merchant_center",
                 "total_products": len(rows),
                 "xml": "\n".join(xml_lines),
-                "exported_at": datetime.utcnow().isoformat(),
+                "exported_at": datetime.now(timezone.utc).isoformat(),
             }
 
 
@@ -319,7 +319,7 @@ class EbayAdapter(ChannelAdapter):
 
     async def export_inventory_feed(self, skus: List[str] | None = None) -> Dict[str, Any]:
         """Export eBay inventory status feed."""
-        from services.database import get_connection, close_connection
+        from services.database import get_connection
 
         async with get_connection() as db:
             if skus:
@@ -358,7 +358,7 @@ class EbayAdapter(ChannelAdapter):
                 "total_items": len(items),
                 "items": items,
                 "feed_format": "ebay_inventory",
-                "exported_at": datetime.utcnow().isoformat(),
+                "exported_at": datetime.now(timezone.utc).isoformat(),
             }
 
 
@@ -369,7 +369,7 @@ class ZalandoAdapter(ChannelAdapter):
 
     async def export_zalando_feed(self, skus: List[str] | None = None) -> Dict[str, Any]:
         """Export Zalando-specific fashion feed with attribute mapping."""
-        from services.database import get_connection, close_connection
+        from services.database import get_connection
 
         async with get_connection() as db:
             if skus:
@@ -426,7 +426,7 @@ class ZalandoAdapter(ChannelAdapter):
                 "total_items": len(items),
                 "items": items,
                 "feed_format": "zalando_fashion_feed",
-                "exported_at": datetime.utcnow().isoformat(),
+                "exported_at": datetime.now(timezone.utc).isoformat(),
             }
 
     @staticmethod

@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger("omni.models")
@@ -132,7 +132,7 @@ def export_manifest(path: str = "assets/ai/model-reference-manifest.json") -> No
     export_data = {
         "version": "1.0.0",
         "repository": "puchadave/UptempoClubwear.de",
-        "generatedAt": datetime.utcnow().isoformat() + "Z",
+        "generatedAt": datetime.now(timezone.utc).isoformat() + "Z",
         "models": {},
     }
 
@@ -195,9 +195,8 @@ def get_all_model_names() -> List[str]:
     return sorted(MODEL_MANIFEST.keys())
 
 
-# Convenience accessor (backward compat from earlier version)
-def get_model(model_name: str, fallback: str = "david") -> Optional[Dict[str, Any]]:
-    """Get model definition by name (backward compatibility)."""
+def get_model_legacy(model_name: str, fallback: str = "david") -> Optional[Dict[str, Any]]:
+    """Get model definition by name with fallback."""
     return MODEL_MANIFEST.get(model_name.lower(), MODEL_MANIFEST.get(fallback, {}))
 
 

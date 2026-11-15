@@ -6,15 +6,13 @@ and AI-generated business reports using the Omni-Route Gateway.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
-from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional
+from datetime import datetime, timezone
+from typing import Any, Dict, List
 
-import aiosqlite
 
-from database import DB_PATH, get_connection
+from database import get_connection
 from services.omni_router_client import OmniRouterClient
 
 logger = logging.getLogger("omni.bi")
@@ -252,7 +250,7 @@ class BIEngine:
             response_text = await self.client.complete_chat(user_prompt, system_prompt=system_prompt)
             clean_json = response_text.replace("```json", "").replace("```", "").strip()
             report = json.loads(clean_json)
-            report["generated_at"] = datetime.utcnow().isoformat()
+            report["generated_at"] = datetime.now(timezone.utc).isoformat()
             return report
         except Exception as e:
             logger.error(f"BI Report generation failed: {e}")
@@ -262,7 +260,7 @@ class BIEngine:
                 "channel_analysis": {},
                 "alerts": [],
                 "recommendations": ["Manuelle Analyse erforderlich"],
-                "generated_at": datetime.utcnow().isoformat(),
+                "generated_at": datetime.now(timezone.utc).isoformat(),
             }
 
     # -------------------------------------------------------------------------
