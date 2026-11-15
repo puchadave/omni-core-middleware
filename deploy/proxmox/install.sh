@@ -171,12 +171,19 @@ main() {
     # Template herunterladen (Debian 13)
     log_info "Lade Debian 13 LXC Template herunter..."
     local template_storage="${TEMPLATE_STORAGE:-local}"
+    local host_arch
+    case "$(uname -m 2>/dev/null || echo x86_64)" in
+        x86_64|amd64) host_arch="amd64" ;;
+        aarch64|arm64) host_arch="arm64" ;;
+        *) host_arch="amd64" ;;
+    esac
+    log_info "Erkannte Host-Architektur: $host_arch"
     pveam update >/dev/null 2>&1 || log_warn "pveam update fehlgeschlagen (fahre fort)"
     local template_name
-    template_name=$(pveam available -section system 2>/dev/null | awk '/debian-13-standard/ {print $2}' | tail -n1 || true)
+    template_name=$(pveam available -section system 2>/dev/null | awk -v a="$host_arch" '/debian-13-standard/ && $2 ~ ("_" a) {print $2}' | tail -n1 || true)
     if [ -z "$template_name" ]; then
         # Fallback: vorhandene Templates durchsuchen
-        template_name=$(pveam list "$template_storage" 2>/dev/null | awk '/debian-13-standard/ {print $1}' | sed 's#.*vztmpl/##' | tail -n1 || true)
+        template_name=$(pveam list "$template_storage" 2>/dev/null | awk -v a="$host_arch" '/debian-13-standard/ && $0 ~ ("_" a) {print $1}' | sed 's#.*vztmpl/##' | tail -n1 || true)
     fi
     if [ -z "$template_name" ]; then
         log_err "Kein Debian 13 LXC Template gefunden. Prüfen Sie 'pveam available' oder setzen Sie TEMPLATE_STORAGE."

@@ -37,9 +37,18 @@ select_template() {
   local tstore; tstore="$(yaml_get "$CONFIG_FILE" proxmox.template_storage local)"
   if [[ -n "$requested" ]]; then echo "$requested"; return 0; fi
   pveam update >/dev/null 2>&1 || true
-  local tmpl
-  tmpl="$(pveam available -section system 2>/dev/null | awk '/debian-13-standard/{print $2}' | tail -n1 || true)"
-  [[ -n "$tmpl" ]] || die "Could not find Debian 13 LXC template via pveam. Set container.ostemplate explicitly."
+  local host_arch tmpl
+  case "$(uname -m 2>/dev/null || echo x86_64)" in
+    x86_64|amd64) host_arch="amd64" ;;
+    aarch64|arm64) host_arch="arm64" ;;
+    *) host_arch="amd64" ;;
+  esac
+  log_info "Detected host architecture: $host_arch"
+  tmpl="$(pveam available -section system 2>/dev/null | awk -v a="$host_arch" '/debian-13-standard/ && $2 ~ ("_" a) {print $2}' | tail -n1 || true)"
+  if [[ -z "$tmpl" ]]; then
+    tmpl="$(pveam list "$tstore" 2>/dev/null | awk -v a="$host_arch" '/debian-13-standard/ && $0 ~ ("_" a) {print $1}' | sed 's#.*vztmpl/##' | tail -n1 || true)"
+  fi
+  [[ -n "$tmpl" ]] || die "Could not find Debian 13 LXC template for ${host_arch} via pveam. Set container.ostemplate explicitly."
   local vol="${tstore}:vztmpl/${tmpl}"
   if ! pveam list "$tstore" 2>/dev/null | grep -q "$tmpl"; then
     log_info "Downloading template $tmpl to $tstore..."
