@@ -8,6 +8,7 @@ configured PostgreSQL database (or SQLite WAL fallback for local development).
 from __future__ import annotations
 
 import asyncio
+import base64
 import csv
 import hashlib
 import hmac
@@ -162,6 +163,33 @@ def is_secret_key(key: str) -> bool:
     """Classify configuration keys that must be masked in responses."""
     normalized = key.lower()
     return any(marker in normalized for marker in SECRET_KEY_MARKERS)
+
+
+async def require_admin(request: Request) -> dict[str, Any]:
+    """Require an authenticated admin session."""
+    token = request.cookies.get("admin_session")
+    if not token:
+        raise HTTPException(status_code=401, detail="Admin authentication required")
+
+    try:
+        payload_b64, signature = token.split(".", 1)
+        expected_signature = hmac.new(
+            os.getenv("SESSION_SECRET", "omni-core-dev-secret").encode(),
+            payload_b64.encode(),
+            hashlib.sha256,
+        ).hexdigest()
+        if not hmac.compare_digest(signature, expected_signature):
+            raise HTTPException(status_code=401, detail="Invalid admin session")
+
+        payload_json = base64.urlsafe_b64decode(payload_b64 + "==").decode()
+        payload = json.loads(payload_json)
+        if payload.get("sub") != "admin":
+            raise HTTPException(status_code=403, detail="Admin access denied")
+        return {"sub": "admin"}
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid admin session")
 
 
 async def configure_omniroute() -> None:
@@ -386,6 +414,35 @@ async def health_check() -> dict[str, Any]:
 async def system_health() -> dict[str, Any]:
     """Admin dashboard health alias."""
     return await health_check()
+
+
+@app.post("/api/admin/session/login")
+async def admin_session_login(request: Request) -> JSONResponse:
+    """Create an admin session from the configured internal API key."""
+    form = await request.form()
+    api_key = form.get("api_key") if form else None
+    expected = os.getenv("INTERNAL_API_KEY", "").strip()
+    if not expected or not hmac.compare_digest(str(api_key or ""), expected):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    payload = {"sub": "admin", "iat": int(time.time())}
+    payload_b64 = base64.urlsafe_b64encode(json.dumps(payload).encode()).rstrip(b"=").decode()
+    signature = hmac.new(
+        os.getenv("SESSION_SECRET", "omni-core-dev-secret").encode(),
+        payload_b64.encode(),
+        hashlib.sha256,
+    ).hexdigest()
+    token = f"{payload_b64}.{signature}"
+    response = JSONResponse({"status": "ok"})
+    response.set_cookie(
+        "admin_session",
+        token,
+        httponly=True,
+        samesite="lax",
+        secure=False,
+        max_age=3600,
+    )
+    return response
 
 
 @app.get("/api/stats")
