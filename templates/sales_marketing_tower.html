@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="de" data-theme="dark" class="dark">
+<head>
+    <meta charset="UTF-8"><title>Omni-Core Sales & Marketing Control Tower</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.3.0/chart.min.js" defer></script>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen p-6">
+
+    <div class="max-w-7xl mx-auto">
+
+        <!-- Header -->
+        <header class="border-b border-slate-800 mb-6">
+            <nav class="flex items-center justify-between flex-wrap gap-4">
+                <div class="flex items-center gap-3">
+                    <a href="#" class="text-2xl font-bold text-emerald-400">Omni-Core ERP</a>
+                    <span class="text-slate-400 text-sm">v3.1.0</span>
+                </div>
+                <div class="flex items-center gap-4">
+                    <a href="/api/health" class="text-slate-300 hover:text-emerald-400 underline text-sm" target="_blank">Health</a>
+                    <a href="/" class="text-slate-300 hover:text-emerald-400 underline text-sm">Dashboard</a>
+                </div>
+            </nav>
+        </header>
+
+        <!-- Control Tower Main Content -->
+        <main class="p-6">
+
+            <!-- Sales Statistics Card -->
+            <div class="bg-slate-900 border border-slate-800 rounded-xl p-6 shadow-xl mb-6">
+                <h3 class="text-slate-400 text-sm font-semibold mb-4">Sales Control Tower</h3>
+                <div class="grid grid-cols-2 gap-4 text-slate-300">
+                    <div>
+                        <p class="text-xs text-gray-400 mb-2">Schnelldreher (Top 3)</p>
+                        <div id "fast-mover-1" class="font-medium">Lade...</div>
+                        <div id="fast-mover-2" class="font-medium">Lade...</div>
+                        <div id="fast-mover-3" class="font-medium">Lade...</div>
+                    </div>
+                    <div>
+                        <p class="text-xs text-gray-400 mb-2">Preisanpassungen erforderlich</p>
+                        <p id="price-adjust-need" class="font-medium text-emerald-400">Lade...</p>
+                    </div>
+                </div>
+                <p class="text-xs text-slate-500 mt-4">Bestellungen letzten 24h: <span id="recent-orders">Lade...</span></p>
+            </div>
+
+            <!-- Marketing Statistics Card -->
+            <div class="bg-slate-900 border border-slate-800 rounded-xl p-6 shadow-xl mb-6">
+                <h3 class="text-slate-400 text-sm font-semibold mb-4">Marketing Control Tower</h3>
+                <div class="grid grid-cols-2 gap-4 text-slate-300">
+                    <div>
+                        <p class="text-xs text-gray-400 mb-2">Aktive Kampagnen</p>
+                        <p id="active-campaigns" class="font-medium">3</p>
+                    </div>
+                    <div>
+                        <p class="text-xs text-gray-400 mb-2">Letzte Meta-Ad</p>
+                        <p id="last-meta-campaign" class="font-medium">Keine aktiv</p>
+                    </div>
+                    <div>
+                        <p class="text-xs text-gray-400 mb-2">Letzte Google-Ad</p>
+                        <p id="last-google-campaign" class="font-medium">Keine aktiv</p>
+                    </div>
+                    <div>
+                        <p class="text-xs text-gray-400 mb-2">Letzter Newsletter</p>
+                        <p id="last-email-campaign" class="font-medium">Keine versendet</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Channel Performance Charts -->
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
+                <!-- Margin Distribution Chart -->
+                <div class="bg-slate-900 border border-slate-800 rounded-xl p-6 shadow-xl">
+                    <h3 class="text-slate-400 text-sm mb-4">Margen-Verteilung</h3>
+                    <canvas id="tower-margin-chart"></canvas>
+                </div>
+                <!-- Revenue by Channel -->
+                <div class="bg-slate-900 border border-slate-800 rounded-xl p-6 shadow-xl">
+                    <h3 class="text-slate-400 text-sm mb-4">Umsatz nach Kanal</h3>
+                    <canvas id="tower-revenue-chart"></canvas>
+                </div>
+            </div>
+
+            <!-- Quick Actions -->
+            <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+                <!-- Sales Automation Actions -->
+                <div class="bg-slate-900 border border-slate-800 rounded-xl p-4">
+                    <h4 class="text-slate-400 text-xs font-medium mb-3">Sales Automation</h4>
+                    <div class="space-y-2">
+                        <button onclick="calculateConversion('SKU001')" 
+                                class="text-xs text-emerald-400 hover:text-emerald-300 underline cursor-pointer">
+                            Conversion Score berechnen
+                        </button>
+                        <button onclick="smartPricing('SKU001')" 
+                                class="text-xs text-violet-400 hover:text-violet-300 underline cursor-pointer">
+                            Smart Pricing
+                        </button>
+                    </div>
+                </div>
+                <!-- Marketing Actions -->
+                <div class="bg-slate-900 border border-slate-800 rounded-xl p-4">
+                    <h4 class="text-slate-400 text-xs font-medium mb-3">Marketing</h4>
+                    <div class="space-y-2">
+                        <button onclick="generateMetaAd('SKU001')" 
+                                class="text-xs text-blue-400 hover:text-blue-300 underline cursor-pointer">
+                            Meta Ad generieren
+                        </button>
+                        <button onclick="generateGoogleAds('SKU001')" 
+                                class="text-xs text-orange-400 hover:text-orange-300 underline cursor-pointer">
+                            Google Ads generieren
+                        </button>
+                    </div>
+                </div>
+                <!-- Export Actions -->
+                <div class="bg-slate-900 border border-slate-800 rounded-xl p-4">
+                    <h4 class="text-slate-400 text-xs font-medium mb-3">Export</h4>
+                    <div class="space-y-2">
+                        <button onclick="exportChannelFeed('shopify')" 
+                                class="text-xs text-cyan-400 hover:text-cyan-300 underline cursor-pointer">
+                            Shopify Feed
+                        </button>
+                        <button onclick="exportChannelFeed('amazon')" 
+                                class="text-xs text-green-400 hover:text-green-300 underline cursor-pointer">
+                            Amazon Feed
+                        </button>
+                    </div>
+                </div>
+                <!-- BI Analytics -->
+                <div class="bg-slate-900 border border-slate-800 rounded-xl p-4">
+                    <h4 class="text-slate-400 text-xs font-medium mb-3">BI Analytics</h4>
+                    <button onclick="window.location='/'" 
+                            class="text-xs text-emerald-400 hover:text-emerald-300 underline cursor-pointer">
+                        Zum Dashboard
+                    </button>
+                </div>
+            </div>
+
+        </main>
+
+    </div>
+
+    <!-- Flash Messages -->
+    <div id="flash-messages" class="fixed top-6 right-6 z-50 flex flex-col gap-2"></div>
+
+    <script>
+        // Sales & Marketing Tower State
+        const tower = {
+            init: async function() {
+                await this.loadSalesData();
+                await this.loadCharts();
+            },
+            // Load sales data from API
+            async loadSalesData() {
+                try {
+                    // Fast moving products
+                    const salesResponse = await fetch('/api/sales/fast-moving');
+                    const salesData = await salesResponse.json();
+                    const fastMovers = salesData.fast_movers || [];
+                    
+                    const fm1 = document.getElementById('fast-mover-1');
+                    const fm2 = document.getElementById('fast-mover-2');
+                    const fm3 = document.getElementById('fast-mover-3');
+                    
+                    fm1.textContent = fastMovers.length > 0 ? fastMovers[0].title || "Keine" : "Keine";
+                    fm2.textContent = fastMovers.length > 1 ? fastMovers[1].title || "Keine" : "Keine";
+                    fm3.textContent = fastMovers.length > 2 ? fastMovers[2].title || "Keine" : "Keine";
+                    
+                    const priceAdjust = document.getElementById('price-adjust-need');
+                    priceAdjust.textContent = salesData.price_adjustment_candidates || 0;
+                    
+                } catch (error) {
+                    console.error('Fehler beim Laden der Sales-Daten:', error);
+                    tower.showFlash('Datenladen fehlgeschlagen', 'error');
+                }
+            },
+            // Load and initialize charts
+            async loadCharts() {
+                // Margin Distribution Chart
+                const marginCtx = document.getElementById('tower-margin-chart').getContext('2d');
+                window.towerMarginChart = new Chart(marginCtx, {
+                    type: 'doughnut',
+                    data: {
+                        labels: ['Shopify', 'Amazon', 'Google Shopping'],
+                        datasets: [{
+                            data: [35, 28, 32], // Default values, will be updated
+                            backgroundColor: ['#3b82f6', '#10b981', '#f59e0b']
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        plugins: {
+                            legend: { position: 'bottom' },
+                            tooltip: { enabled: true }
+                        }
+                    }
+                });
+
+                // Revenue Chart
+                const revenueCtx = document.getElementById('tower-revenue-chart').getContext('2d');
+                window.towerRevenueChart = new Chart(revenueCtx, {
+                    type: 'bar',
+                    data: {
+                        labels: ['Shopify', 'Amazon', 'Google Shopping'],
+                        datasets: [{
+                            label: 'Umsatz (€)',
+                            data: [12500, 9800, 8700],
+                            backgroundColor: ['#3b82f6', '#10b981', '#f59e0b']
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        plugins: {
+                            legend: { position: 'bottom' },
+                            tooltip: { enabled: true }
+                        }
+                    }
+                });
+            },
+            // Show flash messages
+            showFlash: function(message, type = 'info') {
+                const container = document.getElementById('flash-messages');
+                if (!container) return;
+                
+                const colors = {
+                    success: 'bg-emerald-100 text-emerald-800',
+                    error: 'bg-red-100 text-red-800',
+                    info: 'bg-slate-100 text-slate-800',
+                };
+                
+                const color = colors[type] || colors.info;
+                const div = document.createElement('div');
+                div.className = `p-3 rounded-lg ${color} transition-all`;
+                div.innerHTML = `<strong>${type.charAt(0).toUpperCase() + type.slice(1)}:</strong> ${message}`;
+                
+                container.appendChild(div);
+                
+                setTimeout(() => {
+                    div.style.transition = 'opacity 0.5s';
+                    div.style.opacity = '0';
+                    setTimeout(() => div.remove(), 500);
+                }, 5000);
+            }
+        };
+
+        // Initialize on page load
+        document.addEventListener('DOMContentLoaded', () => tower.init());
+    </script>
+</body>
+</html>
