@@ -15,9 +15,11 @@ docker info >/dev/null 2>&1 || fail "Docker daemon is not available. Start Docke
 if [ ! -f .env ]; then
     if command -v openssl >/dev/null 2>&1; then
         DB_PASSWORD=$(openssl rand -hex 24)
+        INTERNAL_API_KEY=$(openssl rand -hex 32)
     else
         DB_PASSWORD="omnicore-$(date +%s)-$(id -u)"
-        info "openssl not found; using a fallback generated database password."
+        INTERNAL_API_KEY="omnicore-api-$(date +%s)-$(id -u)-$(hostname)"
+        info "openssl not found; using fallback generated secrets."
     fi
     umask 077
     cat > .env <<EOF
@@ -28,6 +30,7 @@ OMNI_CORE_PORT=8000
 OMNIROUTE_URL=
 OMNIROUTE_API_KEY=
 MATTERHORN_API_TOKEN=
+INTERNAL_API_KEY=${INTERNAL_API_KEY}
 EOF
     info "Created .env with a generated PostgreSQL password."
 fi
