@@ -349,6 +349,12 @@ async def settings_page(request: Request) -> HTMLResponse:
     return templates.TemplateResponse("settings.html", {"request": request, "settings": await list_settings()})
 
 
+@app.get("/admin", response_class=HTMLResponse)
+async def admin_dashboard(request: Request) -> HTMLResponse:
+    """Render the central administrative control dashboard."""
+    return templates.TemplateResponse("admin_dashboard.html", {"request": request})
+
+
 @app.get("/api/health")
 async def health_check() -> dict[str, Any]:
     """Readiness and dependency health endpoint."""

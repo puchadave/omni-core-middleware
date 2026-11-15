@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="de">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Omni-Core Admin Control Center</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+</head>
+<body class="min-h-screen bg-slate-950 text-slate-100">
+    <header class="border-b border-slate-800 bg-slate-900">
+        <div class="mx-auto max-w-7xl px-4 py-4">
+            <h1 class="text-2xl font-bold">Omni-Core Admin Control Center</h1>
+            <p class="text-sm text-slate-400">Zentrale Steuerung und Betriebsübersicht</p>
+        </div>
+    </header>
+
+    <main class="mx-auto max-w-7xl px-4 py-8">
+        <section class="rounded-xl border border-slate-800 bg-slate-900 p-6">
+            <h2 class="text-lg font-semibold">System Health</h2>
+            <div x-data="systemHealth">
+                <template x-if="loading">Loading…</template>
+                <template x-if="!loading && health">
+                    <pre class="mt-4 overflow-x-auto rounded-lg bg-slate-950 p-4 text-sm" x-text="JSON.stringify(health, null, 2)"></pre>
+                </template>
+            </div>
+        </section>
+
+        <section class="mt-6 rounded-xl border border-slate-800 bg-slate-900 p-6">
+            <h2 class="text-lg font-semibold">Executive Overview</h2>
+            <div x-data="executiveOverview">
+                <template x-if="loading">Loading…</template>
+                <template x-if="!loading && overview">
+                    <div class="mt-4 grid gap-4 md:grid-cols-2">
+                        <div class="rounded-lg bg-slate-800 p-4">
+                            <p class="text-xs uppercase tracking-wide text-slate-400">Produkte</p>
+                            <p class="mt-2 text-2xl font-bold" x-text="overview.business.total_products"></p>
+                        </div>
+                        <div class="rounded-lg bg-slate-800 p-4">
+                            <p class="text-xs uppercase tracking-wide text-slate-400">Aktive Produkte</p>
+                            <p class="mt-2 text-2xl font-bold" x-text="overview.business.active_products"></p>
+                        </div>
+                        <div class="rounded-lg bg-slate-800 p-4">
+                            <p class="text-xs uppercase tracking-wide text-slate-400">Offene Bestellungen</p>
+                            <p class="mt-2 text-2xl font-bold" x-text="overview.business.pending_orders"></p>
+                        </div>
+                        <div class="rounded-lg bg-slate-800 p-4">
+                            <p class="text-xs uppercase tracking-wide text-slate-400">Fehler (24h)</p>
+                            <p class="mt-2 text-2xl font-bold" x-text="overview.business.error_count_24h"></p>
+                        </div>
+                    </div>
+                </template>
+            </div>
+        </section>
+
+        <section class="mt-6 rounded-xl border border-slate-800 bg-slate-900 p-6">
+            <h2 class="text-lg font-semibold">Module Status</h2>
+            <div x-data="moduleStatus">
+                <template x-if="loading">Loading…</template>
+                <template x-if="!loading && system">
+                    <pre class="mt-4 overflow-x-auto rounded-lg bg-slate-950 p-4 text-sm" x-text="JSON.stringify(system, null, 2)"></pre>
+                </template>
+            </div>
+        </section>
+
+        <section class="mt-6 rounded-xl border border-slate-800 bg-slate-900 p-6">
+            <h2 class="text-lg font-semibold">Quick Navigation</h2>
+            <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+                <a class="rounded-lg border border-slate-700 bg-slate-800 p-4 text-white hover:border-indigo-500" href="/admin/products">Produkte</a>
+                <a class="rounded-lg border border-slate-700 bg-slate-800 p-4 text-white hover:border-indigo-500" href="/admin/orders">Bestellungen</a>
+                <a class="rounded-lg border border-slate-700 bg-slate-800 p-4 text-white hover:border-indigo-500" href="/admin/settings">Einstellungen</a>
+                <a class="rounded-lg border border-slate-700 bg-slate-800 p-4 text-white hover:border-indigo-500" href="/omniroute">OmniRoute</a>
+                <a class="rounded-lg border border-slate-700 bg-slate-800 p-4 text-white hover:border-indigo-500" href="/google">Google Merchant</a>
+                <a class="rounded-lg border border-slate-700 bg-slate-800 p-4 text-white hover:border-indigo-500" href="/sales_marketing_tower">Sales &amp; Marketing</a>
+            </div>
+        </section>
+    </main>
+
+    <script>
+        document.addEventListener('alpine:init', () => {
+            Alpine.data('systemHealth', () => ({
+                loading: true,
+                health: null,
+                async init() {
+                    try {
+                        const res = await fetch('/api/control-center/overview');
+                        this.health = await res.json();
+                    } finally {
+                        this.loading = false;
+                    }
+                }
+            }));
+
+            Alpine.data('executiveOverview', () => ({
+                loading: true,
+                overview: null,
+                async init() {
+                    try {
+                        const res = await fetch('/api/control-center/overview');
+                        this.overview = await res.json();
+                    } finally {
+                        this.loading = false;
+                    }
+                }
+            }));
+
+            Alpine.data('moduleStatus', () => ({
+                loading: true,
+                system: null,
+                async init() {
+                    const [overviewRes, systemRes] = await Promise.all([
+                        fetch('/api/control-center/overview'),
+                        fetch('/api/control-center/system'),
+                    ]);
+                    this.overview = await overviewRes.json();
+                    this.system = await systemRes.json();
+                    this.loading = false;
+                }
+            }));
+        });
+    </script>
+</body>
+</html>
