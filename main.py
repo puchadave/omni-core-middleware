@@ -1770,7 +1770,10 @@ async def control_center_dashboard() -> dict[str, Any]:
     """Return aggregated Global Control Center dashboard data."""
     if runtime.control_center is None:
         raise HTTPException(status_code=503, detail="Control center not initialized")
-    return await runtime.control_center.get_full_dashboard()
+    data = await runtime.control_center.get_full_dashboard()
+    data["system_intelligence"]["uptime_seconds"] = runtime.uptime_seconds
+    data["system_intelligence"]["database"] = "postgresql" if DATABASE_URL else "sqlite-wal"
+    return data
 
 
 @app.get("/control-center", response_class=HTMLResponse)
