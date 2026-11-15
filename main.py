@@ -354,7 +354,7 @@ class LoginRequest(BaseModel):
 
 
 @app.post("/api/auth/login")
-async def login(payload: LoginRequest, response: Response) -> dict[str, str]:
+async def login(request: Request, payload: LoginRequest, response: Response) -> dict[str, str]:
     """Authenticate a browser session using the configured internal API key."""
     expected = os.getenv("INTERNAL_API_KEY", "").strip()
     if not expected or not hmac.compare_digest(payload.api_key, expected):
@@ -365,7 +365,7 @@ async def login(payload: LoginRequest, response: Response) -> dict[str, str]:
         max_age=SESSION_TTL_SECONDS,
         httponly=True,
         samesite="lax",
-        secure=False,
+        secure=request.url.scheme == "https",
     )
     return {"status": "ok", "message": "Authenticated"}
 
