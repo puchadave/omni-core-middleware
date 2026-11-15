@@ -7,20 +7,20 @@ Automatisierte, idempotente Bereitstellung einer produktionsnahen Shopware-6-Ins
 Auf dem **Proxmox-VE-Host** als `root` ausführen:
 
 ```bash
-bash -c "$(curl -fsSL https://raw.githubusercontent.com/puchadave/omni-core-middleware/main/deploy/shopware-proxmox/install.sh)"
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/puchadave/omni-core-middleware/feature/full-admin_webui_control_center/deploy/shopware-proxmox/install.sh)"
 ```
 
 Mit eigener Konfiguration (empfohlen für Produktion):
 
 ```bash
 CONFIG_URL="https://example.com/shopware-config.yaml" \
-bash -c "$(curl -fsSL https://raw.githubusercontent.com/puchadave/omni-core-middleware/main/deploy/shopware-proxmox/install.sh)"
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/puchadave/omni-core-middleware/feature/full-admin_webui_control_center/deploy/shopware-proxmox/install.sh)"
 ```
 
 Alternativ lokale Konfigurationsdatei:
 
 ```bash
-git clone --depth 1 https://github.com/puchadave/omni-core-middleware.git /opt/omni-shopware-deploy-src
+git clone --depth 1 --branch feature/full-admin_webui_control_center https://github.com/puchadave/omni-core-middleware.git /opt/omni-shopware-deploy-src
 cd /opt/omni-shopware-deploy-src/deploy/shopware-proxmox
 cp config.yaml config.production.yaml
 # config.production.yaml anpassen (Domain, CTID, Ressourcen, SSL, Backup-Ziel, etc.)

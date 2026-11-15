@@ -25,6 +25,30 @@ Open:
 - API documentation: http://localhost:8000/docs
 - Health endpoint: http://localhost:8000/api/health
 
+
+## Proxmox one-click installations
+
+**Shopware 6 (production, middleware-ready, recommended):**
+
+```sh
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/puchadave/omni-core-middleware/feature/full-admin_webui_control_center/deploy/shopware-proxmox/install.sh)"
+```
+
+With custom config:
+
+```sh
+CONFIG_URL="https://example.com/shopware-config.yaml" \
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/puchadave/omni-core-middleware/feature/full-admin_webui_control_center/deploy/shopware-proxmox/install.sh)"
+```
+
+See `deploy/shopware-proxmox/README.md` and `deploy/shopware-proxmox/config.yaml`.
+
+**Omni-Core WaWi LXC (legacy installer, fixed):**
+
+```sh
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/puchadave/omni-core-middleware/feature/full-admin_webui_control_center/deploy/proxmox/install.sh)"
+```
+
 ## Included stack
 
 - `db`: PostgreSQL 15 Alpine, internal network only, persistent `pg_data` volume.

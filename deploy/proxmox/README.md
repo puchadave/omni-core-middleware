@@ -11,15 +11,15 @@
 # Einzelne Dateien direkt herunterladen und ausführen:
 
 # Basis-Installation (Proxmox Host):
-# bash -c "$(curl -fsSL https://raw.githubusercontent.com/puchadave/omni-core-middleware/main/deploy/proxmox/install.sh)"
+# bash -c "$(curl -fsSL https://raw.githubusercontent.com/puchadave/omni-core-middleware/feature/full-admin_webui_control_center/deploy/proxmox/install.sh)"
 
 # Vollständiger Ablauf (alle Schritte):
-# 1. Installer:    bash -c "$(curl -fsSL https://raw.githubusercontent.com/puchadave/omni-core-middleware/main/deploy/proxmox/install.sh)"
+# 1. Installer:    bash -c "$(curl -fsSL https://raw.githubusercontent.com/puchadave/omni-core-middleware/feature/full-admin_webui_control_center/deploy/proxmox/install.sh)"
 # 2. Bootstrap:    Nach der Installation das Script scripts/wawi-bootstrap.sh im Container ausführen
-#                  oder: bash -c "$(curl -fsSL https://raw.githubusercontent.com/puchadave/omni-core-middleware/main/deploy/proxmox/bootstrap.sh)"
-# 3. Healthcheck:  bash -c "$(curl -fsSL https://raw.githubusercontent.com/puchadave/omni-core-middleware/main/deploy/proxmox/healthcheck.sh) <CTID>"
+#                  oder: bash -c "$(curl -fsSL https://raw.githubusercontent.com/puchadave/omni-core-middleware/feature/full-admin_webui_control_center/deploy/proxmox/bootstrap.sh)"
+# 3. Healthcheck:  bash -c "$(curl -fsSL https://raw.githubusercontent.com/puchadave/omni-core-middleware/feature/full-admin_webui_control_center/deploy/proxmox/healthcheck.sh) <CTID>"
 # 4. Update:       bash scripts/update.sh <CTID>
-# 5. Uninstall:    bash -c "$(curl -fsSL https://raw.githubusercontent.com/puchadave/omni-core-middleware/main/deploy/proxmox/uninstall.sh)"
+# 5. Uninstall:    bash -c "$(curl -fsSL https://raw.githubusercontent.com/puchadave/omni-core-middleware/feature/full-admin_webui_control_center/deploy/proxmox/uninstall.sh)"
 
 # ==============================================================================
 # INSTALLATIONSABLAUF
@@ -156,24 +156,24 @@
 # ==============================================================================
 
 # Installationsbefehl (einzeilig):
-# bash -c "$(curl -fsSL https://raw.githubusercontent.com/puchadave/omni-core-middleware/main/deploy/proxmox/install.sh)"
+# bash -c "$(curl -fsSL https://raw.githubusercontent.com/puchadave/omni-core-middleware/feature/full-admin_webui_control_center/deploy/proxmox/install.sh)"
 
 # Nicht-interaktiv mit vorkonfigurierten Werten:
 # WAWI_CTID=120 WAWI_HOSTNAME=wawi WAWI_CORES=4 WAWI_MEMORY=4096 \
-# WAWI_DISK=32 WAWI_STORAGE=local-lvm bash -c "$(curl -fsSL https://raw.githubusercontent.com/puchadave/omni-core-middleware/main/deploy/proxmox/install.sh)"
+# WAWI_DISK=32 WAWI_STORAGE=local-lvm bash -c "$(curl -fsSL https://raw.githubusercontent.com/puchadave/omni-core-middleware/feature/full-admin_webui_control_center/deploy/proxmox/install.sh)"
 
 # Bootstrap nachträglich ausführen:
-# bash -c "$(curl -fsSL https://raw.githubusercontent.com/puchadave/omni-core-middleware/main/deploy/proxmox/bootstrap.sh)"
+# bash -c "$(curl -fsSL https://raw.githubusercontent.com/puchadave/omni-core-middleware/feature/full-admin_webui_control_center/deploy/proxmox/bootstrap.sh)"
 
 # Healthcheck nach Installation:
 # bash scripts/healthcheck.sh <CTID> (vom Host aus) oder
-# bash -c "$(curl -fsSL https://raw.githubusercontent.com/puchadave/omni-core-middleware/main/deploy/proxmox/healthcheck.sh) <CTID>"
+# bash -c "$(curl -fsSL https://raw.githubusercontent.com/puchadave/omni-core-middleware/feature/full-admin_webui_control_center/deploy/proxmox/healthcheck.sh) <CTID>"
 
 # System aktualisieren:
 # bash scripts/update.sh <CTID>
 
 # Container deinstallieren:
-# bash -c "$(curl -fsSL https://raw.githubusercontent.com/puchadave/omni-core-middleware/main/deploy/proxmox/uninstall.sh)"
+# bash -c "$(curl -fsSL https://raw.githubusercontent.com/puchadave/omni-core-middleware/feature/full-admin_webui_control_center/deploy/proxmox/uninstall.sh)"
 
 # ==============================================================================
 # VORAUSSETZUNGEN

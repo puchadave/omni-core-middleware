@@ -26,6 +26,25 @@
 - Port 20128 für OmniRoute Gateway (optional, kann konfiguriert werden)
 - Outbound Internetzugang für Matterhorn XML Download
 
+
+## Shopware Proxmox One-Click Deployment
+
+For automated Shopware 6 production deployment on Proxmox VE (LXC, middleware-ready):
+
+```bash
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/puchadave/omni-core-middleware/feature/full-admin_webui_control_center/deploy/shopware-proxmox/install.sh)"
+```
+
+With custom configuration (recommended):
+
+```bash
+CONFIG_URL="https://example.com/shopware-config.yaml" \
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/puchadave/omni-core-middleware/feature/full-admin_webui_control_center/deploy/shopware-proxmox/install.sh)"
+```
+
+Details: `deploy/shopware-proxmox/README.md`.
+
+
 ## Installation Schrittschritt
 
 ### Schritt 1: Repository klonen
