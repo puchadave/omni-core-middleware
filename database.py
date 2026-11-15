@@ -3938,6 +3938,62 @@ async def creative_output_create(*, output_id: str, job_id: str, asset_id: str, 
         await db.commit()
 
 
+async def creative_output_get(output_id: str) -> dict[str, Any] | None:
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT * FROM creative_outputs WHERE id = $1", output_id)
+        return dict(row) if row else None
+    async with get_connection() as db:
+        cursor = await db.execute("SELECT * FROM creative_outputs WHERE id = ?", (output_id,))
+        row = await cursor.fetchone()
+        await cursor.close()
+        return dict(row) if row else None
+
+
+async def creative_output_update(output_id: str, **fields: Any) -> bool:
+    import json as _json
+    allowed = {"quality_score", "fidelity_score", "model_consistency_score", "technical_score", "approval_status", "rejection_reason", "provenance"}
+    column_map = {"provenance": "provenance_json"}
+    updates = {}
+    for key, value in fields.items():
+        if key not in allowed or value is None:
+            continue
+        column = column_map.get(key, key)
+        if key == "provenance":
+            updates[column] = _json.dumps(value)
+        else:
+            updates[column] = value
+    if not updates:
+        return False
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT id FROM creative_outputs WHERE id = $1", output_id)
+            if not row:
+                return False
+            assignments = []
+            params: list[Any] = []
+            for index, (column, value) in enumerate(updates.items(), start=1):
+                cast = "::jsonb" if column.endswith("_json") else ""
+                assignments.append(f"{column} = ${index}{cast}")
+                params.append(value)
+            params.append(output_id)
+            await conn.execute(f"UPDATE creative_outputs SET {', '.join(assignments)} WHERE id = ${len(params)}", *params)
+        return True
+    async with get_connection() as db:
+        cursor = await db.execute("SELECT id FROM creative_outputs WHERE id = ?", (output_id,))
+        row = await cursor.fetchone()
+        await cursor.close()
+        if not row:
+            return False
+        assignments = [f"{column} = ?" for column in updates]
+        params = list(updates.values()) + [output_id]
+        await db.execute(f"UPDATE creative_outputs SET {', '.join(assignments)} WHERE id = ?", tuple(params))
+        await db.commit()
+        return True
+
+
 async def creative_output_list(job_id: str | None = None, asset_id: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
     safe_limit = min(max(limit, 1), 500)
     if uses_postgres():
