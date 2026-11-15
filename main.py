@@ -58,6 +58,11 @@ from services.shopware_description_engine import DescriptionEngine, SEOCenter, D
 from services.competitor_provider import provider_registry, SearchResult, ExampleProvider
 from services.competitor_matching import ProductMatchingEngine, classify_match_score, MatchResult
 from services.competitor_pricing import DynamicPricingEngine, PricingRule, STRATEGY_MARKET_AVERAGE
+from services.google_merchant_client import GoogleMerchantClient
+from services.google_product_mapper import GoogleProductMapper, GoogleProductValidator, build_export_record
+from services.google_export_engine import AutonomousExportEngine, ExportQueueItem as GMExportQueueItem
+from services.omniroute_provider import AIProvider, ProviderManager
+from services.omniroute_model_registry import AIModel, ModelRegistry, RoutingRule, RoutingPolicy, IntelligentRoutingEngine, CostCalculator
 from services.trend_engine import TrendEngine
 
 logging.basicConfig(
@@ -127,6 +132,16 @@ class AppRuntime:
         # Competitor intelligence
         self.competitor_matching_engine: ProductMatchingEngine | None = None
         self.competitor_pricing_engine: DynamicPricingEngine | None = None
+        # Google Merchant Center
+        self.google_merchant_clients: dict[str, GoogleMerchantClient] = {}
+        self.google_mappers: dict[str, GoogleProductMapper] = {}
+        self.google_validators: dict[str, GoogleProductValidator] = {}
+        self.google_export_engines: dict[str, AutonomousExportEngine] = {}
+        # OmniRoute Control Center
+        self.omniroute_provider_manager: ProviderManager | None = None
+        self.omniroute_model_registry: ModelRegistry | None = None
+        self.omniroute_routing_engine: IntelligentRoutingEngine | None = None
+        self.omniroute_cost_calculator: CostCalculator | None = None
 
     @property
     def uptime_seconds(self) -> int:
@@ -223,6 +238,15 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     # Initialize Competitor Intelligence
     runtime.competitor_matching_engine = ProductMatchingEngine()
     runtime.competitor_pricing_engine = DynamicPricingEngine()
+    # Initialize Google Merchant Center
+    runtime.google_mappers = {}
+    runtime.google_validators = {}
+    runtime.google_export_engines = {}
+    # Initialize OmniRoute Control Center
+    runtime.omniroute_provider_manager = ProviderManager()
+    runtime.omniroute_model_registry = ModelRegistry()
+    runtime.omniroute_routing_engine = IntelligentRoutingEngine(runtime.omniroute_model_registry)
+    runtime.omniroute_cost_calculator = CostCalculator()
     await write_log("INFO", "application_started", "Omni-Core middleware started.")
     try:
         yield
@@ -1021,4 +1045,625 @@ async def competitor_stats():
         "connected_providers": len(provider_registry.list_by_status("connected")),
         "matching_engine": runtime.competitor_matching_engine is not None,
         "pricing_engine": runtime.competitor_pricing_engine is not None,
+    }
+
+# ---------------------------------------------------------------------------
+# Google Merchant Center API
+# ---------------------------------------------------------------------------
+
+from pydantic import BaseModel, Field
+
+class GoogleAccountCreate(BaseModel):
+    merchant_id: str
+    account_name: str
+    google_cloud_project_id: str
+    oauth_token_encrypted: str
+    oauth_refresh_token_encrypted: str | None = None
+    service_account_encrypted: str | None = None
+    is_primary: bool = False
+
+class GoogleProductExportRequest(BaseModel):
+    account_id: str
+    product_sku: str
+    ai_title: str | None = None
+    ai_description: str | None = None
+    ai_image_url: str | None = None
+    shop_url: str | None = None
+
+class GoogleSyncRequest(BaseModel):
+    account_id: str
+    job_type: str = "full_sync"
+
+@app.post("/api/google/accounts")
+async def create_google_account(payload: GoogleAccountCreate):
+    """Create a Google Merchant Center account connection."""
+    from uuid import uuid4
+    account_id = str(uuid4())
+    
+    from database import google_upsert_account
+    await google_upsert_account(
+        account_id=account_id,
+        merchant_id=payload.merchant_id,
+        account_name=payload.account_name,
+        google_cloud_project_id=payload.google_cloud_project_id,
+        oauth_token_encrypted=payload.oauth_token_encrypted,
+        oauth_refresh_token_encrypted=payload.oauth_refresh_token_encrypted,
+        service_account_encrypted=payload.service_account_encrypted,
+        is_primary=payload.is_primary,
+    )
+    
+    client = GoogleMerchantClient(merchant_id=payload.merchant_id)
+    client.set_oauth2_token(
+        access_token=payload.oauth_token_encrypted,
+        expires_in=3600,
+        refresh_token=payload.oauth_refresh_token_encrypted,
+    )
+    runtime.google_merchant_clients[account_id] = client
+    
+    mapper = GoogleProductMapper(country="DE", language="de", currency="EUR")
+    validator = GoogleProductValidator(country="DE", language="de", currency="EUR")
+    engine = AutonomousExportEngine(
+        merchant_client=client,
+        mapper=mapper,
+        validator=validator,
+        omniroute_client=runtime.omniroute,
+    )
+    runtime.google_mappers[account_id] = mapper
+    runtime.google_validators[account_id] = validator
+    runtime.google_export_engines[account_id] = engine
+    
+    await write_log("INFO", "google_account_created", f"Google account {payload.account_name} created.", {"account_id": account_id, "merchant_id": payload.merchant_id})
+    return {
+        "status": "ok",
+        "account_id": account_id,
+        "merchant_id": payload.merchant_id,
+        "account_name": payload.account_name,
+    }
+
+@app.get("/api/google/accounts")
+async def list_google_accounts():
+    """List all Google Merchant Center accounts."""
+    from database import google_list_accounts
+    accounts = await google_list_accounts()
+    result = []
+    for acc in accounts:
+        result.append({
+            "id": acc["id"],
+            "merchant_id": acc["merchant_id"],
+            "account_name": acc["account_name"],
+            "account_status": acc["account_status"],
+            "is_primary": acc["is_primary"],
+            "last_token_status": acc["last_token_status"],
+            "is_authenticated": acc["id"] in runtime.google_merchant_clients and runtime.google_merchant_clients[acc["id"]].is_authenticated,
+        })
+    return {"status": "ok", "accounts": result}
+
+@app.post("/api/google/accounts/{account_id}/test")
+async def test_google_connection(account_id: str):
+    """Test a Google Merchant Center connection."""
+    client = runtime.google_merchant_clients.get(account_id)
+    if not client:
+        raise HTTPException(status_code=404, detail="Account not found or not initialized")
+    health = await client.check_health()
+    return {"status": "ok", "account_id": account_id, "health": health}
+
+@app.post("/api/google/export")
+async def google_export_product(payload: GoogleProductExportRequest):
+    """Export a product to Google Merchant Center."""
+    engine = runtime.google_export_engines.get(payload.account_id)
+    if not engine:
+        raise HTTPException(status_code=404, detail="Account not found or export engine not initialized")
+    
+    from services.canonical_product_mapping import CanonicalProduct
+    from database import fetch_product
+    
+    product_data = await fetch_product(payload.product_sku)
+    if not product_data:
+        raise HTTPException(status_code=404, detail="Product not found")
+    
+    cp = CanonicalProduct.from_matterhorn("matterhorn", product_data)
+    
+    queue_id = await engine.on_quality_check_passed(
+        product_sku=payload.product_sku,
+        account_id=payload.account_id,
+        canonical_product=cp,
+        ai_title=payload.ai_title,
+        ai_description=payload.ai_description,
+        ai_image_url=payload.ai_image_url,
+        shop_url=payload.shop_url,
+    )
+    
+    return {"status": "ok", "export_id": queue_id, "product_sku": payload.product_sku}
+
+@app.get("/api/google/export/queue")
+async def list_google_export_queue(account_id: str | None = None, status: str | None = None, limit: int = 100):
+    """List Google export queue items."""
+    all_items = []
+    for acc_id, engine in runtime.google_export_engines.items():
+        if account_id and acc_id != account_id:
+            continue
+        items = engine.list_queue(status=status, account_id=acc_id, limit=limit)
+        for item in items:
+            all_items.append(item.to_dict())
+    
+    all_items.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+    return {"status": "ok", "queue": all_items[:limit]}
+
+@app.get("/api/google/export/stats")
+async def google_export_stats(account_id: str | None = None):
+    """Get Google export statistics."""
+    all_stats = {"total": 0, "pending": 0, "processing": 0, "completed": 0, "errors": 0, "withdrawn": 0, "retry": 0, "dead_letter": 0, "avg_validation_score": 0}
+    count = 0
+    for acc_id, engine in runtime.google_export_engines.items():
+        if account_id and acc_id != account_id:
+            continue
+        stats = engine.get_queue_stats()
+        count += 1
+        for key in all_stats:
+            all_stats[key] += stats.get(key, 0)
+    
+    if count > 0:
+        all_stats["avg_validation_score"] = round(all_stats["avg_validation_score"] / count, 1)
+    
+    return {"status": "ok", "stats": all_stats}
+
+@app.post("/api/google/export/process")
+async def process_google_export(account_id: str, max_items: int = 10):
+    """Process pending Google export queue items."""
+    engine = runtime.google_export_engines.get(account_id)
+    if not engine:
+        raise HTTPException(status_code=404, detail="Account not found or export engine not initialized")
+    result = await engine.process_queue(max_items=max_items)
+    return {"status": "ok", "account_id": account_id, "result": result}
+
+@app.post("/api/google/export/retry")
+async def retry_google_failed(account_id: str | None = None):
+    """Retry failed Google export items."""
+    retried = 0
+    for acc_id, engine in runtime.google_export_engines.items():
+        if account_id and acc_id != account_id:
+            continue
+        retried += await engine.retry_failed(account_id=acc_id)
+    return {"status": "ok", "retried": retried}
+
+@app.post("/api/google/sync")
+async def google_sync(payload: GoogleSyncRequest):
+    """Trigger a Google sync job."""
+    engine = runtime.google_export_engines.get(payload.account_id)
+    if not engine:
+        raise HTTPException(status_code=404, detail="Account not found or export engine not initialized")
+    
+    from uuid import uuid4
+    from database import google_upsert_sync_job
+    job_id = str(uuid4())
+    await google_upsert_sync_job(
+        job_id=job_id,
+        account_id=payload.account_id,
+        job_type=payload.job_type,
+        total_products=0,
+    )
+    
+    return {"status": "ok", "job_id": job_id, "job_type": payload.job_type, "account_id": payload.account_id}
+
+@app.get("/api/google/export/health/{account_id}")
+async def google_health(account_id: str):
+    """Check Google Merchant Center connection health."""
+    engine = runtime.google_export_engines.get(account_id)
+    if not engine:
+        raise HTTPException(status_code=404, detail="Account not found or export engine not initialized")
+    health = await engine.health_check()
+    return {"status": "ok", "account_id": account_id, "health": health}
+
+# ---------------------------------------------------------------------------
+# OmniRoute Control Center API
+# ---------------------------------------------------------------------------
+
+class OmniRouteProviderCreate(BaseModel):
+    name: str
+    provider_type: str = "text"
+    api_endpoint: str
+    api_key_encrypted: str
+    auth_type: str = "bearer"
+    priority: int = 100
+    rate_limit_per_minute: int = 60
+    timeout_seconds: int = 30
+    max_retries: int = 3
+    retry_delay_seconds: int = 1
+    circuit_breaker_threshold: int = 5
+    circuit_breaker_timeout_seconds: int = 300
+    capabilities: list[str] = []
+
+class OmniRouteModelCreate(BaseModel):
+    provider_id: str
+    model_id: str
+    model_name: str
+    model_version: str = ""
+    model_category: str = "general"
+    capabilities: list[str] = []
+    context_window: int = 4096
+    input_price_per_1k: float = 0.0
+    output_price_per_1k: float = 0.0
+    image_price_per_image: float = 0.0
+    rate_limit_per_minute: int = 60
+    is_active: bool = True
+
+class OmniRouteRuleCreate(BaseModel):
+    name: str
+    strategy: str
+    provider_priority: list[str] = []
+    model_category: str = "general"
+    min_quality_score: float = 0.0
+    max_cost_per_1k: float | None = None
+    max_latency_ms: int | None = None
+
+class OmniRoutePolicyCreate(BaseModel):
+    workflow_name: str
+    rule_id: str
+    fallback_rule_id: str | None = None
+
+@app.post("/api/omniroute/providers")
+async def create_omniroute_provider(payload: OmniRouteProviderCreate):
+    """Create an AI provider."""
+    from uuid import uuid4
+    from database import ai_upsert_provider
+    
+    provider_id = str(uuid4())
+    provider = AIProvider(
+        provider_id=provider_id,
+        name=payload.name,
+        provider_type=payload.provider_type,
+        api_endpoint=payload.api_endpoint,
+        api_key_encrypted=payload.api_key_encrypted,
+        auth_type=payload.auth_type,
+        priority=payload.priority,
+        rate_limit_per_minute=payload.rate_limit_per_minute,
+        timeout_seconds=payload.timeout_seconds,
+        max_retries=payload.max_retries,
+        retry_delay_seconds=payload.retry_delay_seconds,
+        circuit_breaker_threshold=payload.circuit_breaker_threshold,
+        circuit_breaker_timeout_seconds=payload.circuit_breaker_timeout_seconds,
+        capabilities=payload.capabilities,
+    )
+    
+    await ai_upsert_provider(
+        provider_id=provider_id,
+        name=payload.name,
+        provider_type=payload.provider_type,
+        api_endpoint=payload.api_endpoint,
+        api_key_encrypted=payload.api_key_encrypted,
+        auth_type=payload.auth_type,
+        priority=payload.priority,
+        rate_limit_per_minute=payload.rate_limit_per_minute,
+        timeout_seconds=payload.timeout_seconds,
+        max_retries=payload.max_retries,
+        retry_delay_seconds=payload.retry_delay_seconds,
+        circuit_breaker_threshold=payload.circuit_breaker_threshold,
+        circuit_breaker_timeout_seconds=payload.circuit_breaker_timeout_seconds,
+        capabilities_json=json.dumps(payload.capabilities),
+    )
+    
+    runtime.omniroute_provider_manager.add_provider(provider)
+    
+    await write_log("INFO", "omniroute_provider_created", f"AI provider {payload.name} created.", {"provider_id": provider_id, "type": payload.provider_type})
+    return {
+        "status": "ok",
+        "provider_id": provider_id,
+        "name": payload.name,
+        "type": payload.provider_type,
+    }
+
+@app.get("/api/omniroute/providers")
+async def list_omniroute_providers():
+    """List all AI providers."""
+    providers = runtime.omniroute_provider_manager.list_providers()
+    return {
+        "status": "ok",
+        "providers": [p.to_dict() for p in providers],
+    }
+
+@app.post("/api/omniroute/providers/{provider_id}/test")
+async def test_omniroute_provider_connection(provider_id: str):
+    """Test connection to an AI provider."""
+    result = await runtime.omniroute_provider_manager.test_connection(provider_id)
+    return {"status": "ok", **result}
+
+@app.post("/api/omniroute/providers/health")
+async def omniroute_provider_health_all():
+    """Health check all AI providers."""
+    result = await runtime.omniroute_provider_manager.health_check_all()
+    return {"status": "ok", **result}
+
+@app.post("/api/omniroute/models")
+async def create_omniroute_model(payload: OmniRouteModelCreate):
+    """Register an AI model."""
+    from uuid import uuid4
+    from database import ai_upsert_model
+    
+    model_id = str(uuid4())
+    model = AIModel(
+        model_id=model_id,
+        provider_id=payload.provider_id,
+        model_id_str=payload.model_id,
+        model_name=payload.model_name,
+        model_category=payload.model_category,
+        capabilities=payload.capabilities,
+        context_window=payload.context_window,
+        input_price_per_1k=payload.input_price_per_1k,
+        output_price_per_1k=payload.output_price_per_1k,
+        image_price_per_image=payload.image_price_per_image,
+        rate_limit_per_minute=payload.rate_limit_per_minute,
+        is_active=payload.is_active,
+    )
+    
+    await ai_upsert_model(
+        model_id=model_id,
+        provider_id=payload.provider_id,
+        model_id_str=payload.model_id,
+        model_name=payload.model_name,
+        model_category=payload.model_category,
+        context_window=payload.context_window,
+        input_price_per_1k=payload.input_price_per_1k,
+        output_price_per_1k=payload.output_price_per_1k,
+        image_price_per_image=payload.image_price_per_image,
+        rate_limit_per_minute=payload.rate_limit_per_minute,
+        capabilities_json=json.dumps(payload.capabilities),
+        is_active=payload.is_active,
+    )
+    
+    runtime.omniroute_model_registry.register_model(model)
+    
+    await write_log("INFO", "omniroute_model_created", f"AI model {payload.model_name} registered.", {"model_id": model_id, "provider_id": payload.provider_id})
+    return {
+        "status": "ok",
+        "model_id": model_id,
+        "model_name": payload.model_name,
+        "provider_id": payload.provider_id,
+    }
+
+@app.get("/api/omniroute/models")
+async def list_omniroute_models(provider_id: str | None = None, category: str | None = None):
+    """List AI models."""
+    models = runtime.omniroute_model_registry.list_models(
+        provider_id=provider_id,
+        category=category,
+        active_only=True,
+    )
+    return {
+        "status": "ok",
+        "models": [m.to_dict() for m in models],
+    }
+
+@app.post("/api/omniroute/routing/rules")
+async def create_omniroute_routing_rule(payload: OmniRouteRuleCreate):
+    """Create a routing rule."""
+    from uuid import uuid4
+    rule_id = str(uuid4())
+    rule = RoutingRule(
+        rule_id=rule_id,
+        name=payload.name,
+        strategy=payload.strategy,
+        provider_priority=payload.provider_priority,
+        model_category=payload.model_category,
+        min_quality_score=payload.min_quality_score,
+        max_cost_per_1k=payload.max_cost_per_1k,
+        max_latency_ms=payload.max_latency_ms,
+    )
+    runtime.omniroute_routing_engine.add_rule(rule)
+    return {
+        "status": "ok",
+        "rule_id": rule_id,
+        "name": payload.name,
+        "strategy": payload.strategy,
+    }
+
+@app.get("/api/omniroute/routing/rules")
+async def list_omniroute_routing_rules():
+    """List routing rules."""
+    return {
+        "status": "ok",
+        "rules": [r.to_dict() for r in runtime.omniroute_routing_engine.rules.values()],
+    }
+
+@app.post("/api/omniroute/routing/policies")
+async def create_omniroute_routing_policy(payload: OmniRoutePolicyCreate):
+    """Create a routing policy for a workflow."""
+    from uuid import uuid4
+    policy_id = str(uuid4())
+    policy = RoutingPolicy(
+        policy_id=policy_id,
+        workflow_name=payload.workflow_name,
+        rule_id=payload.rule_id,
+        fallback_rule_id=payload.fallback_rule_id,
+    )
+    runtime.omniroute_routing_engine.add_policy(policy)
+    return {
+        "status": "ok",
+        "policy_id": policy_id,
+        "workflow_name": payload.workflow_name,
+        "rule_id": payload.rule_id,
+    }
+
+@app.get("/api/omniroute/routing/policies")
+async def list_omniroute_routing_policies():
+    """List routing policies."""
+    return {
+        "status": "ok",
+        "policies": [p.to_dict() for p in runtime.omniroute_routing_engine.policies.values()],
+    }
+
+@app.post("/api/omniroute/routing/select")
+async def omniroute_select_provider(
+    workflow_name: str,
+    required_capability: str | None = None,
+    max_cost: float | None = None,
+):
+    """Select the best provider and model for a workflow."""
+    provider_id, model_id = runtime.omniroute_routing_engine.select_provider(
+        workflow_name=workflow_name,
+        required_capability=required_capability,
+        max_cost=max_cost,
+    )
+    return {
+        "status": "ok",
+        "workflow_name": workflow_name,
+        "provider_id": provider_id,
+        "model_id": model_id,
+    }
+
+@app.get("/api/omniroute/cost/calculate")
+async def omniroute_calculate_cost(
+    input_tokens: int = 0,
+    output_tokens: int = 0,
+    input_price_per_1k: float = 0.0,
+    output_price_per_1k: float = 0.0,
+    num_images: int = 0,
+    price_per_image: float = 0.0,
+):
+    """Calculate AI request cost."""
+    text_cost = runtime.omniroute_cost_calculator.calculate_text_cost(
+        input_tokens, output_tokens, input_price_per_1k, output_price_per_1k
+    )
+    image_cost = runtime.omniroute_cost_calculator.calculate_image_cost(
+        num_images, price_per_image
+    )
+    total_cost = text_cost + image_cost
+    return {
+        "status": "ok",
+        "text_cost_usd": text_cost,
+        "image_cost_usd": image_cost,
+        "total_cost_usd": total_cost,
+    }
+
+@app.get("/api/omniroute/stats")
+async def omniroute_stats():
+    """Get OmniRoute Control Center statistics."""
+    providers = runtime.omniroute_provider_manager.list_providers()
+    models = runtime.omniroute_model_registry.list_models(active_only=True)
+    return {
+        "status": "ok",
+        "providers": len(providers),
+        "active_providers": sum(1 for p in providers if p.is_active),
+        "models": len(models),
+        "active_models": sum(1 for m in models if m.is_active),
+        "routing_rules": len(runtime.omniroute_routing_engine.rules),
+        "routing_policies": len(runtime.omniroute_routing_engine.policies),
+    }
+
+# ---------------------------------------------------------------------------
+# WebIF Pages - Google Merchant Center
+# ---------------------------------------------------------------------------
+
+@app.get("/google", response_class=HTMLResponse)
+async def google_dashboard_page(request: Request):
+    """Google Merchant Center dashboard page."""
+    return templates.TemplateResponse("google_dashboard.html", {"request": request})
+
+@app.get("/google/export", response_class=HTMLResponse)
+async def google_export_page(request: Request):
+    """Google Merchant Center export page."""
+    return templates.TemplateResponse("google_export.html", {"request": request})
+
+# ---------------------------------------------------------------------------
+# WebIF Pages - OmniRoute Control Center
+# ---------------------------------------------------------------------------
+
+@app.get("/omniroute", response_class=HTMLResponse)
+async def omniroute_dashboard_page(request: Request):
+    """OmniRoute Control Center dashboard page."""
+    return templates.TemplateResponse("omniroute_dashboard.html", {"request": request})
+
+# ---------------------------------------------------------------------------
+# Integration Pipeline: Matterhorn → AI → Google Merchant Center
+# ---------------------------------------------------------------------------
+
+@app.post("/api/pipeline/matterhorn-to-google")
+async def pipeline_matterhorn_to_google(account_id: str, product_sku: str):
+    """Run the full pipeline: Matterhorn product → AI optimization → Google export."""
+    from services.canonical_product_mapping import CanonicalProduct
+    from database import fetch_product
+    
+    product_data = await fetch_product(product_sku)
+    if not product_data:
+        raise HTTPException(status_code=404, detail="Product not found")
+    
+    cp = CanonicalProduct.from_matterhorn("matterhorn", product_data)
+    
+    # Step 1: AI optimization via OmniRoute (if configured)
+    ai_title = None
+    ai_description = None
+    ai_image_url = None
+    
+    if runtime.omniroute:
+        try:
+            # Route to text AI for title optimization
+            provider_id, model_id = runtime.omniroute_routing_engine.select_provider(
+                workflow_name="google_title_optimization",
+                required_capability="text_generation",
+            )
+            if provider_id and model_id:
+                ai_response = runtime.omniroute.generate_completion(
+                    prompt=f"Optimiere folgenden Produkttitel für Google Shopping (max 150 Zeichen, Deutsch): {cp.product_name}",
+                    model=model_id,
+                    temperature=0.7,
+                    max_tokens=200,
+                )
+                ai_title = ai_response.get("generated_text", cp.product_name)[:150]
+        except Exception:
+            pass  # Use original title if AI fails
+    
+    # Step 2: Export to Google Merchant Center
+    engine = runtime.google_export_engines.get(account_id)
+    if not engine:
+        raise HTTPException(status_code=404, detail="Google export engine not initialized for account")
+    
+    queue_id = await engine.on_quality_check_passed(
+        product_sku=product_sku,
+        account_id=account_id,
+        canonical_product=cp,
+        ai_title=ai_title,
+        ai_description=ai_description,
+        ai_image_url=ai_image_url,
+        shop_url=None,
+    )
+    
+    return {
+        "status": "ok",
+        "pipeline": "matterhorn_to_google",
+        "product_sku": product_sku,
+        "export_id": queue_id,
+        "ai_optimized": ai_title is not None,
+    }
+
+@app.post("/api/pipeline/auto-export-imported")
+async def pipeline_auto_export_imported(account_id: str):
+    """Auto-export all recently imported Matterhorn products to Google."""
+    from database import recent_import_runs, fetch_product, list_products
+    from services.canonical_product_mapping import CanonicalProduct
+    
+    exported = 0
+    errors = 0
+    
+    # Get all active products
+    products = await list_products(limit=500)
+    
+    for p in products:
+        try:
+            cp = CanonicalProduct.from_matterhorn("matterhorn", p)
+            
+            queue_id = await runtime.google_export_engines[account_id].on_quality_check_passed(
+                product_sku=p["sku"],
+                account_id=account_id,
+                canonical_product=cp,
+                shop_url=None,
+            )
+            exported += 1
+        except Exception as exc:
+            errors += 1
+            logger.warning("Auto-export failed for %s: %s", p["sku"], exc)
+    
+    return {
+        "status": "ok",
+        "exported": exported,
+        "errors": errors,
+        "account_id": account_id,
     }

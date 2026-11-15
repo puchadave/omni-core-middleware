@@ -159,6 +159,392 @@ POSTGRES_SCHEMA: tuple[str, ...] = (
         error_message TEXT NOT NULL DEFAULT ''
     )
     """,
+    # ── Google Merchant Center Tables ────────────────────────────────────
+    """
+    CREATE TABLE IF NOT EXISTS google_accounts (
+        id TEXT PRIMARY KEY,
+        merchant_id TEXT NOT NULL UNIQUE,
+        account_name TEXT NOT NULL,
+        google_cloud_project_id TEXT NOT NULL,
+        account_status TEXT NOT NULL DEFAULT 'pending' CHECK (account_status IN ('pending', 'active', 'suspended', 'disconnected')),
+        is_primary BOOLEAN NOT NULL DEFAULT FALSE,
+        oauth_token_encrypted TEXT NOT NULL,
+        oauth_refresh_token_encrypted TEXT,
+        service_account_encrypted TEXT,
+        scopes_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+        token_expires_at TIMESTAMPTZ,
+        last_token_validation TIMESTAMPTZ,
+        last_token_status TEXT NOT NULL DEFAULT 'unknown',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS google_credentials (
+        id TEXT PRIMARY KEY,
+        account_id TEXT NOT NULL REFERENCES google_accounts(id) ON DELETE CASCADE,
+        credential_type TEXT NOT NULL CHECK (credential_type IN ('oauth2', 'service_account')),
+        credential_name TEXT NOT NULL,
+        encrypted_value TEXT NOT NULL,
+        is_active BOOLEAN NOT NULL DEFAULT TRUE,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS google_data_sources (
+        id TEXT PRIMARY KEY,
+        account_id TEXT NOT NULL REFERENCES google_accounts(id) ON DELETE CASCADE,
+        data_source_id TEXT NOT NULL,
+        display_name TEXT NOT NULL,
+        source_type TEXT NOT NULL DEFAULT 'products',
+        status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'inactive', 'error')),
+        primary_country TEXT NOT NULL DEFAULT 'DE',
+        primary_language TEXT NOT NULL DEFAULT 'de',
+        primary_currency TEXT NOT NULL DEFAULT 'EUR',
+        feed_label TEXT NOT NULL DEFAULT '',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE(account_id, data_source_id)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS google_settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL DEFAULT '',
+        is_secret BOOLEAN NOT NULL DEFAULT FALSE,
+        category TEXT NOT NULL DEFAULT 'general' CHECK (category IN ('general', 'export', 'sync', 'targeting', 'validation')),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS google_product_mappings (
+        id TEXT PRIMARY KEY,
+        account_id TEXT NOT NULL REFERENCES google_accounts(id) ON DELETE CASCADE,
+        matterhorn_field TEXT NOT NULL,
+        google_field TEXT NOT NULL,
+        mapping_type TEXT NOT NULL CHECK (mapping_type IN ('direct', 'transform', 'fallback', 'conditional', 'concatenate', 'clean')),
+        mapping_config_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+        priority INTEGER NOT NULL DEFAULT 0,
+        is_active BOOLEAN NOT NULL DEFAULT TRUE,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS google_product_exports (
+        id TEXT PRIMARY KEY,
+        account_id TEXT NOT NULL REFERENCES google_accounts(id) ON DELETE CASCADE,
+        product_sku TEXT NOT NULL REFERENCES products(sku) ON DELETE CASCADE,
+        google_product_id TEXT NOT NULL DEFAULT '',
+        offer_id TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('pending', 'processing', 'validation', 'exporting', 'completed', 'error', 'withdrawn', 'retry')),
+        payload_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+        response_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+        error_message TEXT NOT NULL DEFAULT '',
+        retry_count INTEGER NOT NULL DEFAULT 0,
+        max_retries INTEGER NOT NULL DEFAULT 3,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        started_at TIMESTAMPTZ,
+        completed_at TIMESTAMPTZ,
+        UNIQUE(product_sku, offer_id)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS google_sync_jobs (
+        id TEXT PRIMARY KEY,
+        account_id TEXT NOT NULL REFERENCES google_accounts(id) ON DELETE CASCADE,
+        job_type TEXT NOT NULL CHECK (job_type IN ('inventory', 'price', 'full_sync', 'product_update', 'withdrawal')),
+        status TEXT NOT NULL CHECK (status IN ('pending', 'running', 'completed', 'error')),
+        total_products INTEGER NOT NULL DEFAULT 0,
+        processed_products INTEGER NOT NULL DEFAULT 0,
+        failed_products INTEGER NOT NULL DEFAULT 0,
+        error_message TEXT NOT NULL DEFAULT '',
+        started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        completed_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS google_sync_errors (
+        id BIGSERIAL PRIMARY KEY,
+        account_id TEXT NOT NULL REFERENCES google_accounts(id) ON DELETE CASCADE,
+        product_sku TEXT NOT NULL REFERENCES products(sku) ON DELETE CASCADE,
+        error_type TEXT NOT NULL,
+        error_code TEXT NOT NULL DEFAULT '',
+        error_message TEXT NOT NULL DEFAULT '',
+        occurred_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        resolved BOOLEAN NOT NULL DEFAULT FALSE,
+        resolved_at TIMESTAMPTZ
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS google_product_diagnostics (
+        id TEXT PRIMARY KEY,
+        account_id TEXT NOT NULL REFERENCES google_accounts(id) ON DELETE CASCADE,
+        product_sku TEXT NOT NULL REFERENCES products(sku) ON DELETE CASCADE,
+        google_product_id TEXT NOT NULL DEFAULT '',
+        diagnosis_status TEXT NOT NULL CHECK (diagnosis_status IN ('active', 'disapproved', 'pending', 'limited')),
+        issues_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+        last_checked TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS google_performance_metrics (
+        id BIGSERIAL PRIMARY KEY,
+        account_id TEXT NOT NULL REFERENCES google_accounts(id) ON DELETE CASCADE,
+        metric_date DATE NOT NULL,
+        impressions INTEGER NOT NULL DEFAULT 0,
+        clicks INTEGER NOT NULL DEFAULT 0,
+        ctr NUMERIC(6,4) NOT NULL DEFAULT 0,
+        cpc NUMERIC(10,4) NOT NULL DEFAULT 0,
+        cost NUMERIC(12,4) NOT NULL DEFAULT 0,
+        conversions INTEGER NOT NULL DEFAULT 0,
+        conversion_value NUMERIC(12,4) NOT NULL DEFAULT 0,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS google_audit_logs (
+        id BIGSERIAL PRIMARY KEY,
+        account_id TEXT NOT NULL REFERENCES google_accounts(id) ON DELETE CASCADE,
+        action TEXT NOT NULL,
+        actor TEXT NOT NULL DEFAULT 'system',
+        target_type TEXT NOT NULL DEFAULT '',
+        target_id TEXT NOT NULL DEFAULT '',
+        details_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
+    # ── OmniRoute Control Center Tables ─────────────────────────────────
+    """
+    CREATE TABLE IF NOT EXISTS ai_providers (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        provider_type TEXT NOT NULL CHECK (provider_type IN ('text', 'image', 'video', 'embedding', 'multimodal')),
+        api_endpoint TEXT NOT NULL,
+        api_key_encrypted TEXT NOT NULL,
+        auth_type TEXT NOT NULL DEFAULT 'bearer' CHECK (auth_type IN ('bearer', 'api_key', 'oauth2')),
+        is_active BOOLEAN NOT NULL DEFAULT TRUE,
+        priority INTEGER NOT NULL DEFAULT 100,
+        rate_limit_per_minute INTEGER NOT NULL DEFAULT 60,
+        timeout_seconds INTEGER NOT NULL DEFAULT 30,
+        max_retries INTEGER NOT NULL DEFAULT 3,
+        retry_delay_seconds INTEGER NOT NULL DEFAULT 1,
+        circuit_breaker_threshold INTEGER NOT NULL DEFAULT 5,
+        circuit_breaker_timeout_seconds INTEGER NOT NULL DEFAULT 300,
+        capabilities_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+        health_status TEXT NOT NULL DEFAULT 'unknown' CHECK (health_status IN ('healthy', 'degraded', 'unhealthy', 'unknown')),
+        last_health_check TIMESTAMPTZ,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS ai_provider_credentials (
+        id TEXT PRIMARY KEY,
+        provider_id TEXT NOT NULL REFERENCES ai_providers(id) ON DELETE CASCADE,
+        credential_name TEXT NOT NULL,
+        encrypted_value TEXT NOT NULL,
+        is_active BOOLEAN NOT NULL DEFAULT TRUE,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS ai_models (
+        id TEXT PRIMARY KEY,
+        provider_id TEXT NOT NULL REFERENCES ai_providers(id) ON DELETE CASCADE,
+        model_id TEXT NOT NULL,
+        model_name TEXT NOT NULL,
+        model_version TEXT NOT NULL DEFAULT '',
+        model_category TEXT NOT NULL DEFAULT 'general' CHECK (model_category IN ('text', 'image', 'video', 'embedding', 'multimodal')),
+        capabilities_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+        context_window INTEGER NOT NULL DEFAULT 4096,
+        input_price_per_1k NUMERIC(10,6) NOT NULL DEFAULT 0,
+        output_price_per_1k NUMERIC(10,6) NOT NULL DEFAULT 0,
+        image_price_per_image NUMERIC(10,6) NOT NULL DEFAULT 0,
+        rate_limit_per_minute INTEGER NOT NULL DEFAULT 60,
+        is_active BOOLEAN NOT NULL DEFAULT TRUE,
+        is_discoverable BOOLEAN NOT NULL DEFAULT TRUE,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE(provider_id, model_id)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS ai_model_capabilities (
+        id TEXT PRIMARY KEY,
+        model_id TEXT NOT NULL REFERENCES ai_models(id) ON DELETE CASCADE,
+        capability_name TEXT NOT NULL,
+        capability_value TEXT NOT NULL DEFAULT '',
+        confidence NUMERIC(3,2) NOT NULL DEFAULT 1.0,
+        source TEXT NOT NULL DEFAULT 'discovered' CHECK (source IN ('discovered', 'manual')),
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS ai_routing_rules (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        strategy TEXT NOT NULL CHECK (strategy IN ('lowest_cost', 'highest_quality', 'lowest_latency', 'provider_priority', 'capability_matching', 'weighted_distribution')),
+        provider_priority_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+        model_category TEXT NOT NULL DEFAULT 'general',
+        min_quality_score NUMERIC(3,2) NOT NULL DEFAULT 0.0,
+        max_cost_per_1k NUMERIC(10,6),
+        max_latency_ms INTEGER,
+        is_active BOOLEAN NOT NULL DEFAULT TRUE,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS ai_routing_policies (
+        id TEXT PRIMARY KEY,
+        workflow_name TEXT NOT NULL,
+        rule_id TEXT NOT NULL REFERENCES ai_routing_rules(id) ON DELETE CASCADE,
+        fallback_rule_id TEXT REFERENCES ai_routing_rules(id),
+        is_active BOOLEAN NOT NULL DEFAULT TRUE,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE(workflow_name)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS ai_workflows (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        description TEXT NOT NULL DEFAULT '',
+        trigger_event TEXT NOT NULL DEFAULT '',
+        is_active BOOLEAN NOT NULL DEFAULT TRUE,
+        max_executions_per_hour INTEGER NOT NULL DEFAULT 1000,
+        budget_per_execution NUMERIC(10,4) NOT NULL DEFAULT 0,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS ai_workflow_configs (
+        id TEXT PRIMARY KEY,
+        workflow_id TEXT NOT NULL REFERENCES ai_workflows(id) ON DELETE CASCADE,
+        step_name TEXT NOT NULL,
+        model_id TEXT REFERENCES ai_models(id),
+        provider_id TEXT REFERENCES ai_providers(id),
+        prompt_template TEXT NOT NULL DEFAULT '',
+        parameters_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+        step_order INTEGER NOT NULL DEFAULT 0,
+        is_required BOOLEAN NOT NULL DEFAULT TRUE,
+        on_failure TEXT NOT NULL DEFAULT 'stop' CHECK (on_failure IN ('stop', 'continue', 'retry', 'fallback')),
+        max_retries INTEGER NOT NULL DEFAULT 3,
+        timeout_seconds INTEGER NOT NULL DEFAULT 30,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS ai_usage_records (
+        id BIGSERIAL PRIMARY KEY,
+        provider_id TEXT NOT NULL REFERENCES ai_providers(id),
+        model_id TEXT REFERENCES ai_models(id),
+        workflow_id TEXT REFERENCES ai_workflows(id),
+        request_type TEXT NOT NULL,
+        tokens_input INTEGER NOT NULL DEFAULT 0,
+        tokens_output INTEGER NOT NULL DEFAULT 0,
+        images_generated INTEGER NOT NULL DEFAULT 0,
+        videos_generated INTEGER NOT NULL DEFAULT 0,
+        cost_usd NUMERIC(10,6) NOT NULL DEFAULT 0,
+        latency_ms INTEGER NOT NULL DEFAULT 0,
+        status TEXT NOT NULL DEFAULT 'success' CHECK (status IN ('success', 'error', 'retry', 'fallback')),
+        error_message TEXT NOT NULL DEFAULT '',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS ai_cost_records (
+        id BIGSERIAL PRIMARY KEY,
+        provider_id TEXT NOT NULL REFERENCES ai_providers(id),
+        model_id TEXT REFERENCES ai_models(id),
+        workflow_id TEXT REFERENCES ai_workflows(id),
+        date DATE NOT NULL,
+        total_cost_usd NUMERIC(12,4) NOT NULL DEFAULT 0,
+        request_count INTEGER NOT NULL DEFAULT 0,
+        token_count INTEGER NOT NULL DEFAULT 0,
+        image_count INTEGER NOT NULL DEFAULT 0,
+        video_count INTEGER NOT NULL DEFAULT 0,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS ai_budgets (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        budget_type TEXT NOT NULL CHECK (budget_type IN ('daily', 'monthly', 'provider', 'workflow')),
+        target_id TEXT NOT NULL DEFAULT '',
+        amount_usd NUMERIC(12,4) NOT NULL DEFAULT 0,
+        warning_threshold_percent INTEGER NOT NULL DEFAULT 80,
+        action_on_exceed TEXT NOT NULL DEFAULT 'warn' CHECK (action_on_exceed IN ('warn', 'pause', 'fallback', 'block')),
+        is_active BOOLEAN NOT NULL DEFAULT TRUE,
+        reset_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS ai_provider_health (
+        id BIGSERIAL PRIMARY KEY,
+        provider_id TEXT NOT NULL REFERENCES ai_providers(id),
+        status TEXT NOT NULL CHECK (status IN ('healthy', 'degraded', 'unhealthy', 'unknown')),
+        response_time_ms INTEGER NOT NULL DEFAULT 0,
+        error_rate NUMERIC(5,4) NOT NULL DEFAULT 0,
+        last_check TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        details_json JSONB NOT NULL DEFAULT '{}'::jsonb
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS ai_request_logs (
+        id BIGSERIAL PRIMARY KEY,
+        provider_id TEXT NOT NULL REFERENCES ai_providers(id),
+        model_id TEXT REFERENCES ai_models(id),
+        workflow_id TEXT REFERENCES ai_workflows(id),
+        request_id TEXT NOT NULL,
+        prompt_hash TEXT NOT NULL DEFAULT '',
+        request_payload_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+        response_payload_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+        latency_ms INTEGER NOT NULL DEFAULT 0,
+        status TEXT NOT NULL DEFAULT 'success',
+        error_message TEXT NOT NULL DEFAULT '',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS ai_error_logs (
+        id BIGSERIAL PRIMARY KEY,
+        provider_id TEXT REFERENCES ai_providers(id),
+        model_id TEXT REFERENCES ai_models(id),
+        workflow_id TEXT REFERENCES ai_workflows(id),
+        error_type TEXT NOT NULL,
+        error_code TEXT NOT NULL DEFAULT '',
+        error_message TEXT NOT NULL DEFAULT '',
+        severity TEXT NOT NULL DEFAULT 'error' CHECK (severity IN ('debug', 'info', 'warning', 'error', 'critical')),
+        resolved BOOLEAN NOT NULL DEFAULT FALSE,
+        resolved_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS ai_audit_logs (
+        id BIGSERIAL PRIMARY KEY,
+        actor TEXT NOT NULL DEFAULT 'system',
+        action TEXT NOT NULL,
+        target_type TEXT NOT NULL DEFAULT '',
+        target_id TEXT NOT NULL DEFAULT '',
+        details_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
     """
     CREATE TABLE IF NOT EXISTS shopware_connections (
         id TEXT PRIMARY KEY,
@@ -636,6 +1022,340 @@ CREATE TABLE IF NOT EXISTS pricing_rules (
     is_active INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
+);
+-- ── Google Merchant Center Tables ──
+CREATE TABLE IF NOT EXISTS google_accounts (
+    id TEXT PRIMARY KEY,
+    merchant_id TEXT NOT NULL UNIQUE,
+    account_name TEXT NOT NULL,
+    google_cloud_project_id TEXT NOT NULL,
+    account_status TEXT NOT NULL DEFAULT 'pending' CHECK (account_status IN ('pending', 'active', 'suspended', 'disconnected')),
+    is_active INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
+    oauth_token_encrypted TEXT NOT NULL,
+    oauth_refresh_token_encrypted TEXT,
+    service_account_encrypted TEXT,
+    scopes_json TEXT NOT NULL DEFAULT '[]',
+    token_expires_at TEXT,
+    last_token_validation TEXT,
+    last_token_status TEXT NOT NULL DEFAULT 'unknown',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS google_credentials (
+    id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL,
+    credential_type TEXT NOT NULL CHECK (credential_type IN ('oauth2', 'service_account')),
+    credential_name TEXT NOT NULL,
+    encrypted_value TEXT NOT NULL,
+    is_active INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS google_data_sources (
+    id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL,
+    data_source_id TEXT NOT NULL,
+    display_name TEXT NOT NULL,
+    source_type TEXT NOT NULL DEFAULT 'products',
+    status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'inactive', 'error')),
+    primary_country TEXT NOT NULL DEFAULT 'DE',
+    primary_language TEXT NOT NULL DEFAULT 'de',
+    primary_currency TEXT NOT NULL DEFAULT 'EUR',
+    feed_label TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(account_id, data_source_id)
+);
+CREATE TABLE IF NOT EXISTS google_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL DEFAULT '',
+    is_secret INTEGER NOT NULL DEFAULT 0 CHECK (is_secret IN (0, 1)),
+    category TEXT NOT NULL DEFAULT 'general' CHECK (category IN ('general', 'export', 'sync', 'targeting', 'validation')),
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS google_product_mappings (
+    id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL,
+    matterhorn_field TEXT NOT NULL,
+    google_field TEXT NOT NULL,
+    mapping_type TEXT NOT NULL CHECK (mapping_type IN ('direct', 'transform', 'fallback', 'conditional', 'concatenate', 'clean')),
+    mapping_config_json TEXT NOT NULL DEFAULT '{}',
+    priority INTEGER NOT NULL DEFAULT 0,
+    is_active INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS google_product_exports (
+    id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL,
+    product_sku TEXT NOT NULL,
+    google_product_id TEXT NOT NULL DEFAULT '',
+    offer_id TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('pending', 'processing', 'validation', 'exporting', 'completed', 'error', 'withdrawn', 'retry')),
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    response_json TEXT NOT NULL DEFAULT '{}',
+    error_message TEXT NOT NULL DEFAULT '',
+    retry_count INTEGER NOT NULL DEFAULT 0,
+    max_retries INTEGER NOT NULL DEFAULT 3,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    started_at TEXT,
+    completed_at TEXT,
+    UNIQUE(product_sku, offer_id)
+);
+CREATE TABLE IF NOT EXISTS google_sync_jobs (
+    id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL,
+    job_type TEXT NOT NULL CHECK (job_type IN ('inventory', 'price', 'full_sync', 'product_update', 'withdrawal')),
+    status TEXT NOT NULL CHECK (status IN ('pending', 'running', 'completed', 'error')),
+    total_products INTEGER NOT NULL DEFAULT 0,
+    processed_products INTEGER NOT NULL DEFAULT 0,
+    failed_products INTEGER NOT NULL DEFAULT 0,
+    error_message TEXT NOT NULL DEFAULT '',
+    started_at TEXT NOT NULL DEFAULT '',
+    completed_at TEXT,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS google_sync_errors (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    account_id TEXT NOT NULL,
+    product_sku TEXT NOT NULL,
+    error_type TEXT NOT NULL,
+    error_code TEXT NOT NULL DEFAULT '',
+    error_message TEXT NOT NULL DEFAULT '',
+    occurred_at TEXT NOT NULL DEFAULT '',
+    resolved INTEGER NOT NULL DEFAULT 0 CHECK (resolved IN (0, 1)),
+    resolved_at TEXT
+);
+CREATE TABLE IF NOT EXISTS google_product_diagnostics (
+    id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL,
+    product_sku TEXT NOT NULL,
+    google_product_id TEXT NOT NULL DEFAULT '',
+    diagnosis_status TEXT NOT NULL CHECK (diagnosis_status IN ('active', 'disapproved', 'pending', 'limited')),
+    issues_json TEXT NOT NULL DEFAULT '[]',
+    last_checked TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS google_performance_metrics (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    account_id TEXT NOT NULL,
+    metric_date TEXT NOT NULL,
+    impressions INTEGER NOT NULL DEFAULT 0,
+    clicks INTEGER NOT NULL DEFAULT 0,
+    ctr REAL NOT NULL DEFAULT 0,
+    cpc REAL NOT NULL DEFAULT 0,
+    cost REAL NOT NULL DEFAULT 0,
+    conversions INTEGER NOT NULL DEFAULT 0,
+    conversion_value REAL NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS google_audit_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    account_id TEXT NOT NULL,
+    action TEXT NOT NULL,
+    actor TEXT NOT NULL DEFAULT 'system',
+    target_type TEXT NOT NULL DEFAULT '',
+    target_id TEXT NOT NULL DEFAULT '',
+    details_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL
+);
+-- ── OmniRoute Control Center Tables ──
+CREATE TABLE IF NOT EXISTS ai_providers (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    provider_type TEXT NOT NULL CHECK (provider_type IN ('text', 'image', 'video', 'embedding', 'multimodal')),
+    api_endpoint TEXT NOT NULL,
+    api_key_encrypted TEXT NOT NULL,
+    auth_type TEXT NOT NULL DEFAULT 'bearer' CHECK (auth_type IN ('bearer', 'api_key', 'oauth2')),
+    is_active INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
+    priority INTEGER NOT NULL DEFAULT 100,
+    rate_limit_per_minute INTEGER NOT NULL DEFAULT 60,
+    timeout_seconds INTEGER NOT NULL DEFAULT 30,
+    max_retries INTEGER NOT NULL DEFAULT 3,
+    retry_delay_seconds INTEGER NOT NULL DEFAULT 1,
+    circuit_breaker_threshold INTEGER NOT NULL DEFAULT 5,
+    circuit_breaker_timeout_seconds INTEGER NOT NULL DEFAULT 300,
+    capabilities_json TEXT NOT NULL DEFAULT '[]',
+    health_status TEXT NOT NULL DEFAULT 'unknown' CHECK (health_status IN ('healthy', 'degraded', 'unhealthy', 'unknown')),
+    last_health_check TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS ai_provider_credentials (
+    id TEXT PRIMARY KEY,
+    provider_id TEXT NOT NULL,
+    credential_name TEXT NOT NULL,
+    encrypted_value TEXT NOT NULL,
+    is_active INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS ai_models (
+    id TEXT PRIMARY KEY,
+    provider_id TEXT NOT NULL,
+    model_id TEXT NOT NULL,
+    model_name TEXT NOT NULL,
+    model_version TEXT NOT NULL DEFAULT '',
+    model_category TEXT NOT NULL DEFAULT 'general' CHECK (model_category IN ('text', 'image', 'video', 'embedding', 'multimodal')),
+    capabilities_json TEXT NOT NULL DEFAULT '[]',
+    context_window INTEGER NOT NULL DEFAULT 4096,
+    input_price_per_1k REAL NOT NULL DEFAULT 0,
+    output_price_per_1k REAL NOT NULL DEFAULT 0,
+    image_price_per_image REAL NOT NULL DEFAULT 0,
+    rate_limit_per_minute INTEGER NOT NULL DEFAULT 60,
+    is_active INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
+    is_discoverable INTEGER NOT NULL DEFAULT 1 CHECK (is_discoverable IN (0, 1)),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(provider_id, model_id)
+);
+CREATE TABLE IF NOT EXISTS ai_model_capabilities (
+    id TEXT PRIMARY KEY,
+    model_id TEXT NOT NULL,
+    capability_name TEXT NOT NULL,
+    capability_value TEXT NOT NULL DEFAULT '',
+    confidence REAL NOT NULL DEFAULT 1.0,
+    source TEXT NOT NULL DEFAULT 'discovered' CHECK (source IN ('discovered', 'manual')),
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS ai_routing_rules (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    strategy TEXT NOT NULL CHECK (strategy IN ('lowest_cost', 'highest_quality', 'lowest_latency', 'provider_priority', 'capability_matching', 'weighted_distribution')),
+    provider_priority_json TEXT NOT NULL DEFAULT '[]',
+    model_category TEXT NOT NULL DEFAULT 'general',
+    min_quality_score REAL NOT NULL DEFAULT 0.0,
+    max_cost_per_1k REAL,
+    max_latency_ms INTEGER,
+    is_active INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS ai_routing_policies (
+    id TEXT PRIMARY KEY,
+    workflow_name TEXT NOT NULL,
+    rule_id TEXT NOT NULL,
+    fallback_rule_id TEXT,
+    is_active INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(workflow_name)
+);
+CREATE TABLE IF NOT EXISTS ai_workflows (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    trigger_event TEXT NOT NULL DEFAULT '',
+    is_active INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
+    max_executions_per_hour INTEGER NOT NULL DEFAULT 1000,
+    budget_per_execution REAL NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS ai_workflow_configs (
+    id TEXT PRIMARY KEY,
+    workflow_id TEXT NOT NULL,
+    step_name TEXT NOT NULL,
+    model_id TEXT,
+    provider_id TEXT,
+    prompt_template TEXT NOT NULL DEFAULT '',
+    parameters_json TEXT NOT NULL DEFAULT '{}',
+    step_order INTEGER NOT NULL DEFAULT 0,
+    is_required INTEGER NOT NULL DEFAULT 1 CHECK (is_required IN (0, 1)),
+    on_failure TEXT NOT NULL DEFAULT 'stop' CHECK (on_failure IN ('stop', 'continue', 'retry', 'fallback')),
+    max_retries INTEGER NOT NULL DEFAULT 3,
+    timeout_seconds INTEGER NOT NULL DEFAULT 30,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS ai_usage_records (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    provider_id TEXT NOT NULL,
+    model_id TEXT,
+    workflow_id TEXT,
+    request_type TEXT NOT NULL,
+    tokens_input INTEGER NOT NULL DEFAULT 0,
+    tokens_output INTEGER NOT NULL DEFAULT 0,
+    images_generated INTEGER NOT NULL DEFAULT 0,
+    videos_generated INTEGER NOT NULL DEFAULT 0,
+    cost_usd REAL NOT NULL DEFAULT 0,
+    latency_ms INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'success' CHECK (status IN ('success', 'error', 'retry', 'fallback')),
+    error_message TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS ai_cost_records (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    provider_id TEXT NOT NULL,
+    model_id TEXT,
+    workflow_id TEXT,
+    date TEXT NOT NULL,
+    total_cost_usd REAL NOT NULL DEFAULT 0,
+    request_count INTEGER NOT NULL DEFAULT 0,
+    token_count INTEGER NOT NULL DEFAULT 0,
+    image_count INTEGER NOT NULL DEFAULT 0,
+    video_count INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS ai_budgets (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    budget_type TEXT NOT NULL CHECK (budget_type IN ('daily', 'monthly', 'provider', 'workflow')),
+    target_id TEXT NOT NULL DEFAULT '',
+    amount_usd REAL NOT NULL DEFAULT 0,
+    warning_threshold_percent INTEGER NOT NULL DEFAULT 80,
+    action_on_exceed TEXT NOT NULL DEFAULT 'warn' CHECK (action_on_exceed IN ('warn', 'pause', 'fallback', 'block')),
+    is_active INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
+    reset_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS ai_provider_health (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    provider_id TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('healthy', 'degraded', 'unhealthy', 'unknown')),
+    response_time_ms INTEGER NOT NULL DEFAULT 0,
+    error_rate REAL NOT NULL DEFAULT 0,
+    last_check TEXT NOT NULL DEFAULT '',
+    details_json TEXT NOT NULL DEFAULT '{}'
+);
+CREATE TABLE IF NOT EXISTS ai_request_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    provider_id TEXT NOT NULL,
+    model_id TEXT,
+    workflow_id TEXT,
+    request_id TEXT NOT NULL,
+    prompt_hash TEXT NOT NULL DEFAULT '',
+    request_payload_json TEXT NOT NULL DEFAULT '{}',
+    response_payload_json TEXT NOT NULL DEFAULT '{}',
+    latency_ms INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'success',
+    error_message TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS ai_error_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    provider_id TEXT,
+    model_id TEXT,
+    workflow_id TEXT,
+    error_type TEXT NOT NULL,
+    error_code TEXT NOT NULL DEFAULT '',
+    error_message TEXT NOT NULL DEFAULT '',
+    severity TEXT NOT NULL DEFAULT 'error' CHECK (severity IN ('debug', 'info', 'warning', 'error', 'critical')),
+    resolved INTEGER NOT NULL DEFAULT 0 CHECK (resolved IN (0, 1)),
+    resolved_at TEXT,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS ai_audit_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    actor TEXT NOT NULL DEFAULT 'system',
+    action TEXT NOT NULL,
+    target_type TEXT NOT NULL DEFAULT '',
+    target_id TEXT NOT NULL DEFAULT '',
+    details_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL
 );
 """
 
@@ -1179,6 +1899,480 @@ async def recent_import_runs(limit: int = 10) -> list[dict[str, Any]]:
         return [dict(row) for row in rows]
     async with get_connection() as db:
         cursor = await db.execute("SELECT * FROM import_runs ORDER BY id DESC LIMIT ?", (safe_limit,))
+        rows = await cursor.fetchall()
+        await cursor.close()
+        return [dict(row) for row in rows]
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Google Merchant Center - Account Management
+# ════════════════════════════════════════════════════════════════════════════
+
+async def google_upsert_account(*, account_id: str, merchant_id: str, account_name: str,
+                                 google_cloud_project_id: str, oauth_token_encrypted: str,
+                                 oauth_refresh_token_encrypted: str | None = None,
+                                 service_account_encrypted: str | None = None,
+                                 is_primary: bool = False) -> None:
+    """Upsert a Google Merchant Center account."""
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO google_accounts(id, merchant_id, account_name, google_cloud_project_id,
+                   oauth_token_encrypted, oauth_refresh_token_encrypted, service_account_encrypted,
+                   is_primary, updated_at)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NOW())
+                   ON CONFLICT(id) DO UPDATE SET
+                     merchant_id=EXCLUDED.merchant_id, account_name=EXCLUDED.account_name,
+                     google_cloud_project_id=EXCLUDED.google_cloud_project_id,
+                     oauth_token_encrypted=EXCLUDED.oauth_token_encrypted,
+                     oauth_refresh_token_encrypted=EXCLUDED.oauth_refresh_token_encrypted,
+                     service_account_encrypted=EXCLUDED.service_account_encrypted,
+                     is_primary=EXCLUDED.is_primary, updated_at=NOW()""",
+                account_id, merchant_id, account_name, google_cloud_project_id,
+                oauth_token_encrypted, oauth_refresh_token_encrypted, service_account_encrypted, is_primary,
+            )
+        return
+    async with get_connection() as db:
+        await db.execute(
+            """INSERT INTO google_accounts(id, merchant_id, account_name, google_cloud_project_id,
+               oauth_token_encrypted, oauth_refresh_token_encrypted, service_account_encrypted,
+               is_active, is_primary, created_at, updated_at)
+               VALUES (?,?,?,?,?,?,?,1,?,?,?)
+               ON CONFLICT(id) DO UPDATE SET
+                 merchant_id=excluded.merchant_id, account_name=excluded.account_name,
+                 google_cloud_project_id=excluded.google_cloud_project_id,
+                 oauth_token_encrypted=excluded.oauth_token_encrypted,
+                 oauth_refresh_token_encrypted=excluded.oauth_refresh_token_encrypted,
+                 service_account_encrypted=excluded.service_account_encrypted,
+                 is_primary=excluded.is_primary, updated_at=excluded.updated_at""",
+            (account_id, merchant_id, account_name, google_cloud_project_id,
+             oauth_token_encrypted, oauth_refresh_token_encrypted, service_account_encrypted,
+             is_primary, utc_now(), utc_now()),
+        )
+        await db.commit()
+
+
+async def google_list_accounts() -> list[dict[str, Any]]:
+    """List all Google Merchant Center accounts."""
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("SELECT * FROM google_accounts ORDER BY account_name")
+        return [dict(row) for row in rows]
+    async with get_connection() as db:
+        cursor = await db.execute("SELECT * FROM google_accounts ORDER BY account_name")
+        rows = await cursor.fetchall()
+        await cursor.close()
+        return [dict(row) for row in rows]
+
+
+async def google_get_account(account_id: str) -> dict[str, Any] | None:
+    """Get a single Google account by ID."""
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT * FROM google_accounts WHERE id = $1", account_id)
+        return dict(row) if row else None
+    async with get_connection() as db:
+        cursor = await db.execute("SELECT * FROM google_accounts WHERE id = ?", (account_id,))
+        row = await cursor.fetchone()
+        await cursor.close()
+        return dict(row) if row else None
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Google Merchant Center - Data Sources
+# ════════════════════════════════════════════════════════════════════════════
+
+async def google_upsert_data_source(*, ds_id: str, account_id: str, data_source_id: str,
+                                     display_name: str, primary_country: str = "DE",
+                                     primary_language: str = "de", primary_currency: str = "EUR") -> None:
+    """Upsert a Google data source."""
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO google_data_sources(id, account_id, data_source_id, display_name,
+                   primary_country, primary_language, primary_currency, updated_at)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7,NOW())
+                   ON CONFLICT(id) DO UPDATE SET
+                     display_name=EXCLUDED.display_name, primary_country=EXCLUDED.primary_country,
+                     primary_language=EXCLUDED.primary_language, primary_currency=EXCLUDED.primary_currency,
+                     updated_at=NOW()""",
+                ds_id, account_id, data_source_id, display_name, primary_country,
+                primary_language, primary_currency,
+            )
+        return
+    async with get_connection() as db:
+        await db.execute(
+            """INSERT INTO google_data_sources(id, account_id, data_source_id, display_name,
+               source_type, status, primary_country, primary_language, primary_currency,
+               feed_label, created_at, updated_at)
+               VALUES (?,?,?,?,'products','active',?,?,?, '', ?, ?)
+               ON CONFLICT(id) DO UPDATE SET
+                 display_name=excluded.display_name, primary_country=excluded.primary_country,
+                 primary_language=excluded.primary_language, primary_currency=excluded.primary_currency,
+                 updated_at=excluded.updated_at""",
+            (ds_id, account_id, data_source_id, display_name, primary_country,
+             primary_language, primary_currency, utc_now(), utc_now()),
+        )
+        await db.commit()
+
+
+async def google_list_data_sources(account_id: str | None = None) -> list[dict[str, Any]]:
+    """List data sources, optionally filtered by account."""
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            if account_id:
+                rows = await conn.fetch("SELECT * FROM google_data_sources WHERE account_id = $1 ORDER BY display_name", account_id)
+            else:
+                rows = await conn.fetch("SELECT * FROM google_data_sources ORDER BY display_name")
+        return [dict(row) for row in rows]
+    async with get_connection() as db:
+        if account_id:
+            cursor = await db.execute("SELECT * FROM google_data_sources WHERE account_id = ? ORDER BY display_name", (account_id,))
+        else:
+            cursor = await db.execute("SELECT * FROM google_data_sources ORDER BY display_name")
+        rows = await cursor.fetchall()
+        await cursor.close()
+        return [dict(row) for row in rows]
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Google Merchant Center - Product Exports
+# ════════════════════════════════════════════════════════════════════════════
+
+async def google_upsert_export(*, export_id: str, account_id: str, product_sku: str,
+                                offer_id: str, status: str = "pending",
+                                payload_json: str = "{}", response_json: str = "{}",
+                                error_message: str = "", max_retries: int = 3) -> None:
+    """Upsert a Google product export record."""
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO google_product_exports(id, account_id, product_sku, offer_id,
+                   status, payload_json, response_json, error_message, max_retries, updated_at)
+                   VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7::jsonb,$8,$9,NOW())
+                   ON CONFLICT(product_sku, offer_id) DO UPDATE SET
+                     status=EXCLUDED.status, payload_json=EXCLUDED.payload_json,
+                     response_json=EXCLUDED.response_json, error_message=EXCLUDED.error_message,
+                     max_retries=EXCLUDED.max_retries, updated_at=NOW()""",
+                export_id, account_id, product_sku, offer_id, status,
+                payload_json, response_json, error_message, max_retries,
+            )
+        return
+    async with get_connection() as db:
+        await db.execute(
+            """INSERT INTO google_product_exports(id, account_id, product_sku, google_product_id,
+               offer_id, status, payload_json, response_json, error_message,
+               max_retries, created_at, updated_at)
+               VALUES (?,?,?,'',?,?,?,?,?,?,?,?)
+               ON CONFLICT(product_sku, offer_id) DO UPDATE SET
+                 status=excluded.status, payload_json=excluded.payload_json,
+                 response_json=excluded.response_json, error_message=excluded.error_message,
+                 max_retries=excluded.max_retries, updated_at=excluded.updated_at""",
+            (export_id, account_id, product_sku, offer_id, status, payload_json,
+             response_json, error_message, max_retries, utc_now(), utc_now()),
+        )
+        await db.commit()
+
+
+async def google_list_exports(account_id: str | None = None, status: str | None = None,
+                                limit: int = 100) -> list[dict[str, Any]]:
+    """List Google product exports with optional filtering."""
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            query = "SELECT * FROM google_product_exports WHERE 1=1"
+            params: list[Any] = []
+            if account_id:
+                query += f" AND account_id = ${len(params) + 1}"
+                params.append(account_id)
+            if status:
+                query += f" AND status = ${len(params) + 1}"
+                params.append(status)
+            query += f" ORDER BY created_at DESC LIMIT ${len(params) + 1}"
+            params.append(limit)
+            rows = await conn.fetch(query, *params)
+        return [dict(row) for row in rows]
+    async with get_connection() as db:
+        query = "SELECT * FROM google_product_exports WHERE 1=1"
+        params: list[Any] = []
+        if account_id:
+            query += " AND account_id = ?"
+            params.append(account_id)
+        if status:
+            query += " AND status = ?"
+            params.append(status)
+        query += " ORDER BY created_at DESC LIMIT ?"
+        params.append(limit)
+        cursor = await db.execute(query, tuple(params))
+        rows = await cursor.fetchall()
+        await cursor.close()
+        return [dict(row) for row in rows]
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Google Merchant Center - Sync Jobs
+# ════════════════════════════════════════════════════════════════════════════
+
+async def google_upsert_sync_job(*, job_id: str, account_id: str, job_type: str,
+                                  total_products: int = 0) -> None:
+    """Upsert a Google sync job record."""
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO google_sync_jobs(id, account_id, job_type, total_products, started_at)
+                   VALUES ($1,$2,$3,$4,NOW())
+                   ON CONFLICT(id) DO UPDATE SET
+                     total_products=EXCLUDED.total_products, updated_at=NOW()""",
+                job_id, account_id, job_type, total_products,
+            )
+        return
+    async with get_connection() as db:
+        await db.execute(
+            """INSERT INTO google_sync_jobs(id, account_id, job_type, status, total_products,
+               processed_products, failed_products, started_at, created_at)
+               VALUES (?,?,'pending',?,0,0,?,?,?)
+               ON CONFLICT(id) DO UPDATE SET
+                 total_products=excluded.total_products, updated_at=excluded.updated_at""",
+            (job_id, account_id, job_type, total_products, utc_now(), utc_now()),
+        )
+        await db.commit()
+
+
+async def google_list_sync_jobs(account_id: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
+    """List Google sync jobs."""
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            if account_id:
+                rows = await conn.fetch("SELECT * FROM google_sync_jobs WHERE account_id = $1 ORDER BY created_at DESC LIMIT $2", account_id, limit)
+            else:
+                rows = await conn.fetch("SELECT * FROM google_sync_jobs ORDER BY created_at DESC LIMIT $1", limit)
+        return [dict(row) for row in rows]
+    async with get_connection() as db:
+        if account_id:
+            cursor = await db.execute("SELECT * FROM google_sync_jobs WHERE account_id = ? ORDER BY created_at DESC LIMIT ?", (account_id, limit))
+        else:
+            cursor = await db.execute("SELECT * FROM google_sync_jobs ORDER BY created_at DESC LIMIT ?", (limit,))
+        rows = await cursor.fetchall()
+        await cursor.close()
+        return [dict(row) for row in rows]
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# OmniRoute - Provider Management
+# ════════════════════════════════════════════════════════════════════════════
+
+async def ai_upsert_provider(*, provider_id: str, name: str, provider_type: str,
+                              api_endpoint: str, api_key_encrypted: str,
+                              auth_type: str = "bearer", priority: int = 100,
+                              rate_limit_per_minute: int = 60, timeout_seconds: int = 30,
+                              max_retries: int = 3, retry_delay_seconds: int = 1,
+                              circuit_breaker_threshold: int = 5,
+                              circuit_breaker_timeout_seconds: int = 300,
+                              capabilities_json: str = "[]") -> None:
+    """Upsert an AI provider."""
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO ai_providers(id, name, provider_type, api_endpoint,
+                   api_key_encrypted, auth_type, priority, rate_limit_per_minute,
+                   timeout_seconds, max_retries, retry_delay_seconds,
+                   circuit_breaker_threshold, circuit_breaker_timeout_seconds,
+                   capabilities_json, updated_at)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,NOW())
+                   ON CONFLICT(id) DO UPDATE SET
+                     name=EXCLUDED.name, provider_type=EXCLUDED.provider_type,
+                     api_endpoint=EXCLUDED.api_endpoint, api_key_encrypted=EXCLUDED.api_key_encrypted,
+                     auth_type=EXCLUDED.auth_type, priority=EXCLUDED.priority,
+                     rate_limit_per_minute=EXCLUDED.rate_limit_per_minute,
+                     timeout_seconds=EXCLUDED.timeout_seconds, max_retries=EXCLUDED.max_retries,
+                     retry_delay_seconds=EXCLUDED.retry_delay_seconds,
+                     circuit_breaker_threshold=EXCLUDED.circuit_breaker_threshold,
+                     circuit_breaker_timeout_seconds=EXCLUDED.circuit_breaker_timeout_seconds,
+                     capabilities_json=EXCLUDED.capabilities_json, updated_at=NOW()""",
+                provider_id, name, provider_type, api_endpoint, api_key_encrypted,
+                auth_type, priority, rate_limit_per_minute, timeout_seconds, max_retries,
+                retry_delay_seconds, circuit_breaker_threshold, circuit_breaker_timeout_seconds,
+                capabilities_json,
+            )
+        return
+    async with get_connection() as db:
+        await db.execute(
+            """INSERT INTO ai_providers(id, name, provider_type, api_endpoint,
+               api_key_encrypted, auth_type, is_active, priority, rate_limit_per_minute,
+               timeout_seconds, max_retries, retry_delay_seconds,
+               circuit_breaker_threshold, circuit_breaker_timeout_seconds,
+               capabilities_json, health_status, created_at, updated_at)
+               VALUES (?,?,?,?,?,?,1,?,?,?,?,?,?,?,?,'unknown',?,?)
+               ON CONFLICT(id) DO UPDATE SET
+                 name=excluded.name, provider_type=excluded.provider_type,
+                 api_endpoint=excluded.api_endpoint, api_key_encrypted=excluded.api_key_encrypted,
+                 auth_type=excluded.auth_type, priority=excluded.priority,
+                 rate_limit_per_minute=excluded.rate_limit_per_minute,
+                 timeout_seconds=excluded.timeout_seconds, max_retries=excluded.max_retries,
+                 retry_delay_seconds=excluded.retry_delay_seconds,
+                 circuit_breaker_threshold=excluded.circuit_breaker_threshold,
+                 circuit_breaker_timeout_seconds=excluded.circuit_breaker_timeout_seconds,
+                 capabilities_json=excluded.capabilities_json, updated_at=excluded.updated_at""",
+            (provider_id, name, provider_type, api_endpoint, api_key_encrypted, auth_type,
+             priority, rate_limit_per_minute, timeout_seconds, max_retries,
+             retry_delay_seconds, circuit_breaker_threshold, circuit_breaker_timeout_seconds,
+             capabilities_json, utc_now(), utc_now()),
+        )
+        await db.commit()
+
+
+async def ai_list_providers() -> list[dict[str, Any]]:
+    """List all AI providers."""
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("SELECT * FROM ai_providers ORDER BY priority, name")
+        return [dict(row) for row in rows]
+    async with get_connection() as db:
+        cursor = await db.execute("SELECT * FROM ai_providers ORDER BY priority, name")
+        rows = await cursor.fetchall()
+        await cursor.close()
+        return [dict(row) for row in rows]
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# OmniRoute - Model Management
+# ════════════════════════════════════════════════════════════════════════════
+
+async def ai_upsert_model(*, model_id: str, provider_id: str, model_id_str: str,
+                           model_name: str, model_category: str = "general",
+                           context_window: int = 4096,
+                           input_price_per_1k: float = 0.0,
+                           output_price_per_1k: float = 0.0,
+                           image_price_per_image: float = 0.0,
+                           rate_limit_per_minute: int = 60,
+                           capabilities_json: str = "[]",
+                           is_active: bool = True) -> None:
+    """Upsert an AI model."""
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO ai_models(id, provider_id, model_id, model_name,
+                   model_category, context_window, input_price_per_1k,
+                   output_price_per_1k, image_price_per_image, rate_limit_per_minute,
+                   capabilities_json, is_active, updated_at)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12,NOW())
+                   ON CONFLICT(provider_id, model_id) DO UPDATE SET
+                     model_name=EXCLUDED.model_name, model_category=EXCLUDED.model_category,
+                     context_window=EXCLUDED.context_window,
+                     input_price_per_1k=EXCLUDED.input_price_per_1k,
+                     output_price_per_1k=EXCLUDED.output_price_per_1k,
+                     image_price_per_image=EXCLUDED.image_price_per_image,
+                     rate_limit_per_minute=EXCLUDED.rate_limit_per_minute,
+                     capabilities_json=EXCLUDED.capabilities_json,
+                     is_active=EXCLUDED.is_active, updated_at=NOW()""",
+                model_id, provider_id, model_id_str, model_name, model_category,
+                context_window, input_price_per_1k, output_price_per_1k,
+                image_price_per_image, rate_limit_per_minute, capabilities_json,
+                is_active,
+            )
+        return
+    async with get_connection() as db:
+        await db.execute(
+            """INSERT INTO ai_models(id, provider_id, model_id, model_name,
+               model_category, context_window, input_price_per_1k,
+               output_price_per_1k, image_price_per_image, rate_limit_per_minute,
+               capabilities_json, is_active, is_discoverable, created_at, updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,1,1,?,?)
+               ON CONFLICT(provider_id, model_id) DO UPDATE SET
+                 model_name=excluded.model_name, model_category=excluded.model_category,
+                 context_window=excluded.context_window,
+                 input_price_per_1k=excluded.input_price_per_1k,
+                 output_price_per_1k=excluded.output_price_per_1k,
+                 image_price_per_image=excluded.image_price_per_image,
+                 rate_limit_per_minute=excluded.rate_limit_per_minute,
+                 capabilities_json=excluded.capabilities_json,
+                 is_active=excluded.is_active, updated_at=excluded.updated_at""",
+            (model_id, provider_id, model_id_str, model_name, model_category,
+             context_window, input_price_per_1k, output_price_per_1k,
+             image_price_per_image, rate_limit_per_minute, capabilities_json,
+             is_active, utc_now(), utc_now()),
+        )
+        await db.commit()
+
+
+async def ai_list_models(provider_id: str | None = None) -> list[dict[str, Any]]:
+    """List AI models, optionally filtered by provider."""
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            if provider_id:
+                rows = await conn.fetch("SELECT * FROM ai_models WHERE provider_id = $1 ORDER BY model_name", provider_id)
+            else:
+                rows = await conn.fetch("SELECT * FROM ai_models ORDER BY model_name")
+        return [dict(row) for row in rows]
+    async with get_connection() as db:
+        if provider_id:
+            cursor = await db.execute("SELECT * FROM ai_models WHERE provider_id = ? ORDER BY model_name", (provider_id,))
+        else:
+            cursor = await db.execute("SELECT * FROM ai_models ORDER BY model_name")
+        rows = await cursor.fetchall()
+        await cursor.close()
+        return [dict(row) for row in rows]
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# OmniRoute - Usage Records
+# ════════════════════════════════════════════════════════════════════════════
+
+async def ai_insert_usage_record(*, record_id: str, provider_id: str,
+                                  model_id: str | None, workflow_id: str | None,
+                                  request_type: str, tokens_input: int = 0,
+                                  tokens_output: int = 0, images_generated: int = 0,
+                                  videos_generated: int = 0, cost_usd: float = 0.0,
+                                  latency_ms: int = 0, status: str = "success",
+                                  error_message: str = "") -> None:
+    """Insert an AI usage record."""
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO ai_usage_records(id, provider_id, model_id, workflow_id,
+                   request_type, tokens_input, tokens_output, images_generated,
+                   videos_generated, cost_usd, latency_ms, status, error_message)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)""",
+                record_id, provider_id, model_id, workflow_id, request_type,
+                tokens_input, tokens_output, images_generated, videos_generated,
+                cost_usd, latency_ms, status, error_message,
+            )
+        return
+    async with get_connection() as db:
+        await db.execute(
+            """INSERT INTO ai_usage_records(id, provider_id, model_id, workflow_id,
+               request_type, tokens_input, tokens_output, images_generated,
+               videos_generated, cost_usd, latency_ms, status, error_message, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (record_id, provider_id, model_id, workflow_id, request_type,
+             tokens_input, tokens_output, images_generated, videos_generated,
+             cost_usd, latency_ms, status, error_message, utc_now()),
+        )
+        await db.commit()
+
+
+async def ai_list_usage_records(limit: int = 100) -> list[dict[str, Any]]:
+    """List recent AI usage records."""
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("SELECT * FROM ai_usage_records ORDER BY created_at DESC LIMIT $1", limit)
+        return [dict(row) for row in rows]
+    async with get_connection() as db:
+        cursor = await db.execute("SELECT * FROM ai_usage_records ORDER BY created_at DESC LIMIT ?", (limit,))
         rows = await cursor.fetchall()
         await cursor.close()
         return [dict(row) for row in rows]
