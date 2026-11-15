@@ -50,6 +50,7 @@ from database import (
 )
 from services.asset_manager import create_asset_from_upload, get_asset, list_assets, update_asset, create_asset_version_from_upload, list_asset_versions
 from services.creative_studio import create_project, list_projects, get_project, update_project, create_job, list_jobs, get_job, update_job, generate_image_for_job, list_outputs, create_video_project, list_video_projects, create_video_scene, list_video_scenes, create_campaign, list_campaigns as list_creative_campaigns, get_campaign, update_campaign
+from services.product_intelligence import evaluate_product_quality, evaluate_channel_readiness, get_product_quality, get_channel_readiness
 from services.video_studio import generate_storyboard
 from services.product_fidelity import evaluate_output_fidelity
 from services.agent_manager import (
@@ -699,6 +700,12 @@ async def agent_manager_page(request: Request) -> HTMLResponse:
 async def creative_studio_page(request: Request) -> HTMLResponse:
     """Render the AI Creative Studio."""
     return templates.TemplateResponse("creative_studio.html", {"request": request, "projects": await list_projects(limit=100), "jobs": await list_jobs(limit=100), "outputs": await list_outputs(limit=100), "campaigns": await list_creative_campaigns(limit=100)})
+
+
+@app.get("/admin/product-intelligence", response_class=HTMLResponse)
+async def product_intelligence_page(request: Request) -> HTMLResponse:
+    """Render product intelligence."""
+    return templates.TemplateResponse("product_intelligence.html", {"request": request})
 
 
 @app.get("/admin/video-studio", response_class=HTMLResponse)
@@ -1446,6 +1453,47 @@ async def check_creative_output_fidelity(output_id: str, payload: ProductFidelit
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/product-quality/{sku}")
+async def get_product_quality_record(sku: str) -> dict[str, Any]:
+    """Evaluate and return product quality."""
+    try:
+        await evaluate_product_quality(sku)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    record = await get_product_quality(sku)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Product quality not found")
+    return record
+
+
+@app.get("/api/channel-readiness/{sku}")
+async def get_channel_readiness_records(sku: str) -> list[dict[str, Any]]:
+    """Evaluate and return channel readiness for all supported channels."""
+    try:
+        await evaluate_channel_readiness(sku)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    records = await get_channel_readiness(sku)
+    if records is None:
+        raise HTTPException(status_code=404, detail="Channel readiness not found")
+    return records
+
+
+@app.get("/api/channel-readiness/{sku}/{channel}")
+async def get_channel_readiness_record(sku: str, channel: str) -> dict[str, Any]:
+    """Evaluate and return channel readiness for one channel."""
+    try:
+        result = await evaluate_channel_readiness(sku, channel)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if isinstance(result, dict):
+        record = await get_channel_readiness(sku, channel)
+        if record is None:
+            raise HTTPException(status_code=404, detail="Channel readiness not found")
+        return record
+    raise HTTPException(status_code=404, detail="Channel readiness not found")
 
 
 @app.get("/api/stats")

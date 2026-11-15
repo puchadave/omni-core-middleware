@@ -917,6 +917,36 @@ POSTGRES_SCHEMA: tuple[str, ...] = (
     "CREATE INDEX IF NOT EXISTS idx_agent_approvals_run_id ON agent_approvals(run_id)",
     "CREATE INDEX IF NOT EXISTS idx_agent_approvals_status ON agent_approvals(approval_status)",
     """
+    CREATE TABLE IF NOT EXISTS product_quality (
+        product_sku TEXT PRIMARY KEY REFERENCES products(sku) ON DELETE CASCADE,
+        attribute_score NUMERIC(5,2) NOT NULL DEFAULT 0,
+        description_score NUMERIC(5,2) NOT NULL DEFAULT 0,
+        variant_score NUMERIC(5,2) NOT NULL DEFAULT 0,
+        media_score NUMERIC(5,2) NOT NULL DEFAULT 0,
+        seo_score NUMERIC(5,2) NOT NULL DEFAULT 0,
+        platform_score NUMERIC(5,2) NOT NULL DEFAULT 0,
+        technical_score NUMERIC(5,2) NOT NULL DEFAULT 0,
+        total_score NUMERIC(5,2) NOT NULL DEFAULT 0,
+        issues_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+        suggestions_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS channel_readiness (
+        id TEXT PRIMARY KEY,
+        product_sku TEXT NOT NULL REFERENCES products(sku) ON DELETE CASCADE,
+        channel TEXT NOT NULL,
+        score NUMERIC(5,2) NOT NULL DEFAULT 0,
+        errors_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+        warnings_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+        checked_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE(product_sku, channel)
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_channel_readiness_product_sku ON channel_readiness(product_sku)",
+    "CREATE INDEX IF NOT EXISTS idx_channel_readiness_channel ON channel_readiness(channel)",
+    """
     CREATE TABLE IF NOT EXISTS creative_projects (
         id TEXT PRIMARY KEY,
         name TEXT NOT NULL,
@@ -1761,6 +1791,32 @@ CREATE TABLE IF NOT EXISTS agent_approvals (
 );
 CREATE INDEX IF NOT EXISTS idx_agent_approvals_run_id ON agent_approvals(run_id);
 CREATE INDEX IF NOT EXISTS idx_agent_approvals_status ON agent_approvals(approval_status);
+CREATE TABLE IF NOT EXISTS product_quality (
+    product_sku TEXT PRIMARY KEY REFERENCES products(sku) ON DELETE CASCADE,
+    attribute_score REAL NOT NULL DEFAULT 0,
+    description_score REAL NOT NULL DEFAULT 0,
+    variant_score REAL NOT NULL DEFAULT 0,
+    media_score REAL NOT NULL DEFAULT 0,
+    seo_score REAL NOT NULL DEFAULT 0,
+    platform_score REAL NOT NULL DEFAULT 0,
+    technical_score REAL NOT NULL DEFAULT 0,
+    total_score REAL NOT NULL DEFAULT 0,
+    issues_json TEXT NOT NULL DEFAULT '[]',
+    suggestions_json TEXT NOT NULL DEFAULT '[]',
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS channel_readiness (
+    id TEXT PRIMARY KEY,
+    product_sku TEXT NOT NULL REFERENCES products(sku) ON DELETE CASCADE,
+    channel TEXT NOT NULL,
+    score REAL NOT NULL DEFAULT 0,
+    errors_json TEXT NOT NULL DEFAULT '[]',
+    warnings_json TEXT NOT NULL DEFAULT '[]',
+    checked_at TEXT NOT NULL,
+    UNIQUE(product_sku, channel)
+);
+CREATE INDEX IF NOT EXISTS idx_channel_readiness_product_sku ON channel_readiness(product_sku);
+CREATE INDEX IF NOT EXISTS idx_channel_readiness_channel ON channel_readiness(channel);
 CREATE TABLE IF NOT EXISTS creative_projects (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
@@ -4191,3 +4247,116 @@ async def campaign_update(campaign_id: str, **fields: Any) -> bool:
         await db.execute(f"UPDATE campaigns SET {', '.join(assignments)}, updated_at = ? WHERE id = ?", tuple(params))
         await db.commit()
         return True
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Product Intelligence
+# ════════════════════════════════════════════════════════════════════════════
+
+async def product_quality_upsert(*, product_sku: str, attribute_score: float, description_score: float,
+                                 variant_score: float, media_score: float, seo_score: float,
+                                 platform_score: float, technical_score: float, total_score: float,
+                                 issues: list[str], suggestions: list[str]) -> None:
+    import json as _json
+    issues_json = _json.dumps(issues)
+    suggestions_json = _json.dumps(suggestions)
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO product_quality(product_sku, attribute_score, description_score, variant_score, media_score, seo_score, platform_score, technical_score, total_score, issues_json, suggestions_json, updated_at)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11::jsonb,NOW())
+                   ON CONFLICT(product_sku) DO UPDATE SET
+                     attribute_score=EXCLUDED.attribute_score, description_score=EXCLUDED.description_score,
+                     variant_score=EXCLUDED.variant_score, media_score=EXCLUDED.media_score,
+                     seo_score=EXCLUDED.seo_score, platform_score=EXCLUDED.platform_score,
+                     technical_score=EXCLUDED.technical_score, total_score=EXCLUDED.total_score,
+                     issues_json=EXCLUDED.issues_json, suggestions_json=EXCLUDED.suggestions_json,
+                     updated_at=NOW()""",
+                product_sku, attribute_score, description_score, variant_score, media_score, seo_score, platform_score, technical_score, total_score, issues_json, suggestions_json,
+            )
+        return
+    now = utc_now()
+    async with get_connection() as db:
+        await db.execute(
+            """INSERT INTO product_quality(product_sku, attribute_score, description_score, variant_score, media_score, seo_score, platform_score, technical_score, total_score, issues_json, suggestions_json, updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(product_sku) DO UPDATE SET
+                 attribute_score=excluded.attribute_score, description_score=excluded.description_score,
+                 variant_score=excluded.variant_score, media_score=excluded.media_score,
+                 seo_score=excluded.seo_score, platform_score=excluded.platform_score,
+                 technical_score=excluded.technical_score, total_score=excluded.total_score,
+                 issues_json=excluded.issues_json, suggestions_json=excluded.suggestions_json,
+                 updated_at=excluded.updated_at""",
+            (product_sku, attribute_score, description_score, variant_score, media_score, seo_score, platform_score, technical_score, total_score, issues_json, suggestions_json, now),
+        )
+        await db.commit()
+
+
+async def product_quality_get(product_sku: str) -> dict[str, Any] | None:
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT * FROM product_quality WHERE product_sku = $1", product_sku)
+        return dict(row) if row else None
+    async with get_connection() as db:
+        cursor = await db.execute("SELECT * FROM product_quality WHERE product_sku = ?", (product_sku,))
+        row = await cursor.fetchone()
+        await cursor.close()
+        return dict(row) if row else None
+
+
+async def channel_readiness_upsert(*, record_id: str, product_sku: str, channel: str,
+                                   score: float, errors: list[str], warnings: list[str]) -> None:
+    import json as _json
+    errors_json = _json.dumps(errors)
+    warnings_json = _json.dumps(warnings)
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO channel_readiness(id, product_sku, channel, score, errors_json, warnings_json, checked_at)
+                   VALUES ($1,$2,$3,$4,$5::jsonb,$6::jsonb,NOW())
+                   ON CONFLICT(product_sku, channel) DO UPDATE SET
+                     score=EXCLUDED.score, errors_json=EXCLUDED.errors_json,
+                     warnings_json=EXCLUDED.warnings_json, checked_at=NOW()""",
+                record_id, product_sku, channel, score, errors_json, warnings_json,
+            )
+        return
+    now = utc_now()
+    async with get_connection() as db:
+        await db.execute(
+            """INSERT INTO channel_readiness(id, product_sku, channel, score, errors_json, warnings_json, checked_at)
+               VALUES (?,?,?,?,?,?,?)
+               ON CONFLICT(product_sku, channel) DO UPDATE SET
+                 score=excluded.score, errors_json=excluded.errors_json,
+                 warnings_json=excluded.warnings_json, checked_at=excluded.checked_at""",
+            (record_id, product_sku, channel, score, errors_json, warnings_json, now),
+        )
+        await db.commit()
+
+
+async def channel_readiness_get(product_sku: str, channel: str) -> dict[str, Any] | None:
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT * FROM channel_readiness WHERE product_sku = $1 AND channel = $2", product_sku, channel)
+        return dict(row) if row else None
+    async with get_connection() as db:
+        cursor = await db.execute("SELECT * FROM channel_readiness WHERE product_sku = ? AND channel = ?", (product_sku, channel))
+        row = await cursor.fetchone()
+        await cursor.close()
+        return dict(row) if row else None
+
+
+async def channel_readiness_list(product_sku: str) -> list[dict[str, Any]]:
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("SELECT * FROM channel_readiness WHERE product_sku = $1 ORDER BY channel ASC", product_sku)
+        return [dict(row) for row in rows]
+    async with get_connection() as db:
+        cursor = await db.execute("SELECT * FROM channel_readiness WHERE product_sku = ? ORDER BY channel ASC", (product_sku,))
+        rows = await cursor.fetchall()
+        await cursor.close()
+        return [dict(row) for row in rows]

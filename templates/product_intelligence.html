@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="de">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Omni-Core Product Intelligence</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="min-h-screen bg-slate-950 text-slate-100">
+    <header class="border-b border-slate-800 bg-slate-900">
+        <div class="mx-auto max-w-7xl px-4 py-4 flex items-center justify-between">
+            <div>
+                <h1 class="text-2xl font-bold">Product Intelligence</h1>
+                <p class="text-sm text-slate-400">Datenqualität und Channel Readiness</p>
+            </div>
+            <a class="text-indigo-400 hover:text-indigo-300" href="/admin">Zurück zum Control Center</a>
+        </div>
+    </header>
+    <main class="mx-auto max-w-7xl px-4 py-8 space-y-8">
+        <section class="rounded-xl border border-slate-800 bg-slate-900 p-6">
+            <h2 class="text-lg font-semibold">Produkt prüfen</h2>
+            <form id="quality-form" class="mt-4 flex gap-3">
+                <input class="flex-1 rounded border border-slate-700 bg-slate-950 p-2" type="text" name="sku" placeholder="SKU" required>
+                <button class="rounded bg-indigo-600 px-4 py-2 font-semibold hover:bg-indigo-500" type="submit">Prüfen</button>
+            </form>
+            <pre id="quality-result" class="mt-4 overflow-x-auto rounded-lg bg-slate-950 p-4 text-sm text-slate-300"></pre>
+        </section>
+    </main>
+    <script>
+        const form = document.getElementById('quality-form');
+        const result = document.getElementById('quality-result');
+        form.addEventListener('submit', async (event) => {
+            event.preventDefault();
+            const sku = new FormData(form).get('sku');
+            const quality = await fetch('/api/product-quality/' + encodeURIComponent(sku), { headers: { 'X-Internal-API-Key': '' } });
+            const readiness = await fetch('/api/channel-readiness/' + encodeURIComponent(sku), { headers: { 'X-Internal-API-Key': '' } });
+            result.textContent = JSON.stringify({ quality: await quality.json(), readiness: await readiness.json() }, null, 2);
+        });
+    </script>
+</body>
+</html>
