@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger("omni.sales")
@@ -20,7 +20,7 @@ def calculate_sales_velocity(
     days: int = 30,
 ) -> Dict[str, Any]:
     """Calculate sales velocity for a product."""
-    cutoff = datetime.utcnow() - timedelta(days=days)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
     relevant = [
         o for o in orders
         if o.get("sku") == product_sku
@@ -30,12 +30,12 @@ def calculate_sales_velocity(
     order_count = len(relevant)
     avg_quantity = total_quantity / order_count if order_count else 0
     daily_avg = total_quantity / days if days else 0
-    recent_cutoff = datetime.utcnow() - timedelta(days=7)
-    prev_cutoff = datetime.utcnow() - timedelta(days=14)
+    recent_cutoff = datetime.now(timezone.utc) - timedelta(days=7)
+    prev_cutoff = datetime.now(timezone.utc) - timedelta(days=14)
     recent = [
         o for o in orders
         if o.get("sku") == product_sku
-        and recent_cutoff.isoformat() <= o.get("created_at", "") < datetime.utcnow().isoformat()
+        and recent_cutoff.isoformat() <= o.get("created_at", "") < datetime.now(timezone.utc).isoformat()
     ]
     prev = [
         o for o in orders
@@ -102,7 +102,7 @@ def detect_slow_movers(
     threshold_qty: int = 5,
 ) -> Dict[str, Any]:
     """Detect products with low sales velocity (potential dead stock)."""
-    cutoff = datetime.utcnow() - timedelta(days=days)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
     relevant = [
         o for o in orders
         if o.get("sku") == product_sku
@@ -187,7 +187,7 @@ def calculate_smart_price(
         "recommendation": recommendation,
         "price_change_pct": round(price_change_pct, 2),
         "safety_margin_percent": safety_margin_percent,
-        "calculation_timestamp": datetime.utcnow().isoformat(),
+        "calculation_timestamp": datetime.now(timezone.utc).isoformat(),
     }
 
 
@@ -198,7 +198,7 @@ def calculate_conversion_rate(
     days: int = 30,
 ) -> Dict[str, Any]:
     """Calculate conversion rate for a product."""
-    cutoff = datetime.utcnow() - timedelta(days=days)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
     relevant_orders = [
         o for o in orders
         if o.get("sku") == product_sku
@@ -234,7 +234,7 @@ def analyze_funnel(
     days: int = 30,
 ) -> Dict[str, Any]:
     """Analyze sales funnel for a product."""
-    cutoff = datetime.utcnow() - timedelta(days=days)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
     relevant = [
         o for o in orders
         if o.get("sku") == product_sku
@@ -312,7 +312,7 @@ class PricingRuleEngine:
             self.rules[product_sku] = {}
         self.rules[product_sku][rule_name] = {
             "config": rule_config,
-            "created_at": datetime.utcnow().isoformat(),
+            "created_at": datetime.now(timezone.utc).isoformat(),
         }
         logger.info(f"Pricing rule '{rule_name}' added for {product_sku}")
 
@@ -422,12 +422,12 @@ class PricingRuleEngine:
         triggered_by: str,
     ) -> str:
         """Save a price change as pending (requires authorization)."""
-        change_id = f"{product_sku}_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}"
+        change_id = f"{product_sku}_{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
         self.pending_changes[change_id] = {
             "product_sku": product_sku,
             "new_price": new_price,
             "triggered_by": triggered_by,
-            "created_at": datetime.utcnow().isoformat(),
+            "created_at": datetime.now(timezone.utc).isoformat(),
             "status": "pending_authorization",
         }
         logger.info(f"Pending price change saved: {change_id} for {product_sku} at {new_price}")

@@ -1,7 +1,7 @@
 """Sales Automation Tests"""
 
 import pytest
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from services.sales_automation import (
     calculate_sales_velocity,
     calculate_abc_classification,
@@ -16,7 +16,7 @@ from services.sales_automation import (
 
 # Helper to create orders with controlled dates
 def make_order(sku, quantity, days_ago=0):
-    date = datetime.utcnow() - timedelta(days=days_ago)
+    date = datetime.now(timezone.utc) - timedelta(days=days_ago)
     return {"sku": sku, "quantity": quantity, "created_at": date.isoformat()}
 
 

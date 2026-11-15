@@ -64,6 +64,8 @@ from services.google_export_engine import AutonomousExportEngine, ExportQueueIte
 from services.omniroute_provider import AIProvider, ProviderManager
 from services.omniroute_model_registry import AIModel, ModelRegistry, RoutingRule, RoutingPolicy, IntelligentRoutingEngine, CostCalculator
 from services.trend_engine import TrendEngine
+from services.event_bus import EventBus, get_event_bus, shutdown_event_bus
+from services.global_control_center import GlobalControlCenter
 
 logging.basicConfig(
     level=logging.INFO,
@@ -142,6 +144,9 @@ class AppRuntime:
         self.omniroute_model_registry: ModelRegistry | None = None
         self.omniroute_routing_engine: IntelligentRoutingEngine | None = None
         self.omniroute_cost_calculator: CostCalculator | None = None
+        # Internal communication & control center
+        self.event_bus: EventBus | None = None
+        self.control_center: GlobalControlCenter | None = None
 
     @property
     def uptime_seconds(self) -> int:
@@ -247,6 +252,24 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     runtime.omniroute_model_registry = ModelRegistry()
     runtime.omniroute_routing_engine = IntelligentRoutingEngine(runtime.omniroute_model_registry)
     runtime.omniroute_cost_calculator = CostCalculator()
+    # Initialize Event Bus and Global Control Center
+    try:
+        runtime.event_bus = await get_event_bus()
+    except Exception:
+        logger.exception("Failed to initialize event bus")
+        runtime.event_bus = None
+    runtime.control_center = GlobalControlCenter(
+        event_bus=runtime.event_bus,
+        provider_manager=runtime.omniroute_provider_manager,
+        model_registry=runtime.omniroute_model_registry,
+        routing_engine=runtime.omniroute_routing_engine,
+        export_managers=runtime.google_export_engines,
+        shopware_connections=runtime.shopware_connections,
+        competitor_engines={
+            "matching": runtime.competitor_matching_engine,
+            "pricing": runtime.competitor_pricing_engine,
+        },
+    )
     await write_log("INFO", "application_started", "Omni-Core middleware started.")
     try:
         yield
@@ -257,6 +280,11 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         tasks = [task for task in (runtime.worker_task, runtime.trend_task) if task is not None]
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+        try:
+            await shutdown_event_bus()
+        except Exception:
+            logger.exception("Failed to shutdown event bus")
+        runtime.event_bus = None
         await runtime.importer.close()
         await close_pg_pool()
 
@@ -679,11 +707,11 @@ async def export_channel_status(channel: str):
     
     adapter = adapter_map.get(channel)
     if adapter:
-        status = await adapter.get_adapter_status()
+        adapter_status = await adapter.get_adapter_status()
         return {
             "status": "ok",
             "channel": channel,
-            "status": status,
+            "adapter_status": adapter_status,
         }
     
     raise HTTPException(status_code=404, detail=f"Channel {channel} not supported")
@@ -698,46 +726,32 @@ async def download_export(channel: str):
     }
 
 # ---------------------------------------------------------------------------
-# Health API
+# Health / Integrations API
 # ---------------------------------------------------------------------------
 
-@app.get("/api/health")
-async def health_check():
-    """Health check endpoint."""
-    from services.omniroute_client import OmniRouteClient
-    import os
-    
-    try:
-        client = OmniRouteClient(
-            os.getenv("OMNI_ROUTE_BASE_URL", "http://localhost:20128"),
-            os.getenv("OMNI_ROUTE_API_KEY", "test-key"),
-        )
-        healthy = await client.check_health()
-    except Exception:
-        healthy = False
-    
-    return {
-        "status": "ok" if healthy else "degraded",
-        "service": "omni-core",
-        "omniroute": {"healthy": healthy},
-    }
-
 @app.get("/api/health/integrations")
-async def integrations_health():
-    """Check integration health."""
-    return {
-        "status": "ok",
-        "integrations": {
-            "omni_route": {"healthy": True},
-            "database": {"connected": True},
-        },
+async def integrations_health() -> dict[str, Any]:
+    """Check integration health across configured subsystems."""
+    try:
+        await count_dashboard_metrics()
+        db_ok = True
+    except Exception:
+        logger.exception("Database integration check failed")
+        db_ok = False
+
+    integrations: dict[str, Any] = {
+        "database": {"connected": db_ok},
+        "omniroute": {"healthy": runtime.omniroute_healthy, "latency_ms": runtime.omniroute_latency_ms},
+        "shopware": {"configured_connections": len(runtime.shopware_connections)},
+        "google_merchant": {"configured_accounts": len(runtime.google_merchant_clients)},
+        "event_bus": runtime.event_bus.get_stats() if getattr(runtime, "event_bus", None) else {"running": False},
     }
+    overall_ok = db_ok
+    return {"status": "ok" if overall_ok else "degraded", "integrations": integrations}
 
 # ---------------------------------------------------------------------------
 # Shopware Integration API
 # ---------------------------------------------------------------------------
-
-from pydantic import BaseModel
 
 class ShopwareConnectionCreate(BaseModel):
     shop_name: str
@@ -1667,3 +1681,31 @@ async def pipeline_auto_export_imported(account_id: str):
         "errors": errors,
         "account_id": account_id,
     }
+
+
+# ---------------------------------------------------------------------------
+# Global Control Center API
+# ---------------------------------------------------------------------------
+
+@app.get("/api/control-center/overview")
+async def control_center_overview() -> dict[str, Any]:
+    """Return Global Control Center executive overview."""
+    if runtime.control_center is None:
+        raise HTTPException(status_code=503, detail="Control center not initialized")
+    return await runtime.control_center.get_executive_overview()
+
+
+@app.get("/api/control-center/dashboard")
+async def control_center_dashboard() -> dict[str, Any]:
+    """Return aggregated Global Control Center dashboard data."""
+    if runtime.control_center is None:
+        raise HTTPException(status_code=503, detail="Control center not initialized")
+    return await runtime.control_center.get_full_dashboard()
+
+
+@app.get("/api/control-center/system")
+async def control_center_system() -> dict[str, Any]:
+    """Return system intelligence metrics."""
+    if runtime.control_center is None:
+        raise HTTPException(status_code=503, detail="Control center not initialized")
+    return await runtime.control_center.get_system_intelligence()
