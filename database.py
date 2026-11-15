@@ -753,6 +753,98 @@ POSTGRES_SCHEMA: tuple[str, ...] = (
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS assets (
+        id TEXT PRIMARY KEY,
+        asset_type TEXT NOT NULL CHECK (asset_type IN ('image', 'video', 'document', 'audio', 'graphic')),
+        storage_backend TEXT NOT NULL DEFAULT 'local',
+        storage_path TEXT NOT NULL,
+        original_filename TEXT NOT NULL DEFAULT '',
+        mime_type TEXT NOT NULL DEFAULT '',
+        size_bytes BIGINT NOT NULL DEFAULT 0 CHECK (size_bytes >= 0),
+        sha256_hash TEXT NOT NULL,
+        width INTEGER,
+        height INTEGER,
+        duration_seconds NUMERIC(10,3),
+        source_type TEXT NOT NULL DEFAULT 'upload',
+        source_url TEXT NOT NULL DEFAULT '',
+        product_sku TEXT REFERENCES products(sku) ON DELETE SET NULL,
+        model_profile_id TEXT,
+        campaign_id TEXT,
+        rights_status TEXT NOT NULL DEFAULT 'unknown' CHECK (rights_status IN ('unknown', 'owned', 'licensed', 'consent_granted', 'restricted')),
+        approval_status TEXT NOT NULL DEFAULT 'draft' CHECK (approval_status IN ('draft', 'generating', 'generated', 'quality_check', 'review_required', 'approved', 'rejected', 'published', 'archived')),
+        created_by TEXT NOT NULL DEFAULT 'system',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_assets_product_sku ON assets(product_sku)",
+    "CREATE INDEX IF NOT EXISTS idx_assets_model_profile_id ON assets(model_profile_id)",
+    "CREATE INDEX IF NOT EXISTS idx_assets_approval_status ON assets(approval_status)",
+    "CREATE INDEX IF NOT EXISTS idx_assets_sha256_hash ON assets(sha256_hash)",
+    """
+    CREATE TABLE IF NOT EXISTS asset_versions (
+        id TEXT PRIMARY KEY,
+        asset_id TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+        version_number INTEGER NOT NULL CHECK (version_number > 0),
+        storage_path TEXT NOT NULL,
+        sha256_hash TEXT NOT NULL,
+        change_reason TEXT NOT NULL DEFAULT '',
+        created_by TEXT NOT NULL DEFAULT 'system',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE(asset_id, version_number)
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_asset_versions_asset_id ON asset_versions(asset_id)",
+    """
+    CREATE TABLE IF NOT EXISTS model_profiles (
+        id TEXT PRIMARY KEY,
+        display_name TEXT NOT NULL,
+        model_type TEXT NOT NULL CHECK (model_type IN ('own_identity', 'fictional', 'real_person')),
+        active BOOLEAN NOT NULL DEFAULT TRUE,
+        visual_traits_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+        pose_preferences_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+        style_description TEXT NOT NULL DEFAULT '',
+        permitted_use_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+        consent_status TEXT NOT NULL DEFAULT 'not_required' CHECK (consent_status IN ('not_required', 'pending', 'granted', 'expired', 'revoked')),
+        consent_valid_from TIMESTAMPTZ,
+        consent_valid_until TIMESTAMPTZ,
+        rights_holder TEXT NOT NULL DEFAULT '',
+        approval_document_ref TEXT NOT NULL DEFAULT '',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_model_profiles_model_type ON model_profiles(model_type)",
+    "CREATE INDEX IF NOT EXISTS idx_model_profiles_consent_status ON model_profiles(consent_status)",
+    """
+    CREATE TABLE IF NOT EXISTS model_references (
+        id TEXT PRIMARY KEY,
+        model_profile_id TEXT NOT NULL REFERENCES model_profiles(id) ON DELETE CASCADE,
+        reference_type TEXT NOT NULL CHECK (reference_type IN ('front', 'profile', 'back', 'expression', 'full_body', 'pack')),
+        asset_id TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+        version_number INTEGER NOT NULL DEFAULT 1 CHECK (version_number > 0),
+        quality_score NUMERIC(5,2),
+        is_primary BOOLEAN NOT NULL DEFAULT FALSE,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_model_references_profile_id ON model_references(model_profile_id)",
+    "CREATE INDEX IF NOT EXISTS idx_model_references_asset_id ON model_references(asset_id)",
+    """
+    CREATE TABLE IF NOT EXISTS model_permissions (
+        id TEXT PRIMARY KEY,
+        model_profile_id TEXT NOT NULL REFERENCES model_profiles(id) ON DELETE CASCADE,
+        permission_type TEXT NOT NULL,
+        granted BOOLEAN NOT NULL DEFAULT FALSE,
+        scope_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+        valid_until TIMESTAMPTZ,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE(model_profile_id, permission_type)
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_model_permissions_profile_id ON model_permissions(model_profile_id)",
 )
 
 SQLITE_SCHEMA = """
@@ -1357,6 +1449,88 @@ CREATE TABLE IF NOT EXISTS ai_audit_logs (
     details_json TEXT NOT NULL DEFAULT '{}',
     created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS assets (
+    id TEXT PRIMARY KEY,
+    asset_type TEXT NOT NULL CHECK (asset_type IN ('image', 'video', 'document', 'audio', 'graphic')),
+    storage_backend TEXT NOT NULL DEFAULT 'local',
+    storage_path TEXT NOT NULL,
+    original_filename TEXT NOT NULL DEFAULT '',
+    mime_type TEXT NOT NULL DEFAULT '',
+    size_bytes INTEGER NOT NULL DEFAULT 0 CHECK (size_bytes >= 0),
+    sha256_hash TEXT NOT NULL,
+    width INTEGER,
+    height INTEGER,
+    duration_seconds REAL,
+    source_type TEXT NOT NULL DEFAULT 'upload',
+    source_url TEXT NOT NULL DEFAULT '',
+    product_sku TEXT REFERENCES products(sku) ON DELETE SET NULL,
+    model_profile_id TEXT,
+    campaign_id TEXT,
+    rights_status TEXT NOT NULL DEFAULT 'unknown' CHECK (rights_status IN ('unknown', 'owned', 'licensed', 'consent_granted', 'restricted')),
+    approval_status TEXT NOT NULL DEFAULT 'draft' CHECK (approval_status IN ('draft', 'generating', 'generated', 'quality_check', 'review_required', 'approved', 'rejected', 'published', 'archived')),
+    created_by TEXT NOT NULL DEFAULT 'system',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_assets_product_sku ON assets(product_sku);
+CREATE INDEX IF NOT EXISTS idx_assets_model_profile_id ON assets(model_profile_id);
+CREATE INDEX IF NOT EXISTS idx_assets_approval_status ON assets(approval_status);
+CREATE INDEX IF NOT EXISTS idx_assets_sha256_hash ON assets(sha256_hash);
+CREATE TABLE IF NOT EXISTS asset_versions (
+    id TEXT PRIMARY KEY,
+    asset_id TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+    version_number INTEGER NOT NULL CHECK (version_number > 0),
+    storage_path TEXT NOT NULL,
+    sha256_hash TEXT NOT NULL,
+    change_reason TEXT NOT NULL DEFAULT '',
+    created_by TEXT NOT NULL DEFAULT 'system',
+    created_at TEXT NOT NULL,
+    UNIQUE(asset_id, version_number)
+);
+CREATE INDEX IF NOT EXISTS idx_asset_versions_asset_id ON asset_versions(asset_id);
+CREATE TABLE IF NOT EXISTS model_profiles (
+    id TEXT PRIMARY KEY,
+    display_name TEXT NOT NULL,
+    model_type TEXT NOT NULL CHECK (model_type IN ('own_identity', 'fictional', 'real_person')),
+    active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
+    visual_traits_json TEXT NOT NULL DEFAULT '{}',
+    pose_preferences_json TEXT NOT NULL DEFAULT '[]',
+    style_description TEXT NOT NULL DEFAULT '',
+    permitted_use_json TEXT NOT NULL DEFAULT '[]',
+    consent_status TEXT NOT NULL DEFAULT 'not_required' CHECK (consent_status IN ('not_required', 'pending', 'granted', 'expired', 'revoked')),
+    consent_valid_from TEXT,
+    consent_valid_until TEXT,
+    rights_holder TEXT NOT NULL DEFAULT '',
+    approval_document_ref TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_model_profiles_model_type ON model_profiles(model_type);
+CREATE INDEX IF NOT EXISTS idx_model_profiles_consent_status ON model_profiles(consent_status);
+CREATE TABLE IF NOT EXISTS model_references (
+    id TEXT PRIMARY KEY,
+    model_profile_id TEXT NOT NULL REFERENCES model_profiles(id) ON DELETE CASCADE,
+    reference_type TEXT NOT NULL CHECK (reference_type IN ('front', 'profile', 'back', 'expression', 'full_body', 'pack')),
+    asset_id TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+    version_number INTEGER NOT NULL DEFAULT 1 CHECK (version_number > 0),
+    quality_score REAL,
+    is_primary INTEGER NOT NULL DEFAULT 0 CHECK (is_primary IN (0, 1)),
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_model_references_profile_id ON model_references(model_profile_id);
+CREATE INDEX IF NOT EXISTS idx_model_references_asset_id ON model_references(asset_id);
+CREATE TABLE IF NOT EXISTS model_permissions (
+    id TEXT PRIMARY KEY,
+    model_profile_id TEXT NOT NULL REFERENCES model_profiles(id) ON DELETE CASCADE,
+    permission_type TEXT NOT NULL,
+    granted INTEGER NOT NULL DEFAULT 0 CHECK (granted IN (0, 1)),
+    scope_json TEXT NOT NULL DEFAULT '{}',
+    valid_until TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(model_profile_id, permission_type)
+);
+CREATE INDEX IF NOT EXISTS idx_model_permissions_profile_id ON model_permissions(model_profile_id);
 """
 
 
@@ -2373,6 +2547,453 @@ async def ai_list_usage_records(limit: int = 100) -> list[dict[str, Any]]:
         return [dict(row) for row in rows]
     async with get_connection() as db:
         cursor = await db.execute("SELECT * FROM ai_usage_records ORDER BY created_at DESC LIMIT ?", (limit,))
+        rows = await cursor.fetchall()
+        await cursor.close()
+        return [dict(row) for row in rows]
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Asset Management
+# ════════════════════════════════════════════════════════════════════════════
+
+async def asset_find_by_hash(sha256_hash: str) -> dict[str, Any] | None:
+    """Return an existing asset with the same SHA-256 hash."""
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT * FROM assets WHERE sha256_hash = $1 ORDER BY created_at ASC LIMIT 1", sha256_hash)
+        return dict(row) if row else None
+    async with get_connection() as db:
+        cursor = await db.execute("SELECT * FROM assets WHERE sha256_hash = ? ORDER BY created_at ASC LIMIT 1", (sha256_hash,))
+        row = await cursor.fetchone()
+        await cursor.close()
+        return dict(row) if row else None
+
+
+async def asset_create(*, asset_id: str, asset_type: str, storage_path: str,
+                       original_filename: str = "", mime_type: str = "",
+                       size_bytes: int = 0, sha256_hash: str = "",
+                       width: int | None = None, height: int | None = None,
+                       duration_seconds: float | None = None,
+                       source_type: str = "upload", source_url: str = "",
+                       product_sku: str | None = None,
+                       model_profile_id: str | None = None,
+                       campaign_id: str | None = None,
+                       rights_status: str = "unknown",
+                       approval_status: str = "draft",
+                       created_by: str = "system") -> None:
+    """Persist a new asset record."""
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO assets(id, asset_type, storage_path, original_filename, mime_type,
+                   size_bytes, sha256_hash, width, height, duration_seconds, source_type, source_url,
+                   product_sku, model_profile_id, campaign_id, rights_status, approval_status,
+                   created_by, created_at, updated_at)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,NOW(),NOW())""",
+                asset_id, asset_type, storage_path, original_filename, mime_type, size_bytes,
+                sha256_hash, width, height, duration_seconds, source_type, source_url, product_sku,
+                model_profile_id, campaign_id, rights_status, approval_status, created_by,
+            )
+        return
+    now = utc_now()
+    async with get_connection() as db:
+        await db.execute(
+            """INSERT INTO assets(id, asset_type, storage_backend, storage_path, original_filename,
+               mime_type, size_bytes, sha256_hash, width, height, duration_seconds, source_type,
+               source_url, product_sku, model_profile_id, campaign_id, rights_status,
+               approval_status, created_by, created_at, updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (asset_id, asset_type, "local", storage_path, original_filename, mime_type, size_bytes,
+             sha256_hash, width, height, duration_seconds, source_type, source_url, product_sku,
+             model_profile_id, campaign_id, rights_status, approval_status, created_by, now, now),
+        )
+        await db.commit()
+
+
+async def asset_get(asset_id: str) -> dict[str, Any] | None:
+    """Return one asset by ID."""
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT * FROM assets WHERE id = $1", asset_id)
+        return dict(row) if row else None
+    async with get_connection() as db:
+        cursor = await db.execute("SELECT * FROM assets WHERE id = ?", (asset_id,))
+        row = await cursor.fetchone()
+        await cursor.close()
+        return dict(row) if row else None
+
+
+async def asset_list(*, product_sku: str | None = None, model_profile_id: str | None = None,
+                     asset_type: str | None = None, approval_status: str | None = None,
+                     limit: int = 100) -> list[dict[str, Any]]:
+    """Return assets with optional filters."""
+    safe_limit = min(max(limit, 1), 500)
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            query = "SELECT * FROM assets WHERE 1=1"
+            params: list[Any] = []
+            if product_sku:
+                query += f" AND product_sku = ${len(params) + 1}"
+                params.append(product_sku)
+            if model_profile_id:
+                query += f" AND model_profile_id = ${len(params) + 1}"
+                params.append(model_profile_id)
+            if asset_type:
+                query += f" AND asset_type = ${len(params) + 1}"
+                params.append(asset_type)
+            if approval_status:
+                query += f" AND approval_status = ${len(params) + 1}"
+                params.append(approval_status)
+            query += f" ORDER BY created_at DESC, id ASC LIMIT ${len(params) + 1}"
+            params.append(safe_limit)
+            rows = await conn.fetch(query, *params)
+        return [dict(row) for row in rows]
+    async with get_connection() as db:
+        query = "SELECT * FROM assets WHERE 1=1"
+        params: list[Any] = []
+        if product_sku:
+            query += " AND product_sku = ?"
+            params.append(product_sku)
+        if model_profile_id:
+            query += " AND model_profile_id = ?"
+            params.append(model_profile_id)
+        if asset_type:
+            query += " AND asset_type = ?"
+            params.append(asset_type)
+        if approval_status:
+            query += " AND approval_status = ?"
+            params.append(approval_status)
+        query += " ORDER BY created_at DESC, id ASC LIMIT ?"
+        params.append(safe_limit)
+        cursor = await db.execute(query, tuple(params))
+        rows = await cursor.fetchall()
+        await cursor.close()
+        return [dict(row) for row in rows]
+
+
+async def asset_update(asset_id: str, **fields: Any) -> bool:
+    """Update mutable asset fields and return whether a row was changed."""
+    allowed = {
+        "asset_type", "storage_path", "original_filename", "mime_type", "size_bytes",
+        "width", "height", "duration_seconds", "source_type", "source_url", "product_sku",
+        "model_profile_id", "campaign_id", "rights_status", "approval_status",
+    }
+    updates = {key: value for key, value in fields.items() if key in allowed}
+    if not updates:
+        return False
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            assignments = []
+            params: list[Any] = []
+            for index, (key, value) in enumerate(updates.items(), start=1):
+                assignments.append(f"{key} = ${index}")
+                params.append(value)
+            params.append(asset_id)
+            result = await conn.execute(
+                f"UPDATE assets SET {', '.join(assignments)}, updated_at = NOW() WHERE id = ${len(params)}",
+                *params,
+            )
+        return result.endswith("1")
+    async with get_connection() as db:
+        assignments = [f"{key} = ?" for key in updates]
+        params = list(updates.values()) + [asset_id]
+        cursor = await db.execute(
+            f"UPDATE assets SET {', '.join(assignments)}, updated_at = ? WHERE id = ?",
+            tuple(params[:-1] + [utc_now(), params[-1]]),
+        )
+        await db.commit()
+        changed = cursor.rowcount > 0
+        await cursor.close()
+        return changed
+
+
+async def asset_version_create(*, version_id: str, asset_id: str, version_number: int,
+                               storage_path: str, sha256_hash: str,
+                               change_reason: str = "", created_by: str = "system") -> None:
+    """Persist an immutable asset version."""
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO asset_versions(id, asset_id, version_number, storage_path,
+                   sha256_hash, change_reason, created_by, created_at)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7,NOW())""",
+                version_id, asset_id, version_number, storage_path, sha256_hash,
+                change_reason, created_by,
+            )
+        return
+    async with get_connection() as db:
+        await db.execute(
+            """INSERT INTO asset_versions(id, asset_id, version_number, storage_path,
+               sha256_hash, change_reason, created_by, created_at)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (version_id, asset_id, version_number, storage_path, sha256_hash,
+             change_reason, created_by, utc_now()),
+        )
+        await db.commit()
+
+
+async def asset_version_list(asset_id: str) -> list[dict[str, Any]]:
+    """Return versions for one asset in ascending order."""
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("SELECT * FROM asset_versions WHERE asset_id = $1 ORDER BY version_number ASC", asset_id)
+        return [dict(row) for row in rows]
+    async with get_connection() as db:
+        cursor = await db.execute("SELECT * FROM asset_versions WHERE asset_id = ? ORDER BY version_number ASC", (asset_id,))
+        rows = await cursor.fetchall()
+        await cursor.close()
+        return [dict(row) for row in rows]
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Model Identity Management
+# ════════════════════════════════════════════════════════════════════════════
+
+async def model_profile_create(*, profile_id: str, display_name: str, model_type: str,
+                               active: bool = True, visual_traits: dict[str, Any] | None = None,
+                               pose_preferences: list[str] | None = None,
+                               style_description: str = "",
+                               permitted_use: list[str] | None = None,
+                               consent_status: str = "not_required",
+                               consent_valid_from: str | None = None,
+                               consent_valid_until: str | None = None,
+                               rights_holder: str = "",
+                               approval_document_ref: str = "") -> None:
+    """Persist a model identity profile."""
+    traits = visual_traits or {}
+    poses = pose_preferences or []
+    uses = permitted_use or []
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO model_profiles(id, display_name, model_type, active,
+                   visual_traits_json, pose_preferences_json, style_description,
+                   permitted_use_json, consent_status, consent_valid_from,
+                   consent_valid_until, rights_holder, approval_document_ref,
+                   created_at, updated_at)
+                   VALUES ($1,$2,$3,$4,$5::jsonb,$6::jsonb,$7,$8::jsonb,$9,$10,$11,$12,$13,NOW(),NOW())""",
+                profile_id, display_name, model_type, active,
+                __import__("json").dumps(traits), __import__("json").dumps(poses),
+                style_description, __import__("json").dumps(uses), consent_status,
+                consent_valid_from, consent_valid_until, rights_holder, approval_document_ref,
+            )
+        return
+    now = utc_now()
+    import json as _json
+    async with get_connection() as db:
+        await db.execute(
+            """INSERT INTO model_profiles(id, display_name, model_type, active,
+               visual_traits_json, pose_preferences_json, style_description,
+               permitted_use_json, consent_status, consent_valid_from,
+               consent_valid_until, rights_holder, approval_document_ref,
+               created_at, updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (profile_id, display_name, model_type, int(active),
+             _json.dumps(traits), _json.dumps(poses), style_description,
+             _json.dumps(uses), consent_status, consent_valid_from,
+             consent_valid_until, rights_holder, approval_document_ref, now, now),
+        )
+        await db.commit()
+
+
+async def model_profile_list(*, model_type: str | None = None,
+                             consent_status: str | None = None,
+                             limit: int = 100) -> list[dict[str, Any]]:
+    """List model profiles with optional filters."""
+    safe_limit = min(max(limit, 1), 500)
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            query = "SELECT * FROM model_profiles WHERE 1=1"
+            params: list[Any] = []
+            if model_type:
+                query += f" AND model_type = ${len(params) + 1}"
+                params.append(model_type)
+            if consent_status:
+                query += f" AND consent_status = ${len(params) + 1}"
+                params.append(consent_status)
+            query += f" ORDER BY display_name ASC, id ASC LIMIT ${len(params) + 1}"
+            params.append(safe_limit)
+            rows = await conn.fetch(query, *params)
+        return [dict(row) for row in rows]
+    async with get_connection() as db:
+        query = "SELECT * FROM model_profiles WHERE 1=1"
+        params: list[Any] = []
+        if model_type:
+            query += " AND model_type = ?"
+            params.append(model_type)
+        if consent_status:
+            query += " AND consent_status = ?"
+            params.append(consent_status)
+        query += " ORDER BY display_name ASC, id ASC LIMIT ?"
+        params.append(safe_limit)
+        cursor = await db.execute(query, tuple(params))
+        rows = await cursor.fetchall()
+        await cursor.close()
+        return [dict(row) for row in rows]
+
+
+async def model_profile_get(profile_id: str) -> dict[str, Any] | None:
+    """Return one model profile by ID."""
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT * FROM model_profiles WHERE id = $1", profile_id)
+        return dict(row) if row else None
+    async with get_connection() as db:
+        cursor = await db.execute("SELECT * FROM model_profiles WHERE id = ?", (profile_id,))
+        row = await cursor.fetchone()
+        await cursor.close()
+        return dict(row) if row else None
+
+
+async def model_profile_update(profile_id: str, **fields: Any) -> bool:
+    """Update mutable model profile fields."""
+    import json as _json
+    allowed = {
+        "display_name", "model_type", "active", "visual_traits", "pose_preferences",
+        "style_description", "permitted_use", "consent_status", "consent_valid_from",
+        "consent_valid_until", "rights_holder", "approval_document_ref",
+    }
+    column_map = {
+        "visual_traits": "visual_traits_json",
+        "pose_preferences": "pose_preferences_json",
+        "permitted_use": "permitted_use_json",
+    }
+    updates = {}
+    for key, value in fields.items():
+        if key not in allowed:
+            continue
+        column = column_map.get(key, key)
+        if key in {"visual_traits", "pose_preferences", "permitted_use"}:
+            updates[column] = _json.dumps(value if value is not None else ({} if key == "visual_traits" else []))
+        elif key == "active":
+            updates[column] = bool(value)
+        else:
+            updates[column] = value
+    if not updates:
+        return False
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            assignments = []
+            params: list[Any] = []
+            for index, (column, value) in enumerate(updates.items(), start=1):
+                cast = "::jsonb" if column.endswith("_json") else ""
+                assignments.append(f"{column} = ${index}{cast}")
+                params.append(value)
+            params.append(profile_id)
+            result = await conn.execute(
+                f"UPDATE model_profiles SET {', '.join(assignments)}, updated_at = NOW() WHERE id = ${len(params)}",
+                *params,
+            )
+        return result.endswith("1")
+    async with get_connection() as db:
+        assignments = [f"{column} = ?" for column in updates]
+        params = list(updates.values()) + [utc_now(), profile_id]
+        cursor = await db.execute(
+            f"UPDATE model_profiles SET {', '.join(assignments)}, updated_at = ? WHERE id = ?",
+            tuple(params),
+        )
+        await db.commit()
+        changed = cursor.rowcount > 0
+        await cursor.close()
+        return changed
+
+
+async def model_reference_create(*, reference_id: str, model_profile_id: str,
+                                 reference_type: str, asset_id: str,
+                                 version_number: int = 1,
+                                 quality_score: float | None = None,
+                                 is_primary: bool = False) -> None:
+    """Persist a model reference image."""
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO model_references(id, model_profile_id, reference_type, asset_id,
+                   version_number, quality_score, is_primary, created_at)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7,NOW())""",
+                reference_id, model_profile_id, reference_type, asset_id, version_number,
+                quality_score, is_primary,
+            )
+        return
+    async with get_connection() as db:
+        await db.execute(
+            """INSERT INTO model_references(id, model_profile_id, reference_type, asset_id,
+               version_number, quality_score, is_primary, created_at)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (reference_id, model_profile_id, reference_type, asset_id, version_number,
+             quality_score, int(is_primary), utc_now()),
+        )
+        await db.commit()
+
+
+async def model_reference_list(model_profile_id: str) -> list[dict[str, Any]]:
+    """Return references for one model profile."""
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("SELECT * FROM model_references WHERE model_profile_id = $1 ORDER BY is_primary DESC, created_at ASC", model_profile_id)
+        return [dict(row) for row in rows]
+    async with get_connection() as db:
+        cursor = await db.execute("SELECT * FROM model_references WHERE model_profile_id = ? ORDER BY is_primary DESC, created_at ASC", (model_profile_id,))
+        rows = await cursor.fetchall()
+        await cursor.close()
+        return [dict(row) for row in rows]
+
+
+async def model_permission_upsert(*, permission_id: str, model_profile_id: str,
+                                  permission_type: str, granted: bool,
+                                  scope: dict[str, Any] | None = None,
+                                  valid_until: str | None = None) -> None:
+    """Upsert a model usage permission."""
+    import json as _json
+    scope_json = _json.dumps(scope or {})
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO model_permissions(id, model_profile_id, permission_type, granted,
+                   scope_json, valid_until, created_at, updated_at)
+                   VALUES ($1,$2,$3,$4,$5::jsonb,$6,NOW(),NOW())
+                   ON CONFLICT(model_profile_id, permission_type) DO UPDATE SET
+                     granted=EXCLUDED.granted, scope_json=EXCLUDED.scope_json,
+                     valid_until=EXCLUDED.valid_until, updated_at=NOW()""",
+                permission_id, model_profile_id, permission_type, granted, scope_json, valid_until,
+            )
+        return
+    async with get_connection() as db:
+        await db.execute(
+            """INSERT INTO model_permissions(id, model_profile_id, permission_type, granted,
+               scope_json, valid_until, created_at, updated_at)
+               VALUES (?,?,?,?,?,?,?,?)
+               ON CONFLICT(model_profile_id, permission_type) DO UPDATE SET
+                 granted=excluded.granted, scope_json=excluded.scope_json,
+                 valid_until=excluded.valid_until, updated_at=excluded.updated_at""",
+            (permission_id, model_profile_id, permission_type, int(granted), scope_json,
+             valid_until, utc_now(), utc_now()),
+        )
+        await db.commit()
+
+
+async def model_permission_list(model_profile_id: str) -> list[dict[str, Any]]:
+    """Return permissions for one model profile."""
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("SELECT * FROM model_permissions WHERE model_profile_id = $1 ORDER BY permission_type", model_profile_id)
+        return [dict(row) for row in rows]
+    async with get_connection() as db:
+        cursor = await db.execute("SELECT * FROM model_permissions WHERE model_profile_id = ? ORDER BY permission_type", (model_profile_id,))
         rows = await cursor.fetchall()
         await cursor.close()
         return [dict(row) for row in rows]

@@ -21,7 +21,7 @@ import xml.etree.ElementTree as ET
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator
 
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
@@ -48,7 +48,9 @@ from database import (
     upsert_product,
     write_log,
 )
+from services.asset_manager import create_asset_from_upload, get_asset, list_assets, update_asset, create_asset_version_from_upload, list_asset_versions
 from services.fulfillment import FulfillmentService
+from services.model_identity import create_profile, list_profiles, get_profile, update_profile, add_reference, list_references, set_permission, list_permissions, generation_allowed
 from services.inventory_guard import InventoryGuard
 from services.matterhorn_importer import MatterhornUniversalImporter
 from services.omniroute_client import OmniRouteClient
@@ -111,6 +113,74 @@ class PricingRequest(BaseModel):
     """Validated price-calculation input."""
 
     supplier_price: float = Field(ge=0, le=1_000_000)
+
+
+class AssetUpdate(BaseModel):
+    """Validated asset metadata update."""
+
+    asset_type: str | None = None
+    original_filename: str | None = None
+    mime_type: str | None = None
+    source_type: str | None = None
+    source_url: str | None = None
+    product_sku: str | None = None
+    model_profile_id: str | None = None
+    campaign_id: str | None = None
+    rights_status: str | None = None
+    approval_status: str | None = None
+
+
+class ModelProfileCreate(BaseModel):
+    """Validated model identity profile input."""
+
+    display_name: str = Field(min_length=1, max_length=128)
+    model_type: str
+    active: bool = True
+    visual_traits: dict[str, Any] = Field(default_factory=dict)
+    pose_preferences: list[str] = Field(default_factory=list)
+    style_description: str = Field(default="", max_length=4000)
+    permitted_use: list[str] = Field(default_factory=list)
+    consent_status: str = "not_required"
+    consent_valid_from: str | None = None
+    consent_valid_until: str | None = None
+    rights_holder: str = Field(default="", max_length=256)
+    approval_document_ref: str = Field(default="", max_length=512)
+
+
+class ModelProfileUpdate(BaseModel):
+    """Validated partial model identity profile update."""
+
+    display_name: str | None = Field(default=None, min_length=1, max_length=128)
+    model_type: str | None = None
+    active: bool | None = None
+    visual_traits: dict[str, Any] | None = None
+    pose_preferences: list[str] | None = None
+    style_description: str | None = Field(default=None, max_length=4000)
+    permitted_use: list[str] | None = None
+    consent_status: str | None = None
+    consent_valid_from: str | None = None
+    consent_valid_until: str | None = None
+    rights_holder: str | None = Field(default=None, max_length=256)
+    approval_document_ref: str | None = Field(default=None, max_length=512)
+
+
+class ModelReferenceCreate(BaseModel):
+    """Validated model reference input."""
+
+    reference_type: str
+    asset_id: str = Field(min_length=1, max_length=128)
+    version_number: int = Field(default=1, ge=1)
+    quality_score: float | None = Field(default=None, ge=0, le=100)
+    is_primary: bool = False
+
+
+class ModelPermissionCreate(BaseModel):
+    """Validated model permission input."""
+
+    permission_type: str = Field(min_length=1, max_length=128)
+    granted: bool = False
+    scope: dict[str, Any] = Field(default_factory=dict)
+    valid_until: str | None = None
 
 
 class AppRuntime:
@@ -384,6 +454,18 @@ async def admin_dashboard(request: Request) -> HTMLResponse:
     return templates.TemplateResponse("admin_dashboard.html", {"request": request})
 
 
+@app.get("/admin/assets", response_class=HTMLResponse)
+async def assets_page(request: Request) -> HTMLResponse:
+    """Render asset management."""
+    return templates.TemplateResponse("asset_manager.html", {"request": request, "assets": await list_assets(limit=100)})
+
+
+@app.get("/admin/models", response_class=HTMLResponse)
+async def model_manager_page(request: Request) -> HTMLResponse:
+    """Render model identity management."""
+    return templates.TemplateResponse("model_manager.html", {"request": request, "profiles": await list_profiles(limit=100)})
+
+
 @app.get("/api/health")
 async def health_check() -> dict[str, Any]:
     """Readiness and dependency health endpoint."""
@@ -444,6 +526,222 @@ async def admin_session_login(request: Request) -> JSONResponse:
         max_age=3600,
     )
     return response
+
+
+@app.get("/api/assets")
+async def list_asset_records(product_sku: str | None = Query(default=None),
+                            model_profile_id: str | None = Query(default=None),
+                            asset_type: str | None = Query(default=None),
+                            approval_status: str | None = Query(default=None),
+                            limit: int = Query(default=100, ge=1, le=500)) -> list[dict[str, Any]]:
+    """List durable asset records."""
+    return await list_assets(product_sku=product_sku, model_profile_id=model_profile_id,
+                             asset_type=asset_type, approval_status=approval_status, limit=limit)
+
+
+@app.post("/api/assets", status_code=201)
+async def upload_asset(file: UploadFile = File(...),
+                       asset_type: str = Form(...),
+                       source_type: str = Form("upload"),
+                       source_url: str = Form(""),
+                       product_sku: str | None = Form(default=None),
+                       model_profile_id: str | None = Form(default=None),
+                       campaign_id: str | None = Form(default=None),
+                       rights_status: str = Form("unknown"),
+                       approval_status: str = Form("draft"),
+                       created_by: str = Form("system")) -> dict[str, Any]:
+    """Upload and persist an asset."""
+    try:
+        return await create_asset_from_upload(
+            upload=file,
+            asset_type=asset_type,
+            source_type=source_type,
+            source_url=source_url,
+            product_sku=product_sku,
+            model_profile_id=model_profile_id,
+            campaign_id=campaign_id,
+            rights_status=rights_status,
+            approval_status=approval_status,
+            created_by=created_by,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/assets/{asset_id}")
+async def get_asset_record(asset_id: str) -> dict[str, Any]:
+    """Return one asset record."""
+    asset = await get_asset(asset_id)
+    if asset is None:
+        raise HTTPException(status_code=404, detail="Asset not found")
+    return asset
+
+
+@app.patch("/api/assets/{asset_id}")
+async def update_asset_record(asset_id: str, payload: AssetUpdate) -> dict[str, Any]:
+    """Update mutable asset metadata."""
+    asset = await get_asset(asset_id)
+    if asset is None:
+        raise HTTPException(status_code=404, detail="Asset not found")
+    updates = {key: value for key, value in payload.model_dump().items() if value is not None}
+    if updates:
+        await update_asset(asset_id, **updates)
+    updated = await get_asset(asset_id)
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Asset not found")
+    return updated
+
+
+@app.get("/api/assets/{asset_id}/versions")
+async def get_asset_versions(asset_id: str) -> list[dict[str, Any]]:
+    """Return versions for one asset."""
+    asset = await get_asset(asset_id)
+    if asset is None:
+        raise HTTPException(status_code=404, detail="Asset not found")
+    return await list_asset_versions(asset_id)
+
+
+@app.post("/api/assets/{asset_id}/versions", status_code=201)
+async def upload_asset_version(asset_id: str,
+                              file: UploadFile = File(...),
+                              change_reason: str = Form("new version"),
+                              created_by: str = Form("system")) -> dict[str, Any]:
+    """Upload a new immutable asset version."""
+    asset = await get_asset(asset_id)
+    if asset is None:
+        raise HTTPException(status_code=404, detail="Asset not found")
+    try:
+        return await create_asset_version_from_upload(
+            asset_id=asset_id,
+            upload=file,
+            change_reason=change_reason,
+            created_by=created_by,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/model-profiles")
+async def list_model_profile_records(model_type: str | None = Query(default=None),
+                                     consent_status: str | None = Query(default=None),
+                                     limit: int = Query(default=100, ge=1, le=500)) -> list[dict[str, Any]]:
+    """List model identity profiles."""
+    return await list_profiles(model_type=model_type, consent_status=consent_status, limit=limit)
+
+
+@app.post("/api/model-profiles", status_code=201)
+async def create_model_profile_record(payload: ModelProfileCreate) -> dict[str, Any]:
+    """Create a model identity profile."""
+    try:
+        return await create_profile(
+            display_name=payload.display_name,
+            model_type=payload.model_type,
+            active=payload.active,
+            visual_traits=payload.visual_traits,
+            pose_preferences=payload.pose_preferences,
+            style_description=payload.style_description,
+            permitted_use=payload.permitted_use,
+            consent_status=payload.consent_status,
+            consent_valid_from=payload.consent_valid_from,
+            consent_valid_until=payload.consent_valid_until,
+            rights_holder=payload.rights_holder,
+            approval_document_ref=payload.approval_document_ref,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/model-profiles/{profile_id}")
+async def get_model_profile_record(profile_id: str) -> dict[str, Any]:
+    """Return one model identity profile."""
+    profile = await get_profile(profile_id)
+    if profile is None:
+        raise HTTPException(status_code=404, detail="Model profile not found")
+    return profile
+
+
+@app.patch("/api/model-profiles/{profile_id}")
+async def update_model_profile_record(profile_id: str, payload: ModelProfileUpdate) -> dict[str, Any]:
+    """Update a model identity profile."""
+    profile = await get_profile(profile_id)
+    if profile is None:
+        raise HTTPException(status_code=404, detail="Model profile not found")
+    updates = {key: value for key, value in payload.model_dump().items() if value is not None}
+    if updates:
+        try:
+            await update_profile(profile_id, **updates)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    updated = await get_profile(profile_id)
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Model profile not found")
+    return updated
+
+
+@app.get("/api/model-profiles/{profile_id}/references")
+async def list_model_reference_records(profile_id: str) -> list[dict[str, Any]]:
+    """List references for a model profile."""
+    profile = await get_profile(profile_id)
+    if profile is None:
+        raise HTTPException(status_code=404, detail="Model profile not found")
+    return await list_references(profile_id)
+
+
+@app.post("/api/model-profiles/{profile_id}/references", status_code=201)
+async def create_model_reference_record(profile_id: str, payload: ModelReferenceCreate) -> dict[str, Any]:
+    """Attach an asset as a model reference."""
+    profile = await get_profile(profile_id)
+    if profile is None:
+        raise HTTPException(status_code=404, detail="Model profile not found")
+    asset = await get_asset(payload.asset_id)
+    if asset is None:
+        raise HTTPException(status_code=404, detail="Asset not found")
+    try:
+        return await add_reference(
+            profile_id=profile_id,
+            reference_type=payload.reference_type,
+            asset_id=payload.asset_id,
+            version_number=payload.version_number,
+            quality_score=payload.quality_score,
+            is_primary=payload.is_primary,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/model-profiles/{profile_id}/permissions")
+async def list_model_permission_records(profile_id: str) -> list[dict[str, Any]]:
+    """List permissions for a model profile."""
+    profile = await get_profile(profile_id)
+    if profile is None:
+        raise HTTPException(status_code=404, detail="Model profile not found")
+    return await list_permissions(profile_id)
+
+
+@app.post("/api/model-profiles/{profile_id}/permissions")
+async def create_model_permission_record(profile_id: str, payload: ModelPermissionCreate) -> dict[str, str]:
+    """Upsert a model usage permission."""
+    profile = await get_profile(profile_id)
+    if profile is None:
+        raise HTTPException(status_code=404, detail="Model profile not found")
+    try:
+        await set_permission(
+            profile_id=profile_id,
+            permission_type=payload.permission_type,
+            granted=payload.granted,
+            scope=payload.scope,
+            valid_until=payload.valid_until,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"status": "ok"}
+
+
+@app.get("/api/model-profiles/{profile_id}/generation-check")
+async def check_model_generation(profile_id: str, permission_type: str = Query(default="image_generation")) -> dict[str, Any]:
+    """Check whether a model profile may be used for generation."""
+    allowed, reason = await generation_allowed(profile_id, permission_type)
+    return {"allowed": allowed, "reason": reason}
 
 
 @app.get("/api/stats")
