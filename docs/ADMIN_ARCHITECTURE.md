@@ -33,6 +33,7 @@ This document records the current administrative architecture of the Omni-Core m
 - `/google` – Google Merchant Center dashboard
 - `/google/export` – Google Merchant Center export
 - `/omniroute` – OmniRoute control center
+- `/admin` – central admin control center
 
 Additional existing UI surfaces:
 
@@ -59,7 +60,9 @@ Additional existing UI surfaces:
 - Excluded paths: `/api/health`, `/docs`, `/redoc`, `/openapi.json`.
 - Missing or invalid key returns `401`.
 - Secret-bearing settings are masked through `is_secret_key`.
-- No user authentication or role-based authorization is implemented yet; the internal key is the current administrative boundary.
+- `POST /api/admin/session/login` issues a signed HttpOnly `admin_session` cookie when the configured `INTERNAL_API_KEY` is supplied and `SESSION_SECRET` is available.
+- `require_admin` validates the signed cookie, but it is not yet wired to every administrative API route.
+- The internal API key remains the current service-to-service boundary. A persistent user/role table, complete server-side RBAC matrix, CSRF protection and rate limiting are not implemented yet.
 
 ## Runtime and Deployment Context
 

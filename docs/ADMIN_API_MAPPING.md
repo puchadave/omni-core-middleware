@@ -76,7 +76,8 @@ Map administrative UI functions to existing Omni-Core API endpoints and identify
 | Competitor | search, match, price, providers, stats | Multiple | Implemented / partial | Placeholder pricing/match logic. |
 | Google | accounts, export, queue, stats, process, retry, sync, health | Multiple | Implemented | DB + runtime. |
 | OmniRoute | providers, models, rules, policies, select, cost, stats | Multiple | Implemented | Runtime + DB. |
-| AI image / models | `/api/models`, `/api/photoshoot/start`, `/api/photoshoot/status/{shootId}`, `/api/photoshoot/results/{shootId}` | Multiple | Implemented | Backend endpoints added for admin frontend compatibility. |
+| AI image / models | `/api/models`, `/api/photoshoot/start`, `/api/photoshoot/status/{shootId}`, `/api/photoshoot/results/{shootId}` | Multiple | Implemented / partial | Backend endpoints added for admin frontend compatibility; start uses `services.ai_photoshooting.get_provider()`. Status/results are structural. |
+| Admin session | `/api/admin/session/login` | POST | Implemented | Issues signed HttpOnly admin session cookie; requires configured internal API key. |
 | Control center | overview, dashboard, system | GET | Implemented | Global control. |
 | Pipeline | Matterhorn → Google, auto-export | POST | Implemented | Pipeline orchestration. |
 
@@ -98,4 +99,6 @@ Map administrative UI functions to existing Omni-Core API endpoints and identify
 - Internal API key required for all non-excluded routes.
 - Excluded: `/api/health`, `/docs`, `/redoc`, `/openapi.json`.
 - Secret keys masked in settings.
-- No RBAC/user model yet.
+- Admin session cookie is signed with `SESSION_SECRET` and is HttpOnly and SameSite=Lax.
+- `require_admin` exists but is not yet applied to every administrative route.
+- No persistent user/role model or complete RBAC/CSRF/rate-limit implementation yet.
