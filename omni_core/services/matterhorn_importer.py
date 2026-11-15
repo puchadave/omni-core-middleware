@@ -11,11 +11,14 @@ import asyncio
 import logging
 from typing import Any, Dict, List, Optional
 
-import elementtree.ElementTree as ET
+import xml.etree.ElementTree as ET
 import httpx
 import aiosqlite
 
 from database import get_connection, close_connection, DB_PATH
+
+from .content_ai import ContentAIEngine
+from .omni_router_client import OmniRouterClient
 
 logger = logging.getLogger(__name__)
 
@@ -188,6 +191,8 @@ class MatterhornUniversalImporter:
         price: float = product_data.get("price", 0.0)
         raw_stock: int = product_data.get("raw_stock", 0)
         category: str = product_data.get("category", "")
+        optimized_title: str | None = product_data.get("optimized_title")
+        ai_description: str | None = product_data.get("ai_description")
 
         # Apply safety buffer (10% buffer to prevent overselling)
         buffered_stock: int = int(raw_stock * (1.0 - STOCK_BUFFER_PERCENT))
@@ -195,16 +200,18 @@ class MatterhornUniversalImporter:
         async with get_connection() as db:
             await db.execute(
                 """
-                INSERT INTO products (sku, title, category, supplier_price, stock, status)
-                VALUES (?, ?, ?, ?, 'active')
+                INSERT INTO products (sku, title, category, supplier_price, stock, status, optimized_title, ai_description)
+                VALUES (?, ?, ?, ?, ?, 'active', ?, ?)
                 ON CONFLICT (sku) DO UPDATE SET
                     title = excluded.title,
                     category = excluded.category,
                     supplier_price = excluded.supplier_price,
                     stock = excluded.buffered_stock,
+                    optimized_title = excluded.optimized_title,
+                    ai_description = excluded.ai_description,
                     updated_at = CURRENT_TIMESTAMP
                 """,
-                (sku, title, category, price, buffered_stock),
+                (sku, title, category, price, buffered_stock, optimized_title, ai_description),
             )
             await db.commit()
 
@@ -212,15 +219,17 @@ class MatterhornUniversalImporter:
     # Full Import Orchestration
     # -------------------------------------------------------------------------
 
-    async def import_from_rest(self, endpoint: str = "/api/v1/products", params: dict | None = None) -> Dict[str, Any]:
-        """Full import cycle via REST API: fetch and persist.
+    async def import_from_rest(self, endpoint: str = "/api/v1/products", params: dict | None = None,
+                           trigger_ai: bool = False) -> Dict[str, Any]:
+        """Full import cycle via REST API: fetch, persist, and optionally AI-optimize.
 
         :param endpoint: API endpoint path
         :param params: Query parameters for the API request
+        :param trigger_ai: If True, triggers AI-powered content optimization after import
         :return: Dictionary with import statistics
         """
         products: List[Dict[str, Any]] = await self.fetch_via_rest_api(endpoint, params)
-        stats: Dict[str, Any] = {"fetched": 0, "imported": 0, "errors": 0}
+        stats: Dict[str, Any] = {"fetched": 0, "imported": 0, "errors": 0, "ai_optimized": 0}
 
         for product in products:
             try:
@@ -231,15 +240,23 @@ class MatterhornUniversalImporter:
                 stats["errors"] += 1
 
         stats["fetched"] = len(products)
+
+        # Trigger AI optimization if requested
+        if trigger_ai and stats["imported"] > 0:
+            ai_stats: Dict[str, int] = await self.trigger_ai_optimization(products)
+            stats["ai_optimized"] = ai_stats.get("optimized", 0)
+            stats["errors"] += ai_stats.get("errors", 0)
+
         return stats
 
-    async def import_from_xml_offer(self) -> Dict[str, Any]:
-        """Full import cycle via XML Offer Feed: parse and persist.
+    async def import_from_xml_offer(self, trigger_ai: bool = False) -> Dict[str, Any]:
+        """Full import cycle via XML Offer Feed: parse, persist, and optionally AI-optimize.
 
+        :param trigger_ai: If True, triggers AI-powered content optimization after import
         :return: Dictionary with import statistics
         """
         products: List[Dict[str, Any]] = await self.fetch_via_xml_offer()
-        stats: Dict[str, Any] = {"fetched": 0, "imported": 0, "errors": 0}
+        stats: Dict[str, Any] = {"fetched": 0, "imported": 0, "errors": 0, "ai_optimized": 0}
 
         for product in products:
             try:
@@ -253,6 +270,13 @@ class MatterhornUniversalImporter:
                 stats["errors"] += 1
 
         stats["fetched"] = len(products)
+
+        # Trigger AI optimization if requested
+        if trigger_ai and stats["imported"] > 0:
+            ai_stats: Dict[str, int] = await self.trigger_ai_optimization(products)
+            stats["ai_optimized"] = ai_stats.get("optimized", 0)
+            stats["errors"] += ai_stats.get("errors", 0)
+
         return stats
 
     async def import_single_product(self, sku: str) -> bool:
@@ -278,3 +302,70 @@ class MatterhornUniversalImporter:
 
         logger.warning(f"Product with SKU '{sku}' not found in either source")
         return False
+
+    async def trigger_ai_optimization(
+        self,
+        products: list[dict[str, Any]],
+        engine: ContentAIEngine | None = None,
+    ) -> Dict[str, int]:
+        """
+        Trigger AI-powered content optimization for a list of imported products.
+
+        After products are imported, this method will optimize product descriptions
+        using the ContentAIEngine and update the database with the generated copy.
+
+        :param products: List of product dictionaries that were just imported.
+            Each product should have at minimum: 'sku', 'title', 'category'
+        :param engine: Optional ContentAIEngine instance. If None, a default one will be used.
+        :return: Dictionary with optimization statistics
+        """
+        if engine is None:
+            engine = ContentAIEngine()
+
+        stats: Dict[str, int] = {"optimized": 0, "errors": 0}
+
+        # Filter products that have the required fields for optimization
+        optimizable_products: list[dict[str, Any]] = []
+        for product in products:
+            if product.get("sku") and product.get("category"):
+                optimizable_products.append({
+                    "sku": product["sku"],
+                    "raw_title": product.get("title", ""),
+                    "raw_description": product.get("description", ""),
+                    "category": product["category"],
+                })
+
+        if not optimizable_products:
+            return stats
+
+        # Batch optimize descriptions
+        try:
+            optimized_results: list[dict[str, Any]] = await engine.batch_optimize_descriptions(
+                optimizable_products
+            )
+
+            # Update each product in the database with the optimized copy
+            async with get_connection() as db:
+                for result in optimized_results:
+                    sku: str = result.get("sku", "")
+                    optimized_title: str | None = result.get("optimized_title")
+                    ai_description: str | None = result.get("ai_description")
+
+                    if sku:
+                        await db.execute(
+                            """
+                            UPDATE products
+                            SET optimized_title = ?, ai_description = ?
+                            WHERE sku = ?
+                            """,
+                            (optimized_title, ai_description, sku),
+                        )
+                        stats["optimized"] += 1
+
+                await db.commit()
+
+        except Exception as e:
+            logger.exception(f"AI optimization batch failed: {e}")
+            stats["errors"] += len(optimizable_products)
+
+        return stats

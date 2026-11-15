@@ -33,7 +33,9 @@ async def init_db() -> None:
                 category TEXT,
                 supplier_price REAL DEFAULT 0.0,
                 stock INTEGER DEFAULT 0,
-                status TEXT DEFAULT 'active'
+                status TEXT DEFAULT 'active',
+                optimized_title TEXT,
+                ai_description TEXT
             )"""
         )
         await db.execute(
