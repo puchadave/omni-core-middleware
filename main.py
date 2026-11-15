@@ -1788,3 +1788,209 @@ async def control_center_system() -> dict[str, Any]:
     if runtime.control_center is None:
         raise HTTPException(status_code=503, detail="Control center not initialized")
     return await runtime.control_center.get_system_intelligence()
+
+
+# ── Event Bus & Internal Communication (Phase 4) ─────────────────────────
+
+@app.get("/api/events/stats")
+async def events_stats() -> dict[str, Any]:
+    bus = getattr(runtime, "event_bus", None)
+    if bus is None:
+        return {"running": False, "message": "Event bus not initialized"}
+    return bus.get_stats()
+
+
+@app.get("/api/events/dead-letter")
+async def events_dead_letter() -> list[dict[str, Any]]:
+    bus = getattr(runtime, "event_bus", None)
+    if bus is None:
+        return []
+    return [e.to_dict() for e in bus.get_dead_letter_queue()]
+
+
+@app.post("/api/events/dead-letter/replay")
+async def events_dead_letter_replay(event_id: str | None = Query(default=None)) -> dict[str, Any]:
+    bus = getattr(runtime, "event_bus", None)
+    if bus is None:
+        raise HTTPException(status_code=503, detail="Event bus not initialized")
+    count = await bus.replay_dead_letter(event_id=event_id)
+    return {"status": "ok", "replayed": count}
+
+
+@app.get("/api/events/recent")
+async def events_recent(limit: int = Query(default=50, ge=1, le=200)) -> list[dict[str, Any]]:
+    logs = await recent_logs(limit=200)
+    events = [l for l in logs if str(l.get("event", "")).startswith("event_")]
+    return events[:limit]
+
+
+@app.get("/api/control-center/modules")
+async def control_center_modules() -> dict[str, Any]:
+    cc = getattr(runtime, "control_center", None)
+    modules = await cc._get_loaded_modules() if cc else []
+    bus = getattr(runtime, "event_bus", None)
+    return {
+        "modules": modules,
+        "event_bus": bus.get_stats() if bus else {"running": False},
+        "subscribers": bus.get_subscriber_health() if bus else {},
+    }
+
+
+async def publish_runtime_event(event_type: str, payload: dict[str, Any], source: str = "api", entity_id: str | None = None, correlation_id: str | None = None) -> str | None:
+    bus = getattr(runtime, "event_bus", None)
+    if bus is None or not getattr(bus, "_running", False):
+        return None
+    try:
+        return await bus.publish(event_type=event_type, source_module=source, payload=payload, entity_id=entity_id, correlation_id=correlation_id)
+    except Exception:
+        return None
+
+
+# ── GTIN / Product Intelligence APIs ─────────────────────────────────────
+
+class GtinLookupRequest(BaseModel):
+    gtin: str = Field(..., min_length=1, max_length=32)
+
+
+class GtinProviderPayload(BaseModel):
+    id: str | None = None
+    name: str
+    endpoint: str = ""
+    auth_ref: str = ""
+    priority: int = 100
+    rate_limit_per_min: int = 60
+    license_info: str = ""
+    supported_categories_json: list[str] | dict | None = None
+    config_json: dict[str, Any] | None = None
+    enabled: bool = False
+
+
+@app.post("/api/gtin/lookup")
+async def api_gtin_lookup(payload: GtinLookupRequest) -> dict[str, Any]:
+    from services.gtin_intelligence import lookup_gtin
+    result = await lookup_gtin(payload.gtin)
+    await publish_runtime_event("gtin.lookup_completed", {"gtin": payload.gtin, "valid": result.get("valid"), "status": (result.get("reconciliation") or {}).get("status")}, source="gtin_intelligence", entity_id=payload.gtin)
+    return result
+
+
+@app.get("/api/gtin/providers")
+async def api_gtin_providers() -> list[dict[str, Any]]:
+    return await gtin_list_providers(enabled_only=False)
+
+
+@app.post("/api/gtin/providers")
+async def api_gtin_provider_upsert(payload: GtinProviderPayload) -> dict[str, Any]:
+    return await gtin_upsert_provider(payload.model_dump())
+
+
+@app.get("/api/gtin/lookups")
+async def api_gtin_lookups(limit: int = Query(default=100, ge=1, le=500)) -> list[dict[str, Any]]:
+    return await gtin_list_lookups(limit=limit)
+
+
+@app.get("/api/gtin/enrichments")
+async def api_gtin_enrichments(entity_id: str | None = Query(default=None), limit: int = Query(default=200, ge=1, le=500)) -> list[dict[str, Any]]:
+    return await gtin_list_enrichments(entity_id=entity_id, limit=limit)
+
+
+@app.get("/api/gtin/conflicts")
+async def api_gtin_conflicts(status: str | None = Query(default=None), limit: int = Query(default=200, ge=1, le=500)) -> list[dict[str, Any]]:
+    return await gtin_list_conflicts(status=status, limit=limit)
+
+
+# ── Multi-channel Content APIs ───────────────────────────────────────────
+
+class ContentGenerateRequest(BaseModel):
+    sku: str
+    channels: list[str] = Field(default_factory=lambda: ["shopware"])
+    model: str | None = None
+
+
+@app.post("/api/content/generate")
+async def api_content_generate(payload: ContentGenerateRequest) -> dict[str, Any]:
+    product = await fetch_product(payload.sku)
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+    from services.content_engine import generate_and_store
+    result = await generate_and_store(product, payload.channels or ["shopware"], omniroute_client=getattr(runtime, "omniroute", None), model=payload.model)
+    await publish_runtime_event("content.generated", {"sku": payload.sku, "channels": payload.channels, "count": result.get("count", 0)}, source="content_engine", entity_id=payload.sku)
+    return result
+
+
+@app.get("/api/content/versions")
+async def api_content_versions(sku: str | None = Query(default=None), channel: str | None = Query(default=None), limit: int = Query(default=100, ge=1, le=500)) -> list[dict[str, Any]]:
+    return await content_version_list(product_sku=sku, channel=channel, limit=limit)
+
+
+# ── IAM APIs (incremental, admin-managed) ────────────────────────────────
+
+class IamUserCreate(BaseModel):
+    email: str
+    password: str = Field(default="", min_length=0)
+    display_name: str = ""
+    username: str = ""
+    role: str = "VIEWER"
+    is_superadmin: bool = False
+
+
+@app.get("/api/iam/users")
+async def api_iam_users() -> dict[str, Any]:
+    from services.iam_core import bootstrap_defaults
+    try:
+        await bootstrap_defaults()
+    except Exception:
+        pass
+    users = await iam_list_users()
+    safe = []
+    for u in users:
+        u = dict(u); u.pop("password_hash", None); safe.append(u)
+    roles = await iam_list_roles()
+    perms = await iam_list_permissions()
+    return {"users": safe, "roles": roles, "permissions": perms}
+
+
+@app.post("/api/iam/users")
+async def api_iam_create_user(payload: IamUserCreate) -> dict[str, Any]:
+    from services.iam_core import hash_password, bootstrap_defaults
+    await bootstrap_defaults()
+    existing = await iam_get_user_by_email(payload.email)
+    if existing:
+        raise HTTPException(status_code=409, detail="User already exists")
+    pw_hash = hash_password(payload.password) if payload.password else ""
+    user = await iam_create_user(email=payload.email, password_hash=pw_hash, display_name=payload.display_name or payload.username or payload.email, username=payload.username or payload.email, is_superadmin=bool(payload.is_superadmin or payload.role == "SUPERADMIN"))
+    await iam_assign_role(user.get("id"), payload.role or "VIEWER")
+    user.pop("password_hash", None)
+    await publish_runtime_event("iam.user_created", {"user_id": user.get("id"), "email": user.get("email"), "role": payload.role}, source="iam", entity_id=str(user.get("id")))
+    return {"status": "created", "user": user}
+
+
+@app.get("/api/iam/roles")
+async def api_iam_roles() -> list[dict[str, Any]]:
+    return await iam_list_roles()
+
+
+@app.get("/api/iam/permissions")
+async def api_iam_permissions(role: str | None = Query(default=None)) -> list[dict[str, Any]]:
+    return await iam_list_permissions(role_name=role)
+
+
+# ── UI routes for Phase 3/4 modules ───────────────────────────────────────
+
+@app.get("/ui/gtin-intelligence", response_class=HTMLResponse)
+async def ui_gtin_intelligence(request: Request):
+    return templates.TemplateResponse("gtin_intelligence.html", {"request": request})
+
+
+@app.get("/ui/security", response_class=HTMLResponse)
+async def ui_security_iam(request: Request):
+    return templates.TemplateResponse("security_iam.html", {"request": request})
+
+
+@app.get("/ui/content-studio", response_class=HTMLResponse)
+async def ui_content_studio(request: Request):
+    return templates.TemplateResponse("content_studio.html", {"request": request})
+
+
+@app.get("/ui/internal-communication", response_class=HTMLResponse)
+async def ui_internal_communication(request: Request):
+    return templates.TemplateResponse("internal_communication.html", {"request": request})

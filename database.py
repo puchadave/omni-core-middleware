@@ -753,6 +753,33 @@ POSTGRES_SCHEMA: tuple[str, ...] = (
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
     """,
+
+    """
+    CREATE TABLE IF NOT EXISTS gtin_providers (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL UNIQUE,
+        endpoint TEXT NOT NULL DEFAULT '',
+        auth_ref TEXT NOT NULL DEFAULT '',
+        priority INTEGER NOT NULL DEFAULT 100,
+        rate_limit_per_min INTEGER NOT NULL DEFAULT 60,
+        license_info TEXT NOT NULL DEFAULT '',
+        supported_categories_json JSONB NOT NULL DEFAULT '[]',
+        config_json JSONB NOT NULL DEFAULT '{}',
+        enabled BOOLEAN NOT NULL DEFAULT FALSE,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
+    """CREATE TABLE IF NOT EXISTS gtin_lookups (id TEXT PRIMARY KEY, gtin TEXT NOT NULL, result_json JSONB NOT NULL DEFAULT '{}', status TEXT NOT NULL DEFAULT 'done', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())""",
+    """CREATE TABLE IF NOT EXISTS gtin_enrichments (id TEXT PRIMARY KEY, entity_type TEXT NOT NULL DEFAULT 'product', entity_id TEXT NOT NULL, field_name TEXT NOT NULL, original_value TEXT NOT NULL DEFAULT '', normalized_value TEXT NOT NULL DEFAULT '', source_provider TEXT NOT NULL DEFAULT '', source_record_id TEXT NOT NULL DEFAULT '', confidence NUMERIC(5,4) NOT NULL DEFAULT 0.0, trust_level TEXT NOT NULL DEFAULT 'C', verification_state TEXT NOT NULL DEFAULT 'adopted', license_info TEXT NOT NULL DEFAULT '', metadata_json JSONB NOT NULL DEFAULT '{}', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())""",
+    """CREATE TABLE IF NOT EXISTS gtin_conflicts (id TEXT PRIMARY KEY, entity_type TEXT NOT NULL DEFAULT 'product', entity_id TEXT NOT NULL, field_name TEXT NOT NULL, candidates_json JSONB NOT NULL DEFAULT '[]', status TEXT NOT NULL DEFAULT 'open', resolution_json JSONB NOT NULL DEFAULT '{}', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())""",
+    """CREATE TABLE IF NOT EXISTS content_versions (id TEXT PRIMARY KEY, product_sku TEXT NOT NULL DEFAULT '', channel TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'draft', model TEXT NOT NULL DEFAULT '', prompt_version TEXT NOT NULL DEFAULT '', content_json JSONB NOT NULL DEFAULT '{}', validation_json JSONB NOT NULL DEFAULT '{}', approved_by TEXT NOT NULL DEFAULT '', approved_at TIMESTAMPTZ, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())""",
+    """CREATE TABLE IF NOT EXISTS iam_users (id TEXT PRIMARY KEY, email TEXT NOT NULL UNIQUE, username TEXT NOT NULL DEFAULT '', password_hash TEXT NOT NULL DEFAULT '', display_name TEXT NOT NULL DEFAULT '', is_active BOOLEAN NOT NULL DEFAULT TRUE, is_superadmin BOOLEAN NOT NULL DEFAULT FALSE, mfa_required BOOLEAN NOT NULL DEFAULT FALSE, last_login_at TIMESTAMPTZ, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())""",
+    """CREATE TABLE IF NOT EXISTS iam_roles (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, description TEXT NOT NULL DEFAULT '', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())""",
+    """CREATE TABLE IF NOT EXISTS iam_permissions (id TEXT PRIMARY KEY, role_name TEXT NOT NULL, permission TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), UNIQUE(role_name, permission))""",
+    """CREATE TABLE IF NOT EXISTS iam_user_roles (user_id TEXT NOT NULL, role_name TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), UNIQUE(user_id, role_name))""",
+    """CREATE TABLE IF NOT EXISTS iam_sessions (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, session_token_hash TEXT NOT NULL, ip_address TEXT NOT NULL DEFAULT '', user_agent TEXT NOT NULL DEFAULT '', expires_at TIMESTAMPTZ, revoked BOOLEAN NOT NULL DEFAULT FALSE, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), last_seen_at TIMESTAMPTZ)""",
+
 )
 
 SQLITE_SCHEMA = """
@@ -1357,6 +1384,120 @@ CREATE TABLE IF NOT EXISTS ai_audit_logs (
     details_json TEXT NOT NULL DEFAULT '{}',
     created_at TEXT NOT NULL
 );
+
+
+-- ── GTIN / Product Intelligence ─────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS gtin_providers (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    endpoint TEXT NOT NULL DEFAULT '',
+    auth_ref TEXT NOT NULL DEFAULT '',
+    priority INTEGER NOT NULL DEFAULT 100,
+    rate_limit_per_min INTEGER NOT NULL DEFAULT 60,
+    license_info TEXT NOT NULL DEFAULT '',
+    supported_categories_json TEXT NOT NULL DEFAULT '[]',
+    config_json TEXT NOT NULL DEFAULT '{}',
+    enabled INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(name)
+);
+CREATE TABLE IF NOT EXISTS gtin_lookups (
+    id TEXT PRIMARY KEY,
+    gtin TEXT NOT NULL,
+    result_json TEXT NOT NULL DEFAULT '{}',
+    status TEXT NOT NULL DEFAULT 'done',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS gtin_enrichments (
+    id TEXT PRIMARY KEY,
+    entity_type TEXT NOT NULL DEFAULT 'product',
+    entity_id TEXT NOT NULL,
+    field_name TEXT NOT NULL,
+    original_value TEXT NOT NULL DEFAULT '',
+    normalized_value TEXT NOT NULL DEFAULT '',
+    source_provider TEXT NOT NULL DEFAULT '',
+    source_record_id TEXT NOT NULL DEFAULT '',
+    confidence REAL NOT NULL DEFAULT 0.0,
+    trust_level TEXT NOT NULL DEFAULT 'C',
+    verification_state TEXT NOT NULL DEFAULT 'adopted',
+    license_info TEXT NOT NULL DEFAULT '',
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS gtin_conflicts (
+    id TEXT PRIMARY KEY,
+    entity_type TEXT NOT NULL DEFAULT 'product',
+    entity_id TEXT NOT NULL,
+    field_name TEXT NOT NULL,
+    candidates_json TEXT NOT NULL DEFAULT '[]',
+    status TEXT NOT NULL DEFAULT 'open',
+    resolution_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- ── Multi-channel content versions ──────────────────────────────────────
+CREATE TABLE IF NOT EXISTS content_versions (
+    id TEXT PRIMARY KEY,
+    product_sku TEXT NOT NULL DEFAULT '',
+    channel TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'draft',
+    model TEXT NOT NULL DEFAULT '',
+    prompt_version TEXT NOT NULL DEFAULT '',
+    content_json TEXT NOT NULL DEFAULT '{}',
+    validation_json TEXT NOT NULL DEFAULT '{}',
+    approved_by TEXT NOT NULL DEFAULT '',
+    approved_at TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- ── Core IAM / RBAC (incremental) ───────────────────────────────────────
+CREATE TABLE IF NOT EXISTS iam_users (
+    id TEXT PRIMARY KEY,
+    email TEXT NOT NULL UNIQUE,
+    username TEXT NOT NULL DEFAULT '',
+    password_hash TEXT NOT NULL DEFAULT '',
+    display_name TEXT NOT NULL DEFAULT '',
+    is_active INTEGER NOT NULL DEFAULT 1,
+    is_superadmin INTEGER NOT NULL DEFAULT 0,
+    mfa_required INTEGER NOT NULL DEFAULT 0,
+    last_login_at TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS iam_roles (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    description TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS iam_permissions (
+    id TEXT PRIMARY KEY,
+    role_name TEXT NOT NULL,
+    permission TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(role_name, permission)
+);
+CREATE TABLE IF NOT EXISTS iam_user_roles (
+    user_id TEXT NOT NULL,
+    role_name TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(user_id, role_name)
+);
+CREATE TABLE IF NOT EXISTS iam_sessions (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    session_token_hash TEXT NOT NULL,
+    ip_address TEXT NOT NULL DEFAULT '',
+    user_agent TEXT NOT NULL DEFAULT '',
+    expires_at TEXT,
+    revoked INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    last_seen_at TEXT
+);
+
 """
 
 
@@ -2376,3 +2517,374 @@ async def ai_list_usage_records(limit: int = 100) -> list[dict[str, Any]]:
         rows = await cursor.fetchall()
         await cursor.close()
         return [dict(row) for row in rows]
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# GTIN / Product Intelligence helpers
+# ════════════════════════════════════════════════════════════════════════════
+
+async def gtin_upsert_provider(provider: dict[str, Any]) -> dict[str, Any]:
+    import uuid as _uuid
+    pid = provider.get("id") or str(_uuid.uuid4())
+    name = str(provider.get("name") or "").strip().lower()
+    endpoint = str(provider.get("endpoint") or "")
+    auth_ref = str(provider.get("auth_ref") or "")
+    priority = int(provider.get("priority") or 100)
+    rate = int(provider.get("rate_limit_per_min") or 60)
+    license_info = str(provider.get("license_info") or "")
+    cats = provider.get("supported_categories_json") or provider.get("supported_categories") or []
+    cfg = provider.get("config_json") or provider.get("config") or {}
+    enabled = bool(provider.get("enabled", False))
+    cats_s = json.dumps(cats, ensure_ascii=False) if not isinstance(cats, str) else cats
+    cfg_s = json.dumps(cfg, ensure_ascii=False) if not isinstance(cfg, str) else cfg
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO gtin_providers(id,name,endpoint,auth_ref,priority,rate_limit_per_min,license_info,supported_categories_json,config_json,enabled)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9::jsonb,$10)
+                   ON CONFLICT(id) DO UPDATE SET name=EXCLUDED.name,endpoint=EXCLUDED.endpoint,auth_ref=EXCLUDED.auth_ref,priority=EXCLUDED.priority,
+                   rate_limit_per_min=EXCLUDED.rate_limit_per_min,license_info=EXCLUDED.license_info,supported_categories_json=EXCLUDED.supported_categories_json,
+                   config_json=EXCLUDED.config_json,enabled=EXCLUDED.enabled,updated_at=NOW()""",
+                pid, name, endpoint, auth_ref, priority, rate, license_info, cats_s, cfg_s, enabled,
+            )
+            row = await conn.fetchrow("SELECT * FROM gtin_providers WHERE id=$1", pid)
+        out = dict(row) if row else {}
+    else:
+        async with get_connection() as db:
+            cur = await db.execute("SELECT id FROM gtin_providers WHERE id=?", (pid,))
+            ex = await cur.fetchone(); await cur.close()
+            if ex:
+                await db.execute("UPDATE gtin_providers SET name=?,endpoint=?,auth_ref=?,priority=?,rate_limit_per_min=?,license_info=?,supported_categories_json=?,config_json=?,enabled=?,updated_at=? WHERE id=?",
+                    (name,endpoint,auth_ref,priority,rate,license_info,cats_s,cfg_s,1 if enabled else 0,utc_now(),pid))
+            else:
+                await db.execute("INSERT INTO gtin_providers(id,name,endpoint,auth_ref,priority,rate_limit_per_min,license_info,supported_categories_json,config_json,enabled) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    (pid,name,endpoint,auth_ref,priority,rate,license_info,cats_s,cfg_s,1 if enabled else 0))
+            await db.commit()
+            cur = await db.execute("SELECT * FROM gtin_providers WHERE id=?", (pid,))
+            row = await cur.fetchone(); await cur.close(); out = dict(row) if row else {}
+    if "enabled" in out: out["enabled"]=bool(out["enabled"])
+    for k in ("supported_categories_json","config_json"):
+        if isinstance(out.get(k), str):
+            try: out[k]=json.loads(out[k])
+            except Exception: pass
+    return out
+
+
+async def gtin_list_providers(enabled_only: bool = False) -> list[dict[str, Any]]:
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("SELECT * FROM gtin_providers " + ("WHERE enabled=TRUE " if enabled_only else "") + "ORDER BY priority ASC, name ASC")
+        out=[dict(r) for r in rows]
+    else:
+        async with get_connection() as db:
+            q = "SELECT * FROM gtin_providers " + ("WHERE enabled=1 " if enabled_only else "") + "ORDER BY priority ASC, name ASC"
+            cur = await db.execute(q); rows=await cur.fetchall(); await cur.close(); out=[dict(r) for r in rows]
+    for r in out:
+        if "enabled" in r: r["enabled"]=bool(r["enabled"])
+        for k in ("supported_categories_json","config_json"):
+            if isinstance(r.get(k), str):
+                try: r[k]=json.loads(r[k])
+                except Exception: pass
+    return out
+
+
+async def gtin_save_lookup(gtin: str, result: dict[str, Any]) -> str:
+    import uuid as _uuid
+    lid = str(_uuid.uuid4())
+    payload = json.dumps(result, ensure_ascii=False, default=str)
+    status = str(((result.get("reconciliation") or {}).get("status")) or result.get("status") or "done")
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            await conn.execute("INSERT INTO gtin_lookups(id,gtin,result_json,status) VALUES ($1,$2,$3::jsonb,$4)", lid, gtin, payload, status)
+    else:
+        async with get_connection() as db:
+            await db.execute("INSERT INTO gtin_lookups(id,gtin,result_json,status) VALUES (?,?,?,?)", (lid, gtin, payload, status))
+            await db.commit()
+    return lid
+
+
+async def gtin_list_lookups(limit: int = 100) -> list[dict[str, Any]]:
+    limit = min(max(limit,1),500)
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("SELECT * FROM gtin_lookups ORDER BY created_at DESC LIMIT $1", limit)
+        out=[dict(r) for r in rows]
+    else:
+        async with get_connection() as db:
+            cur = await db.execute("SELECT * FROM gtin_lookups ORDER BY created_at DESC LIMIT ?", (limit,))
+            rows=await cur.fetchall(); await cur.close(); out=[dict(r) for r in rows]
+    for r in out:
+        if isinstance(r.get("result_json"), str):
+            try: r["result_json"]=json.loads(r["result_json"])
+            except Exception: pass
+    return out
+
+
+async def gtin_save_enrichment(**kw: Any) -> str:
+    import uuid as _uuid
+    eid = kw.get("id") or str(_uuid.uuid4())
+    meta = kw.get("metadata") or kw.get("metadata_json") or {}
+    meta_s = json.dumps(meta, ensure_ascii=False) if not isinstance(meta, str) else meta
+    vals = (eid, kw.get("entity_type","product"), kw.get("entity_id",""), kw.get("field_name",""), str(kw.get("original_value","")),
+            str(kw.get("normalized_value","")), str(kw.get("source_provider","")), str(kw.get("source_record_id","")),
+            float(kw.get("confidence",0.0) or 0.0), str(kw.get("trust_level","C")), str(kw.get("verification_state","adopted")),
+            str(kw.get("license_info","")), meta_s)
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            await conn.execute("INSERT INTO gtin_enrichments(id,entity_type,entity_id,field_name,original_value,normalized_value,source_provider,source_record_id,confidence,trust_level,verification_state,license_info,metadata_json) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb)", *vals)
+    else:
+        async with get_connection() as db:
+            await db.execute("INSERT INTO gtin_enrichments(id,entity_type,entity_id,field_name,original_value,normalized_value,source_provider,source_record_id,confidence,trust_level,verification_state,license_info,metadata_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)", vals)
+            await db.commit()
+    return eid
+
+
+async def gtin_list_enrichments(entity_id: str | None = None, limit: int = 200) -> list[dict[str, Any]]:
+    limit=min(max(limit,1),500)
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            if entity_id: rows = await conn.fetch("SELECT * FROM gtin_enrichments WHERE entity_id=$1 ORDER BY created_at DESC LIMIT $2", entity_id, limit)
+            else: rows = await conn.fetch("SELECT * FROM gtin_enrichments ORDER BY created_at DESC LIMIT $1", limit)
+        out=[dict(r) for r in rows]
+    else:
+        async with get_connection() as db:
+            if entity_id:
+                cur=await db.execute("SELECT * FROM gtin_enrichments WHERE entity_id=? ORDER BY created_at DESC LIMIT ?", (entity_id,limit))
+            else:
+                cur=await db.execute("SELECT * FROM gtin_enrichments ORDER BY created_at DESC LIMIT ?", (limit,))
+            rows=await cur.fetchall(); await cur.close(); out=[dict(r) for r in rows]
+    for r in out:
+        if isinstance(r.get("metadata_json"), str):
+            try: r["metadata_json"]=json.loads(r["metadata_json"])
+            except Exception: pass
+    return out
+
+
+async def gtin_save_conflict(**kw: Any) -> str:
+    import uuid as _uuid
+    cid = kw.get("id") or str(_uuid.uuid4())
+    cand = kw.get("candidates") or kw.get("candidates_json") or []
+    reso = kw.get("resolution") or kw.get("resolution_json") or {}
+    cand_s=json.dumps(cand,ensure_ascii=False) if not isinstance(cand,str) else cand
+    res_s=json.dumps(reso,ensure_ascii=False) if not isinstance(reso,str) else reso
+    vals=(cid, kw.get("entity_type","product"), kw.get("entity_id",""), kw.get("field_name",""), cand_s, str(kw.get("status","open")), res_s)
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            await conn.execute("INSERT INTO gtin_conflicts(id,entity_type,entity_id,field_name,candidates_json,status,resolution_json) VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7::jsonb)", *vals)
+    else:
+        async with get_connection() as db:
+            await db.execute("INSERT INTO gtin_conflicts(id,entity_type,entity_id,field_name,candidates_json,status,resolution_json) VALUES (?,?,?,?,?,?,?)", vals)
+            await db.commit()
+    return cid
+
+
+async def gtin_list_conflicts(status: str | None = None, limit: int = 200) -> list[dict[str, Any]]:
+    limit=min(max(limit,1),500)
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            if status: rows=await conn.fetch("SELECT * FROM gtin_conflicts WHERE status=$1 ORDER BY created_at DESC LIMIT $2", status, limit)
+            else: rows=await conn.fetch("SELECT * FROM gtin_conflicts ORDER BY created_at DESC LIMIT $1", limit)
+        out=[dict(r) for r in rows]
+    else:
+        async with get_connection() as db:
+            if status: cur=await db.execute("SELECT * FROM gtin_conflicts WHERE status=? ORDER BY created_at DESC LIMIT ?", (status,limit))
+            else: cur=await db.execute("SELECT * FROM gtin_conflicts ORDER BY created_at DESC LIMIT ?", (limit,))
+            rows=await cur.fetchall(); await cur.close(); out=[dict(r) for r in rows]
+    for r in out:
+        for k in ("candidates_json","resolution_json"):
+            if isinstance(r.get(k), str):
+                try: r[k]=json.loads(r[k])
+                except Exception: pass
+    return out
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Multi-channel Content helpers
+# ════════════════════════════════════════════════════════════════════════════
+
+async def content_version_create(product_sku: str, channel: str, content: dict[str, Any], status: str = "draft", model: str = "", prompt_version: str = "") -> str:
+    import uuid as _uuid
+    vid = str(_uuid.uuid4())
+    cjson = json.dumps(content, ensure_ascii=False, default=str)
+    vjson = json.dumps(content.get("validation") or {}, ensure_ascii=False, default=str)
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            await conn.execute("INSERT INTO content_versions(id,product_sku,channel,status,model,prompt_version,content_json,validation_json) VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8::jsonb)", vid, product_sku, channel, status, model, prompt_version, cjson, vjson)
+    else:
+        async with get_connection() as db:
+            await db.execute("INSERT INTO content_versions(id,product_sku,channel,status,model,prompt_version,content_json,validation_json) VALUES (?,?,?,?,?,?,?,?)", (vid, product_sku, channel, status, model, prompt_version, cjson, vjson))
+            await db.commit()
+    return vid
+
+
+async def content_version_list(product_sku: str | None = None, channel: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
+    limit=min(max(limit,1),500)
+    if uses_postgres():
+        pool = await get_pg_pool(); q="SELECT * FROM content_versions WHERE 1=1"; params=[]
+        if product_sku: q+=f" AND product_sku=${len(params)+1}"; params.append(product_sku)
+        if channel: q+=f" AND channel=${len(params)+1}"; params.append(channel)
+        q+=f" ORDER BY created_at DESC LIMIT ${len(params)+1}"; params.append(limit)
+        async with pool.acquire() as conn: rows=await conn.fetch(q,*params)
+        out=[dict(r) for r in rows]
+    else:
+        async with get_connection() as db:
+            q="SELECT * FROM content_versions WHERE 1=1"; params=[]
+            if product_sku: q+=" AND product_sku=?"; params.append(product_sku)
+            if channel: q+=" AND channel=?"; params.append(channel)
+            q+=" ORDER BY created_at DESC LIMIT ?"; params.append(limit)
+            cur=await db.execute(q,tuple(params)); rows=await cur.fetchall(); await cur.close(); out=[dict(r) for r in rows]
+    for r in out:
+        for k in ("content_json","validation_json"):
+            if isinstance(r.get(k), str):
+                try: r[k]=json.loads(r[k])
+                except Exception: pass
+    return out
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# IAM helpers (incremental)
+# ════════════════════════════════════════════════════════════════════════════
+
+async def iam_create_user(*, email: str, password_hash: str = "", display_name: str = "", username: str = "", is_superadmin: bool = False, is_active: bool = True) -> dict[str, Any]:
+    import uuid as _uuid
+    uid=str(_uuid.uuid4())
+    if uses_postgres():
+        pool=await get_pg_pool()
+        async with pool.acquire() as conn:
+            await conn.execute("INSERT INTO iam_users(id,email,username,password_hash,display_name,is_active,is_superadmin) VALUES ($1,$2,$3,$4,$5,$6,$7)", uid,email,username,password_hash,display_name,is_active,is_superadmin)
+            row=await conn.fetchrow("SELECT id,email,username,display_name,is_active,is_superadmin,created_at FROM iam_users WHERE id=$1", uid)
+        return dict(row) if row else {"id":uid}
+    async with get_connection() as db:
+        await db.execute("INSERT INTO iam_users(id,email,username,password_hash,display_name,is_active,is_superadmin) VALUES (?,?,?,?,?,?,?)", (uid,email,username,password_hash,display_name,1 if is_active else 0,1 if is_superadmin else 0))
+        await db.commit()
+        cur=await db.execute("SELECT id,email,username,display_name,is_active,is_superadmin,created_at FROM iam_users WHERE id=?", (uid,))
+        row=await cur.fetchone(); await cur.close(); return dict(row) if row else {"id":uid}
+
+
+async def iam_get_user_by_email(email: str) -> dict[str, Any] | None:
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT * FROM iam_users WHERE email=$1", email)
+        return dict(row) if row else None
+    async with get_connection() as db:
+        cur = await db.execute("SELECT * FROM iam_users WHERE email=?", (email,))
+        row = await cur.fetchone(); await cur.close()
+        return dict(row) if row else None
+
+
+async def iam_get_user(user_id: str) -> dict[str, Any] | None:
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT * FROM iam_users WHERE id=$1", user_id)
+        return dict(row) if row else None
+    async with get_connection() as db:
+        cur = await db.execute("SELECT * FROM iam_users WHERE id=?", (user_id,))
+        row = await cur.fetchone(); await cur.close()
+        return dict(row) if row else None
+
+
+async def iam_list_users(limit: int = 200) -> list[dict[str, Any]]:
+    limit = min(max(limit, 1), 500)
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("SELECT id,email,username,display_name,is_active,is_superadmin,last_login_at,created_at FROM iam_users ORDER BY created_at DESC LIMIT $1", limit)
+        return [dict(r) for r in rows]
+    async with get_connection() as db:
+        cur = await db.execute("SELECT id,email,username,display_name,is_active,is_superadmin,last_login_at,created_at FROM iam_users ORDER BY created_at DESC LIMIT ?", (limit,))
+        rows = await cur.fetchall(); await cur.close()
+        return [dict(r) for r in rows]
+
+
+async def iam_update_user(user_id: str, **fields: Any) -> bool:
+    allowed = {"display_name", "username", "is_active", "is_superadmin", "mfa_required", "password_hash", "last_login_at"}
+    updates = {k: v for k, v in fields.items() if k in allowed}
+    if not updates:
+        return False
+    if uses_postgres():
+        pool = await get_pg_pool(); sets=[]; params=[]
+        for i,(k,v) in enumerate(updates.items(),1): sets.append(f"{k}=${i}"); params.append(v)
+        params.append(user_id)
+        async with pool.acquire() as conn:
+            await conn.execute(f"UPDATE iam_users SET {', '.join(sets)}, updated_at=NOW() WHERE id=${len(params)}", *params)
+        return True
+    async with get_connection() as db:
+        sets=[]; params=[]
+        for k,v in updates.items():
+            sets.append(f"{k}=?"); params.append((1 if v else 0) if isinstance(v,bool) else v)
+        params.extend([utc_now(), user_id])
+        await db.execute(f"UPDATE iam_users SET {', '.join(sets)}, updated_at=? WHERE id=?", tuple(params))
+        await db.commit(); return True
+
+
+async def iam_ensure_role(name: str, description: str = "") -> dict[str, Any]:
+    import uuid as _uuid
+    rid = str(_uuid.uuid4())
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            await conn.execute("INSERT INTO iam_roles(id,name,description) VALUES ($1,$2,$3) ON CONFLICT(name) DO UPDATE SET description=EXCLUDED.description", rid, name, description)
+            row = await conn.fetchrow("SELECT * FROM iam_roles WHERE name=$1", name)
+        return dict(row) if row else {"name": name}
+    async with get_connection() as db:
+        cur = await db.execute("SELECT id FROM iam_roles WHERE name=?", (name,)); ex = await cur.fetchone(); await cur.close()
+        if not ex: await db.execute("INSERT INTO iam_roles(id,name,description) VALUES (?,?,?)", (rid,name,description))
+        else: await db.execute("UPDATE iam_roles SET description=? WHERE name=?", (description,name))
+        await db.commit()
+        cur = await db.execute("SELECT * FROM iam_roles WHERE name=?", (name,)); row = await cur.fetchone(); await cur.close()
+        return dict(row) if row else {"name": name}
+
+
+async def iam_assign_role(user_id: str, role_name: str) -> None:
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            await conn.execute("INSERT INTO iam_user_roles(user_id,role_name) VALUES ($1,$2) ON CONFLICT DO NOTHING", user_id, role_name)
+        return
+    async with get_connection() as db:
+        await db.execute("INSERT OR IGNORE INTO iam_user_roles(user_id,role_name) VALUES (?,?)", (user_id,role_name)); await db.commit()
+
+
+async def iam_list_roles() -> list[dict[str, Any]]:
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn: rows = await conn.fetch("SELECT * FROM iam_roles ORDER BY name")
+        return [dict(r) for r in rows]
+    async with get_connection() as db:
+        cur = await db.execute("SELECT * FROM iam_roles ORDER BY name"); rows = await cur.fetchall(); await cur.close(); return [dict(r) for r in rows]
+
+
+async def iam_list_permissions(role_name: str | None = None) -> list[dict[str, Any]]:
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            if role_name: rows = await conn.fetch("SELECT * FROM iam_permissions WHERE role_name=$1 ORDER BY permission", role_name)
+            else: rows = await conn.fetch("SELECT * FROM iam_permissions ORDER BY role_name,permission")
+        return [dict(r) for r in rows]
+    async with get_connection() as db:
+        if role_name: cur = await db.execute("SELECT * FROM iam_permissions WHERE role_name=? ORDER BY permission", (role_name,))
+        else: cur = await db.execute("SELECT * FROM iam_permissions ORDER BY role_name,permission")
+        rows = await cur.fetchall(); await cur.close(); return [dict(r) for r in rows]
+
+
+async def iam_grant_permission(role_name: str, permission: str) -> None:
+    import uuid as _uuid
+    pid = str(_uuid.uuid4())
+    if uses_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            await conn.execute("INSERT INTO iam_permissions(id,role_name,permission) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING", pid, role_name, permission)
+        return
+    async with get_connection() as db:
+        await db.execute("INSERT OR IGNORE INTO iam_permissions(id,role_name,permission) VALUES (?,?,?)", (pid,role_name,permission)); await db.commit()

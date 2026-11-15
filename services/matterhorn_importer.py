@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import asyncio
 from typing import Any, Dict, List, Optional
 
 import httpx
@@ -17,6 +18,16 @@ MATTERHORN_REST_API: str = "https://matterhorn-moda.de"
 MATTERHORN_XML_FEED: str = "https://matterhorn-moda.de/?str=xmloffer"
 STOCK_BUFFER_PERCENT: float = 0.10  # -10% safety stock buffer
 
+
+
+async def _publish_import_event(event_type: str, payload: dict) -> None:
+    try:
+        from services import event_bus as _eb_mod
+        bus = _eb_mod.event_bus
+        if bus is not None and getattr(bus, "_running", False):
+            await bus.publish(event_type=event_type, source_module="matterhorn_importer", payload=payload, target_module="*", entity_id=str(payload.get("run_id") or ""))
+    except Exception:
+        pass
 
 class MatterhornUniversalImporter:
     """Universal importer for Matterhorn wholesale product data."""

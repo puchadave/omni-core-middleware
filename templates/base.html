@@ -1,32 +1,101 @@
 <!DOCTYPE html>
-<html lang="de">
+<html lang="de" class="h-full">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Omni-Core ERP & BI | Control Center</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
-    <style>
-        .live-dot { animation: pulse 2s infinite; }
-        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
-    </style>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}Omni-Core Control Center{% endblock %}</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+  <style>
+    [x-cloak]{display:none!important}
+    .nav-link{display:flex;align-items:center;gap:.5rem;padding:.45rem .75rem;border-radius:.5rem;color:#cbd5e1;font-size:.875rem}
+    .nav-link:hover{background:#1f2937;color:#fff}
+    .nav-link.active{background:#312e81;color:#fff}
+    .nav-section{margin:.75rem .5rem .25rem;font-size:.7rem;letter-spacing:.08em;text-transform:uppercase;color:#64748b;font-weight:700}
+  </style>
 </head>
-<body class="bg-gray-900 text-gray-100 min-h-screen">
-    <nav class="bg-gray-800 border-b border-gray-700 sticky top-0 z-40">
-        <div class="container mx-auto px-4 py-3 flex items-center justify-between">
-            <a href="/" class="text-xl font-bold text-white">OMNI-CORE <span class="text-indigo-400">ERP & BI</span></a>
-            <div class="flex items-center space-x-4">
-                <a href="/" class="text-gray-300 hover:text-white">Dashboard</a>
-                <a href="/admin/products" class="text-gray-300 hover:text-white">Produkte</a>
-                <a href="/admin/orders" class="text-gray-300 hover:text-white">Bestellungen</a>
-                <a href="/settings" class="text-gray-300 hover:text-white">Einstellungen</a>
-                <a href="/google" class="text-gray-300 hover:text-white">Google Merchant</a>
-                <a href="/omniroute" class="text-gray-300 hover:text-white">OmniRoute</a>
-            </div>
-        </div>
-    </nav>
-    <main class="container mx-auto px-4 py-6">
+<body class="h-full bg-slate-950 text-slate-100" x-data="{open:false, path: window.location.pathname}">
+  <div class="min-h-full flex">
+    <!-- Sidebar -->
+    <aside class="hidden lg:flex lg:flex-col lg:w-72 lg:fixed lg:inset-y-0 bg-slate-900 border-r border-slate-800">
+      <div class="px-4 py-4 border-b border-slate-800 flex items-center justify-between">
+        <a href="/" class="text-lg font-extrabold tracking-tight">OMNI-CORE <span class="text-indigo-400">Control</span></a>
+        <span class="text-[10px] px-2 py-0.5 rounded bg-emerald-900/40 text-emerald-300 border border-emerald-800">LIVE</span>
+      </div>
+      <nav class="flex-1 overflow-y-auto p-3">
+        <div class="nav-section">Übersicht</div>
+        <a href="/" class="nav-link" :class="path==='/'?'active':''">Dashboard</a>
+        <a href="/control-center" class="nav-link" :class="path==='/control-center'?'active':''">Global Control Center</a>
+        <a href="/ui/master-dashboard" class="nav-link" :class="path==='/ui/master-dashboard'?'active':''">Master Dashboard</a>
+
+        <div class="nav-section">Commerce</div>
+        <a href="/ui/products" class="nav-link" :class="path.startsWith('/ui/products')||path==='/admin/products'?'active':''">Products</a>
+        <a href="/ui/inventory" class="nav-link" :class="path==='/ui/inventory'?'active':''">Inventory</a>
+        <a href="/ui/orders" class="nav-link" :class="path.startsWith('/ui/orders')||path==='/admin/orders'?'active':''">Orders</a>
+        <a href="/ui/pricing-center" class="nav-link" :class="path==='/ui/pricing-center'?'active':''">Pricing Center</a>
+        <a href="/ui/bundle-studio" class="nav-link" :class="path==='/ui/bundle-studio'?'active':''">Bundle Studio</a>
+        <a href="/ui/erp-pim" class="nav-link" :class="path==='/ui/erp-pim'?'active':''">ERP / PIM (Lite)</a>
+
+        <div class="nav-section">Integrationen</div>
+        <a href="/ui/matterhorn-import" class="nav-link" :class="path==='/ui/matterhorn-import'?'active':''">Matterhorn Connector</a>
+        <a href="/ui/shopware" class="nav-link" :class="path==='/ui/shopware'?'active':''">Shopware Connector</a>
+        <a href="/google" class="nav-link" :class="path.startsWith('/google')?'active':''">Google Merchant</a>
+        <a href="/omniroute" class="nav-link" :class="path.startsWith('/omniroute')?'active':''">OmniRoute / AI Gateway</a>
+        <a href="/ui/gtin-intelligence" class="nav-link" :class="path==='/ui/gtin-intelligence'?'active':''">GTIN / Product Intelligence</a>
+        <a href="/ui/integrations" class="nav-link" :class="path==='/ui/integrations'?'active':''">Integrations-Übersicht</a>
+        <a href="/ui/marketplaces" class="nav-link" :class="path==='/ui/marketplaces'?'active':''">Marketplaces & Channels</a>
+        <a href="/ui/internal-communication" class="nav-link" :class="path==='/ui/internal-communication'?'active':''">Internal Communication (Events)</a>
+
+        <div class="nav-section">AI & Content</div>
+        <a href="/ui/ai-control" class="nav-link" :class="path==='/ui/ai-control'?'active':''">AI Control</a>
+        <a href="/ui/content-studio" class="nav-link" :class="path==='/ui/content-studio'?'active':''">Multi-Channel Content</a>
+        <a href="/ui/ai-photoshooting" class="nav-link" :class="path==='/ui/ai-photoshooting'?'active':''">AI Photoshooting</a>
+        <a href="/ui/model-management" class="nav-link" :class="path==='/ui/model-management'?'active':''">Model Management</a>
+        <a href="/ui/competitor-intelligence" class="nav-link" :class="path==='/ui/competitor-intelligence'?'active':''">Competitor Intelligence</a>
+        <a href="/ui/trend-intelligence" class="nav-link" :class="path==='/ui/trend-intelligence'?'active':''">Trend Intelligence</a>
+        <a href="/ui/news-events" class="nav-link" :class="path==='/ui/news-events'?'active':''">News & Events</a>
+        <a href="/ui/knowledge-base" class="nav-link" :class="path==='/ui/knowledge-base'?'active':''">Knowledge Base</a>
+
+        <div class="nav-section">Betrieb & System</div>
+        <a href="/ui/jobs-automation" class="nav-link" :class="path==='/ui/jobs-automation'?'active':''">Jobs & Automation</a>
+        <a href="/ui/analytics" class="nav-link" :class="path==='/ui/analytics'?'active':''">Analytics</a>
+        <a href="/ui/audit-log" class="nav-link" :class="path==='/ui/audit-log'?'active':''">Audit Log</a>
+        <a href="/ui/security" class="nav-link" :class="path==='/ui/security'?'active':''">Security & User Management</a>
+        <a href="/ui/settings" class="nav-link" :class="path==='/ui/settings' || path==='/settings'?'active':''">Settings</a>
+      </nav>
+      <div class="p-3 border-t border-slate-800 text-xs text-slate-400 flex items-center justify-between">
+        <a href="/login" class="hover:text-white">Login</a>
+        <a href="/logout" class="hover:text-white">Logout</a>
+      </div>
+    </aside>
+
+    <!-- Mobile header -->
+    <div class="lg:pl-72 flex-1 flex flex-col min-w-0">
+      <header class="lg:hidden sticky top-0 z-30 bg-slate-900/95 backdrop-blur border-b border-slate-800 px-4 py-3 flex items-center justify-between">
+        <a href="/" class="font-bold">OMNI-CORE</a>
+        <button @click="open=!open" class="px-3 py-1.5 rounded bg-slate-800 border border-slate-700 text-sm">Menü</button>
+      </header>
+      <div x-show="open" x-cloak class="lg:hidden border-b border-slate-800 bg-slate-900 p-3 space-y-1 text-sm">
+        <template x-for="l in [['/','Dashboard'],['/control-center','Control Center'],['/ui/products','Products'],['/ui/matterhorn-import','Matterhorn'],['/ui/shopware','Shopware'],['/ui/gtin-intelligence','GTIN'],['/ui/content-studio','Content'],['/ui/jobs-automation','Jobs'],['/ui/security','Security'],['/ui/settings','Settings']]" :key="l[0]">
+          <a :href="l[0]" class="block px-3 py-2 rounded hover:bg-slate-800" x-text="l[1]"></a>
+        </template>
+      </div>
+
+      <main class="flex-1 p-4 md:p-6 lg:p-8">
         {% block content %}{% endblock %}
-    </main>
+      </main>
+    </div>
+  </div>
+
+  <script>
+    async function apiFetch(url, opts={}){
+      const r = await fetch(url, Object.assign({headers:{'Content-Type':'application/json','Accept':'application/json'}}, opts));
+      const ct = r.headers.get('content-type')||'';
+      const data = ct.includes('application/json') ? await r.json().catch(()=>null) : await r.text();
+      if(!r.ok){ const msg = data && (data.detail||data.error||data.message) ? (data.detail||data.error||data.message) : ('HTTP '+r.status); throw new Error(typeof msg==='string'?msg:JSON.stringify(msg)); }
+      return data;
+    }
+  </script>
+  {% block scripts %}{% endblock %}
 </body>
 </html>
