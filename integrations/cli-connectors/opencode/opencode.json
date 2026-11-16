@@ -1,0 +1,34 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "omniroute/auto/smart",
+  "small_model": "omniroute/auto/fast",
+  "provider": {
+    "omniroute": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "OmniRoute (NEXUS)",
+      "options": {
+        "baseURL": "http://192.168.176.22:20128/v1",
+        "apiKey": "{env:OMNIROUTE_API_KEY}"
+      },
+      "models": {
+        "auto/smart": {"name": "OmniRoute auto/smart"},
+        "auto/coding": {"name": "OmniRoute auto/coding"},
+        "auto/fast": {"name": "OmniRoute auto/fast"},
+        "auto/cheap": {"name": "OmniRoute auto/cheap"},
+        "auto/vision": {"name": "OmniRoute auto/vision"},
+        "auto/offline": {"name": "OmniRoute auto/offline"},
+        "omni-admin-agent": {"name": "NEXUS Admin Agent"},
+        "omni-ecom-coding-smart": {"name": "NEXUS Coding (smart)"},
+        "omni-content-seo": {"name": "NEXUS Content/SEO"},
+        "omni-vision-photo": {"name": "NEXUS Vision/Photo"},
+        "omni-video-gen": {"name": "NEXUS Video Gen"},
+        "omni-crm-support": {"name": "NEXUS CRM/Support"},
+        "omni-local-gdpr": {"name": "NEXUS Local GDPR"}
+      }
+    }
+  },
+  "agent": {
+    "nexus-coder": {"mode": "primary", "model": "omniroute/omni-ecom-coding-smart", "description": "Coding agent via OmniRoute/NEXUS"},
+    "nexus-ops": {"mode": "subagent", "model": "omniroute/omni-admin-agent", "description": "Ops/Proxmox planning and automation via NEXUS"}
+  }
+}

@@ -1,0 +1,28 @@
+name: NEXUS OmniRoute
+version: 1.0.0
+schema: v1
+models:
+  - name: OmniRoute auto/smart
+    provider: openai
+    model: auto/smart
+    apiBase: http://192.168.176.22:20128/v1
+    apiKey: ${OMNIROUTE_API_KEY}
+    roles: [chat, edit, apply]
+  - name: OmniRoute auto/coding
+    provider: openai
+    model: auto/coding
+    apiBase: http://192.168.176.22:20128/v1
+    apiKey: ${OMNIROUTE_API_KEY}
+    roles: [chat, edit, apply]
+  - name: NEXUS Coding Smart
+    provider: openai
+    model: omni-ecom-coding-smart
+    apiBase: http://192.168.176.22:20128/v1
+    apiKey: ${OMNIROUTE_API_KEY}
+    roles: [chat, edit, apply]
+  - name: OmniRoute auto/fast
+    provider: openai
+    model: auto/fast
+    apiBase: http://192.168.176.22:20128/v1
+    apiKey: ${OMNIROUTE_API_KEY}
+    roles: [autocomplete]

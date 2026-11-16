@@ -1,0 +1,30 @@
+# Hermes Agent -> OmniRoute (NEXUS) provider snippet
+# Merge relevant keys into ~/.hermes/config.yaml or use as template.
+model:
+  provider: custom
+  base_url: http://192.168.176.22:20128/v1
+  default: auto/smart
+  api_key: ${OMNIROUTE_API_KEY}
+
+providers:
+  omniroute:
+    name: OmniRoute (NEXUS)
+    base_url: http://192.168.176.22:20128/v1
+    key_env: OMNIROUTE_API_KEY
+    default_model: auto/smart
+    models:
+      - auto/smart
+      - auto/coding
+      - auto/fast
+      - auto/cheap
+      - auto/vision
+      - auto/offline
+      - omni-admin-agent
+      - omni-ecom-coding-smart
+      - omni-content-seo
+      - omni-vision-photo
+      - omni-video-gen
+      - omni-crm-support
+      - omni-local-gdpr
+
+# Optional: include nexus-cli toolset/wrapper if your Hermes build supports custom tool dirs.

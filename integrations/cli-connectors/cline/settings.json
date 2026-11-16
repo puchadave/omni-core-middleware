@@ -1,0 +1,12 @@
+{
+  "cline.apiProvider": "openai-compatible",
+  "cline.openAiBaseUrl": "http://192.168.176.22:20128/v1",
+  "cline.openAiApiKey": "${env:OMNIROUTE_API_KEY}",
+  "cline.openAiModelId": "auto/coding",
+  "cline.openAiModelInfo": {
+    "maxTokens": 128000,
+    "contextWindow": 200000,
+    "supportsImages": true,
+    "supportsPromptCache": false
+  }
+}

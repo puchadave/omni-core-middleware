@@ -1,0 +1,7 @@
+# Aider -> OmniRoute (OpenAI-compatible)
+openai-api-base: http://192.168.176.22:20128/v1
+openai-api-key: ${OMNIROUTE_API_KEY}
+model: openai/auto/coding
+weak-model: openai/auto/fast
+# Alternatives: openai/omni-ecom-coding-smart, openai/auto/smart
+edit-format: diff
