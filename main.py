@@ -135,7 +135,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-SECRET_KEY_MARKERS = ("api_key", "token", "secret", "password", "credential")
+SECRET_KEY_MARKERS = ("api_key", "token", "secret", "password", "credential", "identity_private")
 SESSION_COOKIE_NAME = "omni_session"
 CSRF_COOKIE_NAME = "csrf_token"
 SESSION_TTL_SECONDS = 8 * 60 * 60
@@ -216,8 +216,9 @@ RBAC_RULES: list[tuple[str, tuple[str, ...], str]] = [
     ("POST", ("/api/google/export/", "/api/google/sync"), "exports.execute"),
     ("GET", ("/api/gtin/", "/ui/gtin-intelligence"), "products.read"),
     ("POST", ("/api/gtin/lookup",), "products.read"),
+    ("POST", ("/api/gtin/enrich",), "products.write"),
     ("POST", ("/api/gtin/providers",), "products.write"),
-    ("GET", ("/ui/master-dashboard", "/ui/analytics", "/ui/nexus"), "system.read"),
+    ("GET", ("/ui/master-dashboard", "/ui/analytics", "/ui/nexus", "/ui/proxmox-manager"), "system.read"),
     ("GET", ("/ui/inventory",), "products.read"),
     ("GET", ("/ui/erp-pim",), "products.read"),
     ("GET", ("/ui/integrations", "/ui/marketplaces"), "connectors.read"),
@@ -3335,6 +3336,12 @@ class GtinProviderPayload(BaseModel):
     enabled: bool = False
 
 
+class GtinEnrichRequest(BaseModel):
+    sku: str = Field(..., min_length=1, max_length=128)
+    gtin: str | None = Field(default=None, max_length=32)
+    auto_apply_safe: bool = False
+
+
 @app.post("/api/gtin/lookup")
 async def api_gtin_lookup(payload: GtinLookupRequest) -> dict[str, Any]:
     from services.gtin_intelligence import lookup_gtin
@@ -3364,8 +3371,35 @@ async def api_gtin_enrichments(entity_id: str | None = Query(default=None), limi
 
 
 @app.get("/api/gtin/conflicts")
-async def api_gtin_conflicts(status: str | None = Query(default=None), limit: int = Query(default=200, ge=1, le=500)) -> list[dict[str, Any]]:
+async def api_gtin_conflicts(status: str | None = Query(default=None), limit: int = Query(default=100, ge=1, le=500)) -> list[dict[str, Any]]:
     return await gtin_list_conflicts(status=status, limit=limit)
+
+
+@app.post("/api/gtin/enrich")
+async def api_gtin_enrich(payload: GtinEnrichRequest) -> dict[str, Any]:
+    from services.gtin_intelligence import enrich_product_by_gtin
+    result = await enrich_product_by_gtin(
+        payload.sku,
+        payload.gtin,
+        auto_apply_safe=payload.auto_apply_safe,
+        actor="api",
+    )
+    if not result.get("ok") and result.get("error") == "product_not_found":
+        raise HTTPException(status_code=404, detail="Product not found.")
+    await publish_runtime_event(
+        "gtin.enrichment_completed",
+        {
+            "sku": payload.sku,
+            "gtin": result.get("gtin"),
+            "status": (result.get("lookup") or {}).get("status"),
+            "enrichments": len(result.get("enrichments") or []),
+            "conflicts": len(result.get("conflicts") or []),
+            "applied": bool(result.get("applied")),
+        },
+        source="gtin_intelligence",
+        entity_id=payload.sku,
+    )
+    return result
 
 
 # ── Multi-channel Content APIs ───────────────────────────────────────────

@@ -17,6 +17,7 @@ from typing import Any, Callable, Awaitable, Optional
 from database import (
     gtin_save_lookup, gtin_list_lookups, gtin_save_enrichment, gtin_list_enrichments,
     gtin_save_conflict, gtin_list_conflicts, gtin_upsert_provider, gtin_list_providers,
+    fetch_product, upsert_product_aggregate,
 )
 
 logger = logging.getLogger(__name__)
@@ -149,7 +150,14 @@ async def lookup_gtin(gtin: str, providers: Optional[list[dict[str, Any]]] = Non
             rank = {"A": 3, "B": 2, "C": 1}
             found.sort(key=lambda r: (rank.get(r.trust_level, 0), r.confidence), reverse=True)
             chosen = found[0]
-            record["reconciliation"] = {"status": "matched", "chosen_provider": chosen.provider, "conflicts": [], "chosen": chosen.data}
+            conflicts: list[dict[str, Any]] = []
+            # detect conflicting values for same keys across providers
+            for f in found[1:]:
+                for k, v in (f.data or {}).items():
+                    if k in (chosen.data or {}) and chosen.data.get(k) not in (None, "", v):
+                        conflicts.append({"field": k, "chosen_provider": chosen.provider, "chosen_value": chosen.data.get(k), "other_provider": f.provider, "other_value": v})
+            status = "matched_with_conflicts" if conflicts else "matched"
+            record["reconciliation"] = {"status": status, "chosen_provider": chosen.provider, "conflicts": conflicts, "chosen": chosen.data}
             record["confidence"] = chosen.confidence
             record["trust_level"] = chosen.trust_level
             record["provenance"].append({"field": "*", "source_provider": chosen.provider, "source_record_id": chosen.source_record_id, "license": chosen.license_info})
@@ -158,3 +166,121 @@ async def lookup_gtin(gtin: str, providers: Optional[list[dict[str, Any]]] = Non
 
     await gtin_save_lookup(normalized, record)
     return record
+
+
+# Field mapping from external/provider data to canonical product fields (safe subset only)
+_PROVIDER_TO_PRODUCT_FIELD = {
+    "title": "title",
+    "name": "title",
+    "brand": "brand",
+    "manufacturer": "manufacturer",
+    "category": "category",
+    "description": "description",
+    "short_description": "short_description",
+    "image_url": "image_url",
+}
+
+
+async def enrich_product_by_gtin(
+    sku: str,
+    gtin: str | None = None,
+    *,
+    auto_apply_safe: bool = False,
+    actor: str = "system",
+) -> dict[str, Any]:
+    """Lookup GTIN and persist enrichment/conflict records for a canonical product.
+
+    - Never invents GTINs; only uses provided/product GTIN.
+    - Records provenance/confidence/verification state per enrichment.
+    - By default does not overwrite existing non-empty fields; conflicts are recorded for review.
+    - auto_apply_safe: only fills missing/empty safe fields (ean when missing) and never overwrites.
+    """
+    product = await fetch_product(sku)
+    if not product:
+        return {"ok": False, "error": "product_not_found", "sku": sku}
+
+    source_gtin = normalize_gtin(gtin or product.get("ean") or product.get("gtin") or product.get("barcode") or "")
+    if not source_gtin:
+        return {"ok": False, "error": "missing_gtin", "sku": sku, "message": "Kein GTIN/EAN am Produkt vorhanden und keines übergeben."}
+
+    lookup = await lookup_gtin(source_gtin)
+    chosen = (lookup.get("reconciliation") or {}).get("chosen") or {}
+    provider = (lookup.get("reconciliation") or {}).get("chosen_provider") or ""
+    trust = lookup.get("trust_level") or "C"
+    confidence = float(lookup.get("confidence") or 0.0)
+    enrichments: list[dict[str, Any]] = []
+    conflicts_out: list[dict[str, Any]] = []
+
+    # Always ensure normalized EAN is recorded as adoptable if valid and product has none
+    if lookup.get("valid") and not normalize_gtin(product.get("ean") or product.get("gtin") or ""):
+        eid = await gtin_save_enrichment(
+            entity_type="product", entity_id=sku, field_name="ean",
+            original_value=str(product.get("ean") or ""), normalized_value=lookup["gtin"],
+            source_provider=provider or "normalization", source_record_id="",
+            confidence=max(confidence, 0.7 if provider else 0.5), trust_level=trust,
+            verification_state="adopted" if auto_apply_safe else "proposed",
+            license_info="", metadata={"reason": "normalized_valid_gtin", "actor": actor},
+        )
+        enrichments.append({"id": eid, "field": "ean", "value": lookup["gtin"], "state": "adopted" if auto_apply_safe else "proposed"})
+
+    # Map provider-chosen fields conservatively
+    for src_key, dst_field in _PROVIDER_TO_PRODUCT_FIELD.items():
+        if src_key not in chosen:
+            continue
+        new_val = str(chosen.get(src_key) or "").strip()
+        if not new_val:
+            continue
+        cur_val = str(product.get(dst_field) or "").strip()
+        if not cur_val:
+            state = "adopted" if auto_apply_safe else "proposed"
+            eid = await gtin_save_enrichment(
+                entity_type="product", entity_id=sku, field_name=dst_field,
+                original_value=cur_val, normalized_value=new_val,
+                source_provider=provider, source_record_id="", confidence=confidence,
+                trust_level=trust, verification_state=state, license_info="",
+                metadata={"lookup_gtin": lookup["gtin"], "actor": actor},
+            )
+            enrichments.append({"id": eid, "field": dst_field, "value": new_val, "state": state})
+        elif cur_val != new_val:
+            cid = await gtin_save_conflict(
+                entity_type="product", entity_id=sku, field_name=dst_field,
+                candidates=[
+                    {"value": cur_val, "source_provider": "existing", "confidence": 1.0, "trust_level": "B"},
+                    {"value": new_val, "source_provider": provider, "confidence": confidence, "trust_level": trust},
+                ],
+                status="open", resolution={},
+            )
+            conflicts_out.append({"id": cid, "field": dst_field, "existing": cur_val, "candidate": new_val})
+
+    # Persist explicit provider conflicts from lookup reconciliation
+    for c in (lookup.get("reconciliation") or {}).get("conflicts") or []:
+        field_name = str(c.get("field") or "unknown")
+        cid = await gtin_save_conflict(
+            entity_type="product", entity_id=sku, field_name=field_name,
+            candidates=[
+                {"value": c.get("chosen_value"), "source_provider": c.get("chosen_provider"), "confidence": confidence, "trust_level": trust},
+                {"value": c.get("other_value"), "source_provider": c.get("other_provider")},
+            ],
+            status="open", resolution={"source": "lookup_reconciliation"},
+        )
+        conflicts_out.append({"id": cid, "field": field_name, "existing": c.get("chosen_value"), "candidate": c.get("other_value"), "source": "provider_conflict"})
+
+    applied: dict[str, Any] = {}
+    if auto_apply_safe:
+        # Apply only safe adopted fills (EAN missing). Never overwrite existing values.
+        for e in enrichments:
+            if e.get("state") == "adopted" and e.get("field") == "ean" and not normalize_gtin(product.get("ean") or ""):
+                applied["ean"] = e["value"]
+        if applied:
+            await upsert_product_aggregate({"sku": sku, **applied}, sync_rules={"mode": "partial", "preserve_manual_seo": True, "preserve_marketplace_mappings": True})
+
+    return {
+        "ok": True,
+        "sku": sku,
+        "gtin": lookup.get("gtin"),
+        "lookup": {"valid": lookup.get("valid"), "status": (lookup.get("reconciliation") or {}).get("status"), "confidence": lookup.get("confidence"), "trust_level": lookup.get("trust_level")},
+        "enrichments": enrichments,
+        "conflicts": conflicts_out,
+        "applied": applied,
+        "auto_apply_safe": auto_apply_safe,
+    }

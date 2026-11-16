@@ -91,3 +91,121 @@ async def test_lookup_gtin_unknown_provider(monkeypatch):
     assert result["reconciliation"]["status"] == "not_found_or_not_configured"
     assert result["providers"][0]["provider"] == "mystery_provider"
     assert result["providers"][0]["error"] == "unknown_provider"
+
+
+@pytest.mark.asyncio
+async def test_lookup_gtin_conflict_detection(monkeypatch):
+    # Simulate two providers returning conflicting chosen data via registry patching
+    from services import gtin_intelligence as gi
+
+    class P1(gi.BaseProviderAdapter):
+        name = "p1"
+        async def lookup(self, gtin):
+            return gi.ProviderResult(provider="p1", found=True, data={"title": "Titel A"}, confidence=0.9, trust_level="A")
+
+    class P2(gi.BaseProviderAdapter):
+        name = "p2"
+        async def lookup(self, gtin):
+            return gi.ProviderResult(provider="p2", found=True, data={"title": "Titel B"}, confidence=0.8, trust_level="B")
+
+    async def fake_list_providers(enabled_only=True):
+        return [{"name": "p1", "enabled": True}, {"name": "p2", "enabled": True}]
+
+    async def fake_save_lookup(gtin, record):
+        return "lookup-c"
+
+    monkeypatch.setattr(gi, "gtin_list_providers", fake_list_providers)
+    monkeypatch.setattr(gi, "gtin_save_lookup", fake_save_lookup)
+    monkeypatch.setitem(gi.PROVIDER_REGISTRY, "p1", P1)
+    monkeypatch.setitem(gi.PROVIDER_REGISTRY, "p2", P2)
+    try:
+        result = await gi.lookup_gtin("4006381333931")
+        assert result["reconciliation"]["status"] == "matched_with_conflicts"
+        assert result["reconciliation"]["chosen_provider"] == "p1"
+        assert result["reconciliation"]["chosen"]["title"] == "Titel A"
+        assert any(c["field"] == "title" and c["other_value"] == "Titel B" for c in result["reconciliation"]["conflicts"])
+    finally:
+        gi.PROVIDER_REGISTRY.pop("p1", None)
+        gi.PROVIDER_REGISTRY.pop("p2", None)
+
+
+@pytest.mark.asyncio
+async def test_enrich_product_by_gtin_records_and_applies_safe(monkeypatch):
+    from services import gtin_intelligence as gi
+
+    async def fake_fetch_product(sku):
+        return {"sku": sku, "title": "Prod", "ean": "", "brand": ""}
+
+    async def fake_lookup(gtin, providers=None):
+        return {
+            "gtin": "4006381333931", "valid": True, "confidence": 0.9, "trust_level": "A",
+            "reconciliation": {"status": "matched", "chosen_provider": "p1", "conflicts": [], "chosen": {"brand": "UPTEMPO"}},
+            "provenance": [],
+        }
+
+    saved_enrichments = []
+    async def fake_save_enrichment(**kw):
+        saved_enrichments.append(kw)
+        return f"e{len(saved_enrichments)}"
+
+    async def fake_save_conflict(**kw):
+        return "c1"
+
+    applied_payloads = []
+    async def fake_upsert(data, sync_rules=None):
+        applied_payloads.append((data, sync_rules))
+        return {"status": "ok"}
+
+    monkeypatch.setattr(gi, "fetch_product", fake_fetch_product)
+    monkeypatch.setattr(gi, "lookup_gtin", fake_lookup)
+    monkeypatch.setattr(gi, "gtin_save_enrichment", fake_save_enrichment)
+    monkeypatch.setattr(gi, "gtin_save_conflict", fake_save_conflict)
+    monkeypatch.setattr(gi, "upsert_product_aggregate", fake_upsert)
+
+    res = await gi.enrich_product_by_gtin("SKU-1", "4006381333931", auto_apply_safe=True)
+    assert res["ok"] is True
+    assert res["applied"].get("ean") == "4006381333931"
+    fields = {e["field"] for e in res["enrichments"]}
+    assert "ean" in fields and "brand" in fields
+    assert any(p[0].get("sku") == "SKU-1" and p[0].get("ean") == "4006381333931" for p in applied_payloads)
+    assert any(e["field_name"] == "ean" and e["verification_state"] == "adopted" for e in saved_enrichments)
+
+
+@pytest.mark.asyncio
+async def test_enrich_product_by_gtin_records_conflict_no_overwrite(monkeypatch):
+    from services import gtin_intelligence as gi
+
+    async def fake_fetch_product(sku):
+        return {"sku": sku, "title": "Prod", "ean": "4006381333931", "brand": "EXISTING"}
+
+    async def fake_lookup(gtin, providers=None):
+        return {
+            "gtin": "4006381333931", "valid": True, "confidence": 0.9, "trust_level": "A",
+            "reconciliation": {"status": "matched", "chosen_provider": "p1", "conflicts": [], "chosen": {"brand": "NEWBRAND"}},
+            "provenance": [],
+        }
+
+    saved_enrichments = []
+    async def fake_save_enrichment(**kw):
+        saved_enrichments.append(kw)
+        return "e1"
+
+    saved_conflicts = []
+    async def fake_save_conflict(**kw):
+        saved_conflicts.append(kw)
+        return f"c{len(saved_conflicts)}"
+
+    async def fake_upsert(data, sync_rules=None):
+        raise AssertionError("must not overwrite on conflict path")
+
+    monkeypatch.setattr(gi, "fetch_product", fake_fetch_product)
+    monkeypatch.setattr(gi, "lookup_gtin", fake_lookup)
+    monkeypatch.setattr(gi, "gtin_save_enrichment", fake_save_enrichment)
+    monkeypatch.setattr(gi, "gtin_save_conflict", fake_save_conflict)
+    monkeypatch.setattr(gi, "upsert_product_aggregate", fake_upsert)
+
+    res = await gi.enrich_product_by_gtin("SKU-1", auto_apply_safe=True)
+    assert res["ok"] is True
+    assert res["applied"] == {}
+    assert any(c["field_name"] == "brand" and c["status"] == "open" for c in saved_conflicts)
+    assert not any(e.get("field_name") == "brand" for e in saved_enrichments)
