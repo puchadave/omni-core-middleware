@@ -1,0 +1,12 @@
+# Example rclone.conf for Google Drive (headless-safe after token generation)
+# 1) On a machine with browser: rclone config  (create remote named "gdrive", type drive)
+#    OR for headless: rclone authorize "drive" on a local machine and paste token below.
+# 2) Copy to each PVE node as /root/.config/rclone/rclone.conf (chmod 600)
+# 3) Recommended: create a dedicated folder in Drive (e.g. "proxmox") and use --remote-path proxmox
+
+[gdrive]
+type = drive
+scope = drive
+token = {"access_token":"REPLACE","token_type":"Bearer","refresh_token":"REPLACE","expiry":"2026-01-01T00:00:00Z"}
+# team_drive = 0ABCD...   # optional: Shared Drive ID
+# root_folder_id =        # optional: restrict to folder
