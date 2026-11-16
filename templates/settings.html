@@ -165,7 +165,12 @@ function settingsPage(){return{
       {key:'smtp_password', label:'SMTP-Passwort', secret:true},
       {key:'messenger_page_token', label:'Messenger-Seiten-Token', secret:true, help:'Geheimer Token für die Messenger-Anbindung.'},
     ]},
-    {id:'ops', title:'Betrieb & Sicherheit', help:'Allgemeine Systemeinstellungen. Sicherheits- und Zahlungsregeln (z. B. Fulfillment-Sperre bei unbezahlten Bestellungen) können hier nicht umgangen werden.', fields:[
+    {id:'zerotier', title:'Netzwerk & Fernzugriff (ZeroTier)', help:'ZeroTier-Overlay für sichere Erreichbarkeit (OmniRoute/Middleware/Nodes) über ein gemeinsames virtuelles Netzwerk. Netzwerk-ID eintragen und Service auf den Instanzen aktivieren.', fields:[
+      {key:'zerotier_network_id', label:'ZeroTier Network-ID', placeholder:'z. B. abcd1234ef567890', help:'16-stellige Netzwerk-ID aus ZeroTier Central. Leer lassen, um ZeroTier ungenutzt zu lassen.'},
+      {key:'zerotier_identity_public', label:'Node Identity (öffentlich)', placeholder:'wird beim Join erzeugt', help:'Öffentliche Node-Identität (optional, zur Anzeige/Referenz).'},
+      {key:'zerotier_auto_join', label:'Automatisch beitreten', type:'select', options:[{value:'true',label:'Aktiv'},{value:'false',label:'Inaktiv'}], help:'Beim Start/Provisioning automatisch dem angegebenen Netzwerk beitreten.'},
+    ]},
+        {id:'ops', title:'Betrieb & Sicherheit', help:'Allgemeine Systemeinstellungen. Sicherheits- und Zahlungsregeln (z. B. Fulfillment-Sperre bei unbezahlten Bestellungen) können hier nicht umgangen werden.', fields:[
       {key:'public_base_url', label:'Öffentliche Basis-URL', placeholder:'https://…', full:true, help:'Adresse, unter der dieses System erreichbar ist (für Links/Rückmeldungen).'},
       {key:'log_level', label:'Protokollierungsstufe', type:'select', options:[{value:'INFO',label:'Normal (Info)'},{value:'WARNING',label:'Warnungen'},{value:'ERROR',label:'Nur Fehler'},{value:'DEBUG',label:'Detailliert (Debug)'}], help:'Bestimmt, wie ausführlich Systemereignisse protokolliert werden.'},
       {key:'feature_scene_intelligence', label:'Szenen-Analyse (Scene Intelligence)', type:'select', options:[{value:'true',label:'Aktiv'},{value:'false',label:'Inaktiv'}], help:'Aktiviert Auswertung und Anzeige gespeicherter Szenen-Daten. Es werden keine externen Daten erfunden.'},
