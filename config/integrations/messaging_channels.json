@@ -1,0 +1,16 @@
+{
+  "whatsapp": {
+    "adapter": "wacli",
+    "repo": "https://github.com/diegosouzapw/wacli.git",
+    "binary": "wacli",
+    "store_dir": "/var/lib/omnicore/wacli",
+    "default_account": "default",
+    "capabilities": ["auth", "sync", "send-text", "send-file", "messages", "groups", "contacts", "presence"],
+    "crm_channel": "whatsapp",
+    "enabled": false
+  },
+  "chat_widget": {
+    "admin_panel": {"enabled": true, "provider": "omni-core-ai-agent", "endpoint": "/api/chat/admin", "features": ["copilot", "catalog_ops", "crm_triage", "content_gen", "creative_jobs", "social_planning", "omniroute_status"]},
+    "shopware_storefront": {"enabled": true, "provider": "omni-core-customer-chat", "endpoint": "/api/chat/public", "features": ["product_advice", "order_status_gated", "support_handoff", "appointment_request"], "security": ["no_internal_data_leak", "rate_limit", "payment_gated_actions"]}
+  }
+}

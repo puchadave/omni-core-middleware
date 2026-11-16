@@ -1,0 +1,32 @@
+{
+  "integration": "social-auto-upload",
+  "upstream_repo": "https://github.com/diegosouzapw/social-auto-upload.git",
+  "mode": "cli_bridge",
+  "binary": "sau",
+  "workdir": "/opt/social-auto-upload",
+  "accounts_dir": "/var/lib/omnicore/social/accounts",
+  "media_staging_dir": "/var/lib/omnicore/social/media",
+  "default_publish_strategy": "immediate",
+  "platforms": {
+    "douyin": {"enabled": true, "capabilities": ["login", "check", "upload-video", "upload-note"], "headless": true},
+    "bilibili": {"enabled": true, "capabilities": ["login", "check", "upload-video"], "headless": true, "auto_prepare_biliup": true},
+    "xiaohongshu": {"enabled": true, "capabilities": ["login", "check", "upload-video", "upload-note"], "headless": true},
+    "kuaishou": {"enabled": true, "capabilities": ["login", "check", "upload-video", "upload-note"], "headless": true},
+    "tencent": {"enabled": false, "capabilities": ["login", "check", "upload-video"], "headless": true},
+    "tiktok": {"enabled": false, "capabilities": ["login", "check", "upload-video"], "headless": false},
+    "baijiahao": {"enabled": false, "capabilities": ["login", "check", "upload-video"], "headless": true}
+  },
+  "omniroute": {
+    "use_ai_orchestrator": true,
+    "copy_combo": "omni-ecom-marketing-smart",
+    "seo_combo": "omni-ecom-seo-bulk-smart",
+    "vision_combo": "omni-ecom-vision-smart",
+    "fallback_model": "auto/smart"
+  },
+  "safety": {
+    "require_explicit_publish": true,
+    "store_credentials_outside_repo": true,
+    "audit_all_actions": true,
+    "executor_mode": "plan_only"
+  }
+}

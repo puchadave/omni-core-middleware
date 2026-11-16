@@ -1,0 +1,14 @@
+{
+  "purpose": "Align middleware, opencode-omniroute-auth, chat clients to same OmniRoute gateway",
+  "omniroute": {
+    "internal_base_url": "http://192.168.176.22:20128",
+    "v1_base_url": "http://192.168.176.22:20128/v1",
+    "preferred_bind": "internal-lan-or-localhost-only",
+    "endpoints": {"models": "/v1/models", "chat": "/v1/chat/completions", "health": "/api/health", "combos_mgmt": "/api/combos"},
+    "auth": {"v1_inference": "Bearer API key (/connect)", "management": "separate mgmt token; never expose publicly"}
+  },
+  "defaults": {"primary": "auto/smart", "fallback": "auto", "cheap": "auto/cheap", "fast": "auto/fast", "vision": "auto/vision", "offline": "auto/offline"},
+  "required_combos": ["omni-admin-agent","omni-content-seo","omni-vision-photo","omni-video-gen","omni-crm-support","omni-local-gdpr","omni-ecom-copilot-smart","omni-ecom-marketing-smart","omni-ecom-seo-bulk-smart","omni-ecom-critical-fusion"],
+  "opencode_plugin": {"repo": "https://github.com/diegosouzapw/opencode-omniroute-auth.git", "provider_id": "omniroute", "recommended_options": {"apiMode": "chat", "refreshOnList": true, "baseURL": "http://192.168.176.22:20128/v1"}},
+  "cliproxyapi_optional": {"repo": "https://github.com/diegosouzapw/CLIProxyAPI.git", "role": "optional upstream/provider bridge behind OmniRoute"}
+}

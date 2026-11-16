@@ -217,7 +217,7 @@ RBAC_RULES: list[tuple[str, tuple[str, ...], str]] = [
     ("GET", ("/api/gtin/", "/ui/gtin-intelligence"), "products.read"),
     ("POST", ("/api/gtin/lookup",), "products.read"),
     ("POST", ("/api/gtin/providers",), "products.write"),
-    ("GET", ("/ui/master-dashboard", "/ui/analytics"), "system.read"),
+    ("GET", ("/ui/master-dashboard", "/ui/analytics", "/ui/nexus"), "system.read"),
     ("GET", ("/ui/inventory",), "products.read"),
     ("GET", ("/ui/erp-pim",), "products.read"),
     ("GET", ("/ui/integrations", "/ui/marketplaces"), "connectors.read"),
@@ -226,6 +226,8 @@ RBAC_RULES: list[tuple[str, tuple[str, ...], str]] = [
     ("GET", ("/ui/trend-intelligence",), "trends.read"),
     ("GET", ("/ui/knowledge-base",), "system.read"),
     ("GET", ("/api/import/matterhorn/preview",), "matterhorn.read"),
+    ("GET", ("/api/nexus/",), "ai.configure"),
+    ("POST", ("/api/nexus/",), "ai.generate"),
 ]
 
 
@@ -723,6 +725,11 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     """Initialize storage, services and workers; cancel them cleanly on shutdown."""
     await init_db()
     try:
+        from app.nexus.event_bus.store import NexusEventStore
+        await NexusEventStore().ensure_schema()
+    except Exception:
+        logger.exception("Failed to initialize NEXUS event store schema")
+    try:
         from database import ensure_default_settings
         seeded = await ensure_default_settings()
         if seeded:
@@ -804,6 +811,12 @@ app = FastAPI(
     description="Lean multi-channel e-commerce middleware with PostgreSQL and SQLite WAL fallback.",
     lifespan=lifespan,
 )
+
+try:
+    from app.nexus.ui.routes import router as nexus_router
+    app.include_router(nexus_router)
+except Exception:
+    logger.exception("Failed to mount NEXUS router")
 
 _INTERNAL_API_KEY_HEADER = "X-Internal-API-Key"
 _INTERNAL_API_EXCLUDED_PATHS = frozenset({"/healthz"})
@@ -3143,6 +3156,11 @@ async def control_center_system() -> dict[str, Any]:
 
 
 # ── Complete WebUI navigation routes (pages & states) ────────────────────
+
+@app.get("/ui/nexus", response_class=HTMLResponse)
+async def ui_nexus():
+    from app.nexus.ui.routes import NEXUS_HTML
+    return HTMLResponse(NEXUS_HTML)
 
 @app.get("/ui/master-dashboard", response_class=HTMLResponse)
 async def ui_master_dashboard(request: Request):

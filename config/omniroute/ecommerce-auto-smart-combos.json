@@ -1,0 +1,230 @@
+{
+  "meta": {
+    "name": "OMNI-CORE E-Commerce Auto/Smart Combos",
+    "version": "2.0.0",
+    "generated_for": "omni-core-middleware",
+    "notes": [
+      "auto/smart-first: Standardaufgaben laufen überwiegend über auto/smart (selbstlernende/adaptive Auswahl im OmniRoute), mit robusten Fallback-Ketten.",
+      "Eigene E-Commerce-Kombos nutzen auto/*-Varianten (smart/coding/cheap/fast/vision/offline/subscription/thrifty/lkgp) für Qualität, Kosten, Latenz und Resilienz.",
+      "Schema/Endpoints können je OmniRoute-Version abweichen; Import idempotent/best-effort mit Management-Token durchführen."
+    ]
+  },
+  "defaults": {
+    "primary_model": "auto/smart",
+    "fallback_model": "auto",
+    "budget_model": "auto/cheap",
+    "speed_model": "auto/fast",
+    "code_model": "auto/coding",
+    "vision_model": "auto/vision",
+    "resilience_model": "auto/offline",
+    "self_healing": true,
+    "exploration_rate": 0.08,
+    "on_error": "next",
+    "on_exhausted": "next"
+  },
+  "task_model_mapping": {
+    "copilot_admin": "omni-ecom-copilot-smart",
+    "chat_general": "auto/smart",
+    "reasoning_complex": "omni-ecom-reasoning-smart",
+    "coding_rules_mapping": "omni-ecom-coding-smart",
+    "product_copy_premium": "omni-ecom-content-premium-smart",
+    "product_copy_bulk_seo": "omni-ecom-seo-bulk-smart",
+    "seo_meta_titles": "omni-ecom-seo-bulk-smart",
+    "translation_localization": "omni-ecom-translate-smart",
+    "classification_extraction_tagging": "omni-ecom-catalog-enrich-fast",
+    "pricing_promo_assistant": "omni-ecom-pricing-smart",
+    "trend_competitor_intel": "omni-ecom-trend-smart",
+    "catalog_long_context": "omni-ecom-longcontext-smart",
+    "customer_support_crm": "omni-ecom-crm-support-smart",
+    "order_risk_triage": "omni-ecom-risk-smart",
+    "abandoned_cart_recovery": "omni-ecom-retention-smart",
+    "loyalty_campaigns": "omni-ecom-retention-smart",
+    "newsletter_campaigns": "omni-ecom-marketing-smart",
+    "vision_analysis_qc": "omni-ecom-vision-smart",
+    "image_generation_photoshoot": "omni-ecom-photoshoot-smart",
+    "photoshoot_identity": "omni-ecom-photoshoot-identity",
+    "critical_reliable": "omni-ecom-critical-fusion",
+    "budget_background_jobs": "omni-ecom-budget-thrifty",
+    "quota_pressure_resilient": "omni-ecom-resilient-offline",
+    "repeated_templates_cache": "omni-ecom-cache-smart"
+  },
+  "combos": [
+    {
+      "name": "omni-ecom-copilot-smart",
+      "description": "Haupt-Copilot für Shop/Admin: auto/smart dominant, adaptiv mit Fallback.",
+      "strategy": "auto",
+      "targets": [
+        {"model": "auto/smart", "priority": 1},
+        {"model": "auto", "priority": 2},
+        {"model": "auto/fast", "priority": 3},
+        {"model": "auto/cheap", "priority": 4}
+      ],
+      "config": {"fallback_strategy": "priority", "routerStrategy": "lkgp", "explorationRate": 0.08, "self_healing": true},
+      "use_cases": ["copilot", "admin", "operations", "planning"]
+    },
+    {
+      "name": "omni-ecom-reasoning-smart",
+      "description": "Komplexe Analyse/Entscheidungsvorbereitung: smart-first.",
+      "strategy": "auto",
+      "targets": [{"model": "auto/smart", "priority": 1}, {"model": "auto", "priority": 2}, {"model": "auto/coding", "priority": 3}],
+      "config": {"routerStrategy": "score", "quality_bias": true, "explorationRate": 0.05},
+      "use_cases": ["reasoning", "analytics", "strategy"]
+    },
+    {
+      "name": "omni-ecom-coding-smart",
+      "description": "Mapping/Regeln/Integrationen: coding+smart.",
+      "strategy": "auto",
+      "targets": [{"model": "auto/coding", "priority": 1}, {"model": "auto/smart", "priority": 2}, {"model": "auto", "priority": 3}],
+      "config": {"routerStrategy": "rules", "task_fit": "coding"},
+      "use_cases": ["integrations", "data_mapping", "transformations", "rules"]
+    },
+    {
+      "name": "omni-ecom-content-premium-smart",
+      "description": "Premium Produkt-/Markentexte: Qualität via smart-first.",
+      "strategy": "priority",
+      "targets": [{"model": "auto/smart", "priority": 1}, {"model": "auto", "priority": 2}, {"model": "auto/cheap", "priority": 3}],
+      "config": {"quality_bias": true, "fallback_strategy": "priority"},
+      "use_cases": ["premium_copy", "brand_marketing", "landing_pages"]
+    },
+    {
+      "name": "omni-ecom-seo-bulk-smart",
+      "description": "Massen-SEO/Katalogtexte: smart für Qualität, cheap/thrifty für Skalierung.",
+      "strategy": "cost-optimized",
+      "targets": [{"model": "auto/smart", "priority": 1}, {"model": "auto/cheap", "priority": 2}, {"model": "auto/thrifty", "priority": 3}, {"model": "auto/fast", "priority": 4}],
+      "config": {"routerStrategy": "cost", "fallback_strategy": "priority", "throughput": true},
+      "use_cases": ["seo_bulk", "meta", "category_texts", "large_catalogs"]
+    },
+    {
+      "name": "omni-ecom-translate-smart",
+      "description": "Übersetzung/Lokalisierung mit Qualitäts-Fallback.",
+      "strategy": "auto",
+      "targets": [{"model": "auto/smart", "priority": 1}, {"model": "auto/cheap", "priority": 2}, {"model": "auto", "priority": 3}],
+      "config": {"routerStrategy": "rules", "use_case": "translation"},
+      "use_cases": ["translation", "localization"]
+    },
+    {
+      "name": "omni-ecom-catalog-enrich-fast",
+      "description": "Attribut-Extraktion/Tagging/Klassifikation: schnell mit smart-Fallback.",
+      "strategy": "auto",
+      "targets": [{"model": "auto/fast", "priority": 1}, {"model": "auto/smart", "priority": 2}, {"model": "auto/cheap", "priority": 3}],
+      "config": {"routerStrategy": "latency", "fallback_strategy": "priority"},
+      "use_cases": ["enrichment", "classification", "tagging", "normalization"]
+    },
+    {
+      "name": "omni-ecom-pricing-smart",
+      "description": "Preis-/Promo-Analyse (assistiv, faktenbasiert).",
+      "strategy": "auto",
+      "targets": [{"model": "auto/smart", "priority": 1}, {"model": "auto", "priority": 2}, {"model": "auto/fast", "priority": 3}],
+      "config": {"reasoning_bias": true, "assistive_only": true},
+      "use_cases": ["pricing", "promotions", "margin_scenarios"]
+    },
+    {
+      "name": "omni-ecom-trend-smart",
+      "description": "Trend/Wettbewerb/Markt-Insights.",
+      "strategy": "lkgp",
+      "targets": [{"model": "auto/smart", "priority": 1}, {"model": "auto", "priority": 2}, {"model": "auto/fast", "priority": 3}],
+      "config": {"routerStrategy": "score", "explorationRate": 0.06},
+      "use_cases": ["trends", "competitor_intel", "assortment_ideas"]
+    },
+    {
+      "name": "omni-ecom-longcontext-smart",
+      "description": "Große Kataloge/Reports.",
+      "strategy": "context-optimized",
+      "targets": [{"model": "auto/smart", "priority": 1}, {"model": "auto", "priority": 2}],
+      "config": {"prefer_large_context": true},
+      "use_cases": ["catalog_analysis", "reports", "long_documents"]
+    },
+    {
+      "name": "omni-ecom-crm-support-smart",
+      "description": "CRM/Support/Outreach: schnell, empathisch, smart-Fallback.",
+      "strategy": "auto",
+      "targets": [{"model": "auto/smart", "priority": 1}, {"model": "auto/fast", "priority": 2}, {"model": "auto/cheap", "priority": 3}],
+      "config": {"use_case": "crm_support"},
+      "use_cases": ["support", "crm", "outreach", "post_purchase"]
+    },
+    {
+      "name": "omni-ecom-risk-smart",
+      "description": "Order-/Risiko-Triage (assistiv, keine Auto-Entscheidung).",
+      "strategy": "auto",
+      "targets": [{"model": "auto/smart", "priority": 1}, {"model": "auto/coding", "priority": 2}, {"model": "auto/fast", "priority": 3}],
+      "config": {"assistive_only": true, "quality_bias": true},
+      "use_cases": ["risk_triage", "anomaly_review"]
+    },
+    {
+      "name": "omni-ecom-retention-smart",
+      "description": "Abandoned-Cart/Winback/Loyalty-Nachrichten.",
+      "strategy": "auto",
+      "targets": [{"model": "auto/smart", "priority": 1}, {"model": "auto/cheap", "priority": 2}, {"model": "auto/fast", "priority": 3}],
+      "config": {"use_case": "retention_marketing"},
+      "use_cases": ["abandoned_cart", "winback", "loyalty", "lifecycle"]
+    },
+    {
+      "name": "omni-ecom-marketing-smart",
+      "description": "Newsletter/Kampagnen/Segment-Content.",
+      "strategy": "auto",
+      "targets": [{"model": "auto/smart", "priority": 1}, {"model": "auto", "priority": 2}, {"model": "auto/cheap", "priority": 3}],
+      "config": {"quality_bias": true},
+      "use_cases": ["newsletter", "campaigns", "promotions"]
+    },
+    {
+      "name": "omni-ecom-vision-smart",
+      "description": "Bildanalyse/QC: vision mit smart-Analyse.",
+      "strategy": "auto",
+      "targets": [{"model": "auto/vision", "priority": 1}, {"model": "auto/smart", "priority": 2}, {"model": "auto/multimodal", "priority": 3}],
+      "config": {"capability": "vision"},
+      "use_cases": ["image_qc", "product_analysis", "visual_checks"]
+    },
+    {
+      "name": "omni-ecom-photoshoot-smart",
+      "description": "Produktfoto/Creative: vision-first, smart für Prompting/QC.",
+      "strategy": "priority",
+      "targets": [{"model": "auto/vision", "priority": 1}, {"model": "auto/smart", "priority": 2}, {"model": "auto", "priority": 3}],
+      "config": {"capability": "image_generation_or_vision"},
+      "use_cases": ["photoshoot", "creative_generation"]
+    },
+    {
+      "name": "omni-ecom-photoshoot-identity",
+      "description": "Identitätskonsistentes Fotoshooting (Pipeline).",
+      "strategy": "pipeline",
+      "targets": [
+        {"step": "identity_prompt", "model": "auto/smart"},
+        {"step": "generate", "model": "auto/vision"},
+        {"step": "qc", "model": "auto/vision"}
+      ],
+      "config": {"fallback_model": "auto/smart", "preserve_product_fidelity": true},
+      "use_cases": ["identity_photoshoot"]
+    },
+    {
+      "name": "omni-ecom-critical-fusion",
+      "description": "Kritische Ausgaben: höchste Zuverlässigkeit (smart-first, Fallback).",
+      "strategy": "priority",
+      "targets": [{"model": "auto/smart", "priority": 1}, {"model": "auto", "priority": 2}, {"model": "auto/cheap", "priority": 3}],
+      "config": {"fallback_strategy": "auto", "reliability": "high"},
+      "use_cases": ["critical", "high_stakes"]
+    },
+    {
+      "name": "omni-ecom-budget-thrifty",
+      "description": "Budget/Background: subscription/thrifty/cheap, smart nur bei Bedarf.",
+      "strategy": "priority",
+      "targets": [{"model": "auto/subscription", "priority": 1}, {"model": "auto/thrifty", "priority": 2}, {"model": "auto/cheap", "priority": 3}, {"model": "auto/smart", "priority": 4}],
+      "config": {"cost_bias": true},
+      "use_cases": ["batch", "background", "budget_sensitive"]
+    },
+    {
+      "name": "omni-ecom-resilient-offline",
+      "description": "Quota-Druck/Instabilität: headroom/offline + smart recovery.",
+      "strategy": "headroom",
+      "targets": [{"model": "auto/offline", "priority": 1}, {"model": "auto", "priority": 2}, {"model": "auto/smart", "priority": 3}],
+      "config": {"availability_bias": true},
+      "use_cases": ["resilience", "quota_pressure", "degraded_mode"]
+    },
+    {
+      "name": "omni-ecom-cache-smart",
+      "description": "Wiederholte Templates: cache-affin mit smart Qualität.",
+      "strategy": "cache-optimized",
+      "targets": [{"model": "auto/smart", "priority": 1}, {"model": "auto", "priority": 2}],
+      "config": {"cache_affinity": true},
+      "use_cases": ["templates", "repeated_prompts"]
+    }
+  ]
+}
