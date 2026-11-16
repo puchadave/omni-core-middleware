@@ -1,0 +1,16 @@
+[Unit]
+Description=OMNI-CORE NEXUS PVE Node Agent (monitoring + authorized actions)
+After=network-online.target pve-cluster.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/omni-pve-agent.conf
+ExecStart=/usr/local/sbin/omni-pve-agent daemon
+Restart=always
+RestartSec=10
+User=root
+Group=root
+
+[Install]
+WantedBy=multi-user.target

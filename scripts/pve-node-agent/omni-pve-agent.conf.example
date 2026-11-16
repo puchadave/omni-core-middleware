@@ -1,0 +1,13 @@
+# /etc/omni-pve-agent.conf - OMNI-CORE NEXUS PVE Node Agent configuration
+# URL of OMNI-CORE middleware (reachable from this PVE node)
+MIDDLEWARE_URL="http://192.168.176.22:8002"
+# Agent authorization token: must match PVE_AGENT_TOKEN (or INTERNAL_API_KEY) on middleware
+AGENT_TOKEN="change-me-strong-token"
+# Optional: override node name reported to middleware (default: hostname -s)
+#NODE_NAME="pve01"
+# Heartbeat/report interval in seconds
+INTERVAL_SECONDS=60
+# Action poll interval in seconds (agent polls for install/fix/tune jobs)
+POLL_INTERVAL_SECONDS=30
+# Enable execution of queued actions from middleware (install/tune/backup/fix). Set to 0 to monitor-only.
+ENABLE_ACTIONS=1

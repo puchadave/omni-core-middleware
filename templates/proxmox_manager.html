@@ -1,0 +1,141 @@
+{% extends "base.html" %}
+{% block title %}Proxmox Manager - OMNI-CORE{% endblock %}
+{% block content %}
+<style>
+  .pm-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(360px,1fr));gap:14px}
+  .pm-card{background:#0f172a;border:1px solid #243145;border-radius:12px;padding:14px}
+  .pm-card h2{margin:0 0 8px;font-size:15px;color:#93c5fd}
+  .pm-row{display:flex;gap:8px;flex-wrap:wrap;margin:6px 0}
+  .pm-btn{background:#2563eb;color:#fff;border:0;padding:8px 10px;border-radius:8px;cursor:pointer;font-size:12px}
+  .pm-btn.alt{background:#334155}
+  .pm-input,.pm-select,.pm-ta{width:100%;background:#020617;color:#e5e7eb;border:1px solid #243145;border-radius:8px;padding:8px;font-size:13px}
+  .pm-pre{white-space:pre-wrap;word-break:break-word;background:#020617;border:1px solid #243145;padding:8px;border-radius:8px;max-height:300px;overflow:auto;font-size:12px;margin:6px 0}
+  .pm-chat{height:260px;overflow:auto;background:#020617;border:1px solid #243145;border-radius:8px;padding:8px;font-size:13px}
+  .pm-msg{margin:6px 0;padding:6px 8px;border-radius:8px}
+  .pm-msg.user{background:#1e293b}
+  .pm-msg.ai{background:#0b253a;border:1px solid #1e3a5f}
+  .pm-msg.sys{background:#172033;color:#93c5fd}
+  .pm-muted{color:#94a3b8;font-size:12px}
+  .pm-pill{display:inline-block;background:#1e293b;border:1px solid #334155;border-radius:999px;padding:3px 8px;font-size:11px;margin-right:6px}
+</style>
+
+<div style="padding:12px 4px">
+  <h1 style="margin:0 0 4px;font-size:22px;color:#e5e7eb">Proxmox Manager (AI)</h1>
+  <div class="pm-muted">Serverplanung, schnelle Installation, Tuning & Fehlerbehebung auf PVE-Nodes · verbunden mit OmniRoute-Gateway <span id="pm_gw" class="pm-pill"></span></div>
+</div>
+
+<div class="pm-grid">
+  <div class="pm-card" style="grid-column:span 2">
+    <h2>KI-Assistent (Chat) & Schnellmenü</h2>
+    <div class="pm-row">
+      <input id="pm_node" class="pm-input" style="max-width:260px" placeholder="Ziel-Node (hostname -s) oder *" value="*" />
+      <button class="pm-btn alt" onclick="loadNodes()">Nodes aktualisieren</button>
+      <button class="pm-btn alt" onclick="loadResults()">Ergebnisse</button>
+    </div>
+    <div class="pm-row">
+      <button class="pm-btn" onclick="quickTask('status')">Status</button>
+      <button class="pm-btn" onclick="quickTask('tune')">Node optimieren</button>
+      <button class="pm-btn" onclick="quickTask('fix')">Probleme beheben</button>
+      <button class="pm-btn" onclick="quickTask('backup')">Backup CT</button>
+      <button class="pm-btn" onclick="quickTask('report')">Report jetzt</button>
+    </div>
+    <div class="pm-row">
+      <button class="pm-btn" onclick="quickTask('install_omniroute')">1) Install OmniRoute</button>
+      <button class="pm-btn" onclick="quickTask('install_middleware')">2) Install Middleware</button>
+      <button class="pm-btn" onclick="quickTask('install_shopware')">4) Install Shopware</button>
+      <span class="pm-muted">Reihenfolge: OmniRoute → Middleware → Backup alter Container → weitere Server</span>
+    </div>
+    <div class="pm-row">
+      <button class="pm-btn alt" onclick="pm_net_req.value='Plane VLANs (Mgmt/Apps/DB) auf vmbr0 vlan-aware, Subnetze, IP-Plan, sichere Segmentation für OmniRoute/Middleware/Shopware'; genNetworkPlan()">Plan: Netzwerk/VLANs</button>
+      <button class="pm-btn alt" onclick="pm_fw_req.value='Erstelle pve-firewall Cluster-Regeln: default deny, Mgmt nur Admin-Netz, HTTP/HTTPS Shopware, interne Dienste segmentiert'; genFirewallPlan()">Plan: Firewall</button>
+    </div>
+    <div id="pm_chat" class="pm-chat"></div>
+    <div class="pm-row" style="margin-top:8px">
+      <input id="pm_chat_in" class="pm-input" placeholder="z.B. 'Plane Shopware LXC 4c/4GB, performance optimiert, Middleware-Anbindung vorkonfiguriert' oder 'Optimiere Node pve01'" onkeydown="if(event.key==='Enter'){sendChat();}" />
+      <button class="pm-btn" onclick="sendChat()" style="min-width:120px">Senden</button>
+    </div>
+    <div class="pm-muted">Der Chat nutzt OmniRoute (auto/smart/Copilot) für Pläne/Antworten und kann Aktionen an autorisierte Node-Agents in Queue stellen.</div>
+  </div>
+
+  <div class="pm-card">
+    <h2>PVE Nodes (Monitoring)</h2>
+    <pre id="pm_nodes" class="pm-pre">Lade…</pre>
+    <h2>Letzte Aktionsergebnisse</h2>
+    <pre id="pm_results" class="pm-pre">-</pre>
+  </div>
+
+  <div class="pm-card">
+    <h2>KI-Serverplan (direkt)</h2>
+    <input id="pm_host" class="pm-input" placeholder="Hostname (optional)" />
+    <select id="pm_target" class="pm-select" style="margin-top:6px"><option value="lxc">LXC (Alpine/native, amd64, local)</option><option value="vm">VM</option></select>
+    <textarea id="pm_req" class="pm-ta" rows="5" style="margin-top:6px" placeholder="Anforderungen…"></textarea>
+    <div class="pm-row"><button class="pm-btn" onclick="genPlan()">Serverplan generieren</button></div>
+    <pre id="pm_plan" class="pm-pre">-</pre>
+  </div>
+
+  <div class="pm-card">
+    <h2>Netzwerk & VLAN Planung (OmniRoute KI)</h2>
+    <textarea id="pm_net_req" class="pm-ta" rows="4" placeholder="z.B. vmbr0 vlan-aware, VLAN 10 Mgmt, VLAN 20 Apps (OmniRoute/Middleware/Shopware), VLAN 30 DB, Routing/Segmentation, Proxmox Node Firewall"></textarea>
+    <div class="pm-row">
+      <button class="pm-btn" onclick="genNetworkPlan()">Netzwerkplan generieren</button>
+      <button class="pm-btn alt" onclick="queueNetworkApply()">Als Aktion (dry-run) an Agent</button>
+    </div>
+    <pre id="pm_net_plan" class="pm-pre">-</pre>
+    <div class="pm-muted">`configure_network` schreibt Snippet nach <code>/etc/network/interfaces.d/omni-nexus.cfg</code> (Default dry-run). Apply nur nach Review.</div>
+  </div>
+
+  <div class="pm-card">
+    <h2>Firewall Planung & Automatisierung</h2>
+    <select id="pm_fw_scope" class="pm-select"><option value="cluster">Cluster</option><option value="node">Node</option><option value="vm">VM/CT</option></select>
+    <textarea id="pm_fw_req" class="pm-ta" rows="4" style="margin-top:6px" placeholder="z.B. Default deny inbound, SSH nur Mgmt-VLAN, HTTP/HTTPS für Shopware, interne Ports nur App-VLAN, Proxmox UI/API geschützt"></textarea>
+    <div class="pm-row">
+      <button class="pm-btn" onclick="genFirewallPlan()">Firewall-Plan generieren</button>
+      <button class="pm-btn alt" onclick="queueFirewallApply()">Als Aktion (dry-run) an Agent</button>
+    </div>
+    <pre id="pm_fw_plan" class="pm-pre">-</pre>
+    <div class="pm-muted">`apply_firewall` führt pvesh/Firewall-Kommandos aus dem Plan aus (dry-run standard). Prüfe Regeln vor Produktiv-Apply.</div>
+  </div>
+
+  <div class="pm-card">
+    <h2>Aktion an Node-Agent senden</h2>
+    <select id="pm_action" class="pm-select">
+      <option value="tune_node">tune_node (Optimierung)</option>
+      <option value="fix_common">fix_common (Fixes)</option>
+      <option value="backup_ct">backup_ct (Backup)</option>
+      <option value="create_lxc">create_lxc (Server erstellen)</option>
+      <option value="pct_exec">pct_exec (Command in CT)</option>
+      <option value="report_now">report_now</option>
+    </select>
+    <textarea id="pm_params" class="pm-ta" rows="6" style="margin-top:6px" placeholder='Params JSON, z.B. {"ctid":"201"} oder {"hostname":"shopware-server","cores":4,"memory_mb":4096,"disk_gb":20,"ip":"dhcp"}'></textarea>
+    <div class="pm-row"><button class="pm-btn" onclick="queueAction()">Aktion senden</button></div>
+    <pre id="pm_action_out" class="pm-pre">-</pre>
+    <div class="pm-muted">Agent-Installation: <code>scripts/pve-node-agent/install_pve_agent.sh</code> (Token = <code>PVE_AGENT_TOKEN</code>/<code>INTERNAL_API_KEY</code>). Docs: <code>docs/features/pve-node-agent-plugin.md</code></div>
+  </div>
+</div>
+
+<script>
+const QUICK = {
+  status: {action:'report_now', params:{}},
+  tune: {action:'tune_node', params:{}},
+  fix: {action:'fix_common', params:{}},
+  backup: {action:'backup_ct', params:{ctid:'201', mode:'snapshot'}},
+  report: {action:'report_now', params:{}},
+  install_omniroute: {action:'create_lxc', params:{hostname:'omniroute-gateway',cores:2,memory_mb:2048,disk_gb:8,ip:'dhcp'}},
+  install_middleware: {action:'create_lxc', params:{hostname:'omnicore-middleware',cores:4,memory_mb:4096,disk_gb:16,ip:'dhcp'}},
+  install_shopware: {action:'create_lxc', params:{hostname:'shopware-server',cores:4,memory_mb:4096,disk_gb:20,ip:'dhcp'}},
+};
+async function j(u,o){const r=await fetch(u,Object.assign({headers:{'Content-Type':'application/json'}},o||{})); const t=await r.text(); try{return JSON.parse(t);}catch(e){return {ok:r.ok,status:r.status,raw:t};}}
+function addMsg(role, text){const el=document.getElementById('pm_chat'); const d=document.createElement('div'); d.className='pm-msg '+(role==='user'?'user':role==='ai'?'ai':'sys'); d.innerHTML='<b>'+(role==='user'?'Du':role==='ai'?'KI':'System')+':</b> '+(text||'').replace(/</g,'&lt;'); el.appendChild(d); el.scrollTop=el.scrollHeight;}
+async function loadNodes(){pm_nodes.textContent=JSON.stringify(await j('/api/nexus/pve/nodes?limit=100'),null,2);}
+async function loadResults(){pm_results.textContent=JSON.stringify(await j('/api/nexus/pve/actions/results?limit=30'),null,2);}
+async function genPlan(){pm_plan.textContent='…'; const d=await j('/api/nexus/pve/plan',{method:'POST',body:JSON.stringify({requirements:pm_req.value,target:pm_target.value,hostname:pm_host.value,node:pm_node.value,context:{node:pm_node.value}})}); pm_plan.textContent=JSON.stringify(d,null,2); if(d&&d.omniroute_base) pm_gw.textContent=d.omniroute_base; return d;}
+async function genNetworkPlan(){pm_net_plan.textContent='…'; const d=await j('/api/nexus/pve/network/plan',{method:'POST',body:JSON.stringify({requirements:pm_net_req.value,node:pm_node.value||'*',context:{node:pm_node.value}})}); pm_net_plan.textContent=JSON.stringify(d,null,2); if(d&&d.omniroute_base) pm_gw.textContent=d.omniroute_base; window._lastNetworkPlan=d; return d;}
+async function genFirewallPlan(){pm_fw_plan.textContent='…'; const d=await j('/api/nexus/pve/firewall/plan',{method:'POST',body:JSON.stringify({requirements:pm_fw_req.value,node:pm_node.value||'*',scope:pm_fw_scope.value,context:{node:pm_node.value}})}); pm_fw_plan.textContent=JSON.stringify(d,null,2); if(d&&d.omniroute_base) pm_gw.textContent=d.omniroute_base; window._lastFirewallPlan=d; return d;}
+async function queueNetworkApply(){const p=window._lastNetworkPlan||{}; const s=p.structured||{}; const payload={node:pm_node.value||'*',interfaces_snippet:s.interfaces_snippet_debian_ifupdown||s.interfaces_snippet||'',commands:s.pve_commands||s.commands||[],dry_run:true,apply_ifreload:false}; const d=await j('/api/nexus/pve/network/apply',{method:'POST',body:JSON.stringify(payload)}); pm_action_out.textContent=JSON.stringify(d,null,2); addMsg('sys','Network-Apply (dry-run) queued: '+(d&&d.ok)); await loadResults();}
+async function queueFirewallApply(){const p=window._lastFirewallPlan||{}; const s=p.structured||{}; const payload={node:pm_node.value||'*',scope:pm_fw_scope.value,commands:s.pvesh_commands||s.commands||[],rules:s.rules||[],enable:s.enable_firewall||null,dry_run:true}; const d=await j('/api/nexus/pve/firewall/apply',{method:'POST',body:JSON.stringify(payload)}); pm_action_out.textContent=JSON.stringify(d,null,2); addMsg('sys','Firewall-Apply (dry-run) queued: '+(d&&d.ok)); await loadResults();}
+async function queueAction(){let params={}; try{params=JSON.parse(pm_params.value||'{}')}catch(e){pm_action_out.textContent='Params JSON ungültig: '+e; return;} const d=await j('/api/nexus/pve/actions',{method:'POST',body:JSON.stringify({node:pm_node.value||'*',type:pm_action.value,params})}); pm_action_out.textContent=JSON.stringify(d,null,2); await loadResults(); return d;}
+function quickTask(t){const q=QUICK[t]; if(!q){return;} if(t==='status'){loadNodes(); addMsg('sys','Node-Status aktualisiert.'); return;} pm_action.value=q.action; pm_params.value=JSON.stringify(q.params,null,2); addMsg('sys','Quick-Task „'+t+'“ vorbereitet (Node '+(pm_node.value||'*')+'). Klicke „Aktion senden“ zum Ausführen.'); if(t!=='backup'){queueAction().then(d=>addMsg('ai','Aktion '+q.action+' → '+(d&&d.ok?'queued':'Fehler')));} }
+async function sendChat(){const msg=(pm_chat_in.value||'').trim(); if(!msg) return; addMsg('user',msg); pm_chat_in.value=''; const m=msg.toLowerCase(); if(m.includes('vlan')||m.includes('netz')||m.includes('network')||m.includes('bridge')||m.includes('subnetz')) pm_net_req.value=msg; if(m.includes('firewall')||m.includes('regel')||m.includes('port')) pm_fw_req.value=msg; else pm_req.value=msg; const d=await j('/api/nexus/pve/chat',{method:'POST',body:JSON.stringify({message:msg,node:pm_node.value||'*',context:{target:pm_target.value,hostname:pm_host.value,scope:pm_fw_scope.value}})}); if(d&&d.omniroute_base) pm_gw.textContent=d.omniroute_base; if(d&&d.plan && d.type==='network_plan'){pm_net_plan.textContent=JSON.stringify(d.plan,null,2); window._lastNetworkPlan=d.plan;} else if(d&&d.plan && d.type==='firewall_plan'){pm_fw_plan.textContent=JSON.stringify(d.plan,null,2); window._lastFirewallPlan=d.plan;} else if(d&&d.plan){pm_plan.textContent=JSON.stringify(d.plan,null,2);} if(d&&d.action){pm_action_out.textContent=JSON.stringify(d.action,null,2); loadResults();} addMsg('ai', d&&d.reply?d.reply:JSON.stringify(d));}
+(async function init(){addMsg('sys','Bereit. Verbinde Agenten auf PVE-Nodes, dann Status/Plan/Install ausführen.'); try{const s=await j('/api/nexus/pve/quick-tasks'); if(s&&s.tasks){/*ok*/}}catch(e){} await loadNodes(); await loadResults();})();
+</script>
+{% endblock %}

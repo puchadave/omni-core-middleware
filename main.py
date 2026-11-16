@@ -919,6 +919,11 @@ async def _resolve_principal(request: Request) -> dict[str, Any]:
     expected_api_key = os.getenv("INTERNAL_API_KEY", "").strip()
     if provided_api_key and expected_api_key and hmac.compare_digest(provided_api_key, expected_api_key):
         return {"authenticated": True, "via": "api_key_header", "role": "SUPERADMIN", "permissions": ["*"], "user_id": "internal-api-key", "user": {"id": "internal-api-key", "email": "internal@local", "display_name": "Internal API Key", "role": "SUPERADMIN"}}
+    # 1b) PVE node agent token (service principal for telemetry reporting)
+    provided_pve_token = request.headers.get("X-PVE-Agent-Token", "") or (request.headers.get("Authorization", "").removeprefix("Bearer ").strip() if request.headers.get("Authorization", "").lower().startswith("bearer ") else "")
+    expected_pve_token = (os.getenv("PVE_AGENT_TOKEN") or expected_api_key).strip()
+    if provided_pve_token and expected_pve_token and hmac.compare_digest(provided_pve_token, expected_pve_token) and request.url.path.startswith("/api/nexus/pve/"):
+        return {"authenticated": True, "via": "pve_agent_token", "role": "SERVICE", "permissions": ["ai.generate", "ai.configure", "system.read"], "user_id": "pve-agent", "user": {"id": "pve-agent", "email": "pve-agent@local", "display_name": "PVE Node Agent", "role": "SERVICE"}}
 
     # 2) Browser/session cookie
     token = request.cookies.get(SESSION_COOKIE_NAME, "")
@@ -1039,8 +1044,8 @@ async def security_middleware(request: Request, call_next):
         return _add_security_headers(RedirectResponse(url="/login", status_code=303), request)
 
     # CSRF: enforce for browser-session authenticated state-changing requests
-    if method in STATE_CHANGING_METHODS and path not in _CSRF_EXEMPT_PATHS and principal.get("via") != "api_key_header":
-        # allow if no browser cookie/session context? principal came from session cookie in our resolver except api_key_header
+    if method in STATE_CHANGING_METHODS and path not in _CSRF_EXEMPT_PATHS and principal.get("via") not in ("api_key_header", "pve_agent_token"):
+        # allow if no browser cookie/session context? principal came from session cookie in our resolver except service principals
         if not _csrf_valid(request):
             return _add_security_headers(JSONResponse(status_code=403, content={"detail": "CSRF token missing or invalid"}), request)
 
@@ -3161,6 +3166,10 @@ async def control_center_system() -> dict[str, Any]:
 async def ui_nexus():
     from app.nexus.ui.routes import NEXUS_HTML
     return HTMLResponse(NEXUS_HTML)
+
+@app.get("/ui/proxmox-manager", response_class=HTMLResponse)
+async def ui_proxmox_manager(request: Request):
+    return templates.TemplateResponse(request, "proxmox_manager.html", {"request": request})
 
 @app.get("/ui/master-dashboard", response_class=HTMLResponse)
 async def ui_master_dashboard(request: Request):
