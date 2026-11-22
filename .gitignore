@@ -22,3 +22,15 @@ htmlcov/
 dist/
 build/
 *.egg-info/
+
+# Local backups / runtime snapshots (may contain secrets)
+.local/
+
+# Local compose/export bundles (may contain envs, DB dumps, large artifacts)
+middleware-dockercompose/
+
+# Generated/local agent workspace
+my-agent/
+
+# Local media exports
+media/
